@@ -238,6 +238,13 @@ async def download_model(
 
     Progress updates are sent via WebSocket to /ws/status.
     """
+    # Validate that hf_repo_id is provided
+    if not request.hf_repo_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="hf_repo_id is required for model download",
+        )
+
     logger.info(f"[highlight]POST /admin/models/download: {request.hf_repo_id}[/highlight]")
     logger.info(f"  Filename: {request.hf_filename or 'auto-select'}")
 
@@ -249,10 +256,19 @@ async def download_model(
             filename=request.hf_filename,
         )
 
-        # Get the model from DB - use filename stem if no name provided
+        # Auto-generate model name if not provided
         model_name = request.name
-        if not model_name and path:
-            model_name = path.stem
+        if not model_name:
+            if path:
+                # Use filename stem (without extension)
+                model_name = path.stem
+            elif request.hf_filename:
+                # Use filename without extension
+                from pathlib import Path as PathLib
+                model_name = PathLib(request.hf_filename).stem
+            else:
+                # Fallback to repo_id slug
+                model_name = request.hf_repo_id.split("/")[-1].replace("-", "_")
 
         model = await mm.get_model(model_name)
 
