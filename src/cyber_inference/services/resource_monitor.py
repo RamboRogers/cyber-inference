@@ -392,8 +392,13 @@ class ResourceMonitor:
 
         if resources.gpu:
             gpu_info = f"{resources.gpu.name} ({resources.gpu.vendor.upper()})"
-            gpu_memory_total = resources.gpu.total_memory_mb / 1024
-            gpu_memory_used = resources.gpu.used_memory_mb / 1024
+            if resources.gpu.total_memory_mb > 0:
+                gpu_memory_total = resources.gpu.total_memory_mb / 1024
+                gpu_memory_used = (
+                    resources.gpu.used_memory_mb / 1024
+                    if resources.gpu.used_memory_mb is not None
+                    else None
+                )
 
         return {
             "platform": f"{platform.system()} {platform.release()}",

@@ -116,6 +116,22 @@ async def dashboard(request: Request) -> HTMLResponse:
         resources = await rm.get_resources()
         running_models = pm.get_running_models()
 
+        gpu_info = resources.gpu.name if resources.gpu else None
+        gpu_memory_total = None
+        gpu_memory_used = None
+        gpu_memory_note = None
+        if resources.gpu:
+            if resources.gpu.total_memory_mb > 0:
+                gpu_memory_total = resources.gpu.total_memory_mb / 1024
+                if resources.gpu.used_memory_mb is not None:
+                    gpu_memory_used = resources.gpu.used_memory_mb / 1024
+            elif "thor" in resources.gpu.name.lower():
+                gpu_memory_total = resources.total_memory_mb / 1024
+                gpu_memory_used = resources.used_memory_mb / 1024
+                gpu_memory_note = "Unified memory"
+            else:
+                gpu_memory_note = "Memory telemetry unavailable"
+
         context = _template_context(
             request,
             page="dashboard",
@@ -124,9 +140,10 @@ async def dashboard(request: Request) -> HTMLResponse:
                 "memory_percent": resources.memory_percent,
                 "memory_used_gb": resources.used_memory_mb / 1024,
                 "memory_total_gb": resources.total_memory_mb / 1024,
-                "gpu_info": resources.gpu.name if resources.gpu else None,
-                "gpu_memory_used": resources.gpu.used_memory_mb / 1024 if resources.gpu else None,
-                "gpu_memory_total": resources.gpu.total_memory_mb / 1024 if resources.gpu else None,
+                "gpu_info": gpu_info,
+                "gpu_memory_total": gpu_memory_total,
+                "gpu_memory_used": gpu_memory_used,
+                "gpu_memory_note": gpu_memory_note,
             },
             running_models=running_models,
             model_count=len(running_models),

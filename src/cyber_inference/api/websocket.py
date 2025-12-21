@@ -202,10 +202,20 @@ async def websocket_status(websocket: WebSocket) -> None:
                 }
 
                 if resources.gpu:
+                    memory_total_gb = (
+                        resources.gpu.total_memory_mb / 1024
+                        if resources.gpu.total_memory_mb > 0
+                        else None
+                    )
+                    memory_used_gb = (
+                        resources.gpu.used_memory_mb / 1024
+                        if memory_total_gb is not None and resources.gpu.used_memory_mb is not None
+                        else None
+                    )
                     status["resources"]["gpu"] = {
                         "name": resources.gpu.name,
-                        "memory_used_gb": resources.gpu.used_memory_mb / 1024,
-                        "memory_total_gb": resources.gpu.total_memory_mb / 1024,
+                        "memory_used_gb": memory_used_gb,
+                        "memory_total_gb": memory_total_gb,
                     }
 
                 await websocket.send_text(json.dumps(status))

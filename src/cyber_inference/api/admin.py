@@ -177,8 +177,18 @@ async def get_resources(
         available_memory_gb=resources.available_memory_mb / 1024,
         memory_percent=resources.memory_percent,
         gpu_info=resources.gpu.name if resources.gpu else None,
-        gpu_memory_total_gb=resources.gpu.total_memory_mb / 1024 if resources.gpu else None,
-        gpu_memory_used_gb=resources.gpu.used_memory_mb / 1024 if resources.gpu else None,
+        gpu_memory_total_gb=(
+            resources.gpu.total_memory_mb / 1024
+            if resources.gpu and resources.gpu.total_memory_mb > 0
+            else None
+        ),
+        gpu_memory_used_gb=(
+            resources.gpu.used_memory_mb / 1024
+            if resources.gpu
+            and resources.gpu.total_memory_mb > 0
+            and resources.gpu.used_memory_mb is not None
+            else None
+        ),
     )
 
 
