@@ -46,11 +46,14 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*; \
     # Build llama.cpp with CUDA support
     git clone --depth 1 https://github.com/ggerganov/llama.cpp /tmp/llama.cpp; \
+    export LIBRARY_PATH="/usr/local/cuda/lib64/stubs:/usr/local/cuda/lib64:${LIBRARY_PATH:-}"; \
+    export LD_LIBRARY_PATH="/usr/local/cuda/lib64/stubs:/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}"; \
     cmake -S /tmp/llama.cpp -B /tmp/llama.cpp/build \
         -DGGML_CUDA=ON \
         -DLLAMA_CURL=ON \
         -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_CUDA_ARCHITECTURES="87;89;90"; \
+        -DCMAKE_CUDA_ARCHITECTURES="87;89;90" \
+        -DCMAKE_EXE_LINKER_FLAGS="-Wl,-rpath,/usr/local/cuda/lib64"; \
     cmake --build /tmp/llama.cpp/build -j$(nproc) --target llama-server; \
     mkdir -p /app/bin; \
     # Copy llama-server and all shared libraries
