@@ -55,6 +55,137 @@ class ModelManager:
         logger.debug(f"  HuggingFace token: {'configured' if self._hf_token else 'not set'}")
 
     @staticmethod
+    def _read_gguf_context_length(file_path: Path) -> Optional[int]:
+        def read_exact(handle, size: int) -> bytes:
+            data = handle.read(size)
+            if len(data) != size:
+                raise ValueError("Unexpected end of file")
+            return data
+
+        def read_u32(handle) -> int:
+            return int.from_bytes(read_exact(handle, 4), "little", signed=False)
+
+        def read_u64(handle) -> int:
+            return int.from_bytes(read_exact(handle, 8), "little", signed=False)
+
+        def read_i32(handle) -> int:
+            return int.from_bytes(read_exact(handle, 4), "little", signed=True)
+
+        def read_i64(handle) -> int:
+            return int.from_bytes(read_exact(handle, 8), "little", signed=True)
+
+        def read_string(handle) -> str:
+            length = read_u64(handle)
+            if length == 0:
+                return ""
+            return read_exact(handle, length).decode("utf-8", errors="ignore")
+
+        def skip_string(handle) -> None:
+            length = read_u64(handle)
+            if length:
+                read_exact(handle, length)
+
+        type_sizes = {
+            0: 1,  # UINT8
+            1: 1,  # INT8
+            2: 2,  # UINT16
+            3: 2,  # INT16
+            4: 4,  # UINT32
+            5: 4,  # INT32
+            6: 4,  # FLOAT32
+            7: 1,  # BOOL
+            10: 8,  # UINT64
+            11: 8,  # INT64
+            12: 8,  # FLOAT64
+        }
+        GGUF_STRING = 8
+        GGUF_ARRAY = 9
+
+        context_keys = {
+            "llama.context_length",
+            "context_length",
+            "n_ctx",
+            "llama.n_ctx",
+        }
+
+        try:
+            with file_path.open("rb") as handle:
+                magic = read_exact(handle, 4)
+                if magic != b"GGUF":
+                    return None
+
+                _version = read_u32(handle)
+                _tensor_count = read_u64(handle)
+                kv_count = read_u64(handle)
+
+                for _ in range(kv_count):
+                    key = read_string(handle)
+                    value_type = read_u32(handle)
+
+                    if key in context_keys:
+                        if value_type == 4:
+                            return read_u32(handle)
+                        if value_type == 5:
+                            return read_i32(handle)
+                        if value_type == 10:
+                            return read_u64(handle)
+                        if value_type == 11:
+                            return read_i64(handle)
+                        if value_type == GGUF_STRING:
+                            value = read_string(handle)
+                            if value.isdigit():
+                                return int(value)
+                            return None
+                        if value_type == GGUF_ARRAY:
+                            elem_type = read_u32(handle)
+                            length = read_u64(handle)
+                            if elem_type in (4, 5, 10, 11) and length == 1:
+                                if elem_type == 4:
+                                    return read_u32(handle)
+                                if elem_type == 5:
+                                    return read_i32(handle)
+                                if elem_type == 10:
+                                    return read_u64(handle)
+                                if elem_type == 11:
+                                    return read_i64(handle)
+                            # Skip array payload
+                            elem_size = type_sizes.get(elem_type)
+                            if elem_size is None:
+                                for _ in range(length):
+                                    if elem_type == GGUF_STRING:
+                                        skip_string(handle)
+                                    else:
+                                        break
+                            else:
+                                read_exact(handle, elem_size * length)
+                            return None
+
+                    # Skip value payload
+                    if value_type == GGUF_STRING:
+                        skip_string(handle)
+                    elif value_type == GGUF_ARRAY:
+                        elem_type = read_u32(handle)
+                        length = read_u64(handle)
+                        if elem_type == GGUF_STRING:
+                            for _ in range(length):
+                                skip_string(handle)
+                        else:
+                            elem_size = type_sizes.get(elem_type)
+                            if elem_size is None:
+                                raise ValueError("Unknown GGUF array element type")
+                            read_exact(handle, elem_size * length)
+                    else:
+                        size = type_sizes.get(value_type)
+                        if size is None:
+                            raise ValueError("Unknown GGUF value type")
+                        read_exact(handle, size)
+        except Exception as e:
+            logger.debug(f"Failed to read GGUF metadata from {file_path.name}: {e}")
+            return None
+
+        return None
+
+    @staticmethod
     def _is_mmproj_file(filename: str) -> bool:
         name = filename.lower()
         return name.endswith(".gguf") and "mmproj" in name
@@ -378,6 +509,7 @@ class ModelManager:
 
         # Determine model name (use filename without extension)
         model_name = filename.replace(".gguf", "")
+        context_length = self._read_gguf_context_length(file_path)
 
         async with get_db_session() as session:
             # Check if already registered
@@ -392,6 +524,8 @@ class ModelManager:
                 existing.size_bytes = size_bytes
                 existing.is_downloaded = True
                 existing.download_progress = 100.0
+                if context_length:
+                    existing.context_length = context_length
 
                 # Auto-detect model type if not set
                 if not existing.model_type:
@@ -422,6 +556,7 @@ class ModelManager:
                 hf_filename=filename,
                 size_bytes=size_bytes,
                 quantization=quantization,
+                context_length=context_length or 4096,
                 model_type=model_type,
                 is_downloaded=True,
                 download_progress=100.0,
@@ -472,6 +607,7 @@ class ModelManager:
             if self._is_mmproj_file(file_path.name):
                 continue
             if file_path.name not in registered_files:
+                context_length = self._read_gguf_context_length(file_path)
                 models.append({
                     "id": None,
                     "name": file_path.stem,
@@ -480,7 +616,7 @@ class ModelManager:
                     "hf_repo_id": None,
                     "size_bytes": file_path.stat().st_size,
                     "quantization": None,
-                    "context_length": 4096,
+                    "context_length": context_length or 4096,
                     "model_type": None,
                     "is_downloaded": True,
                     "is_enabled": True,
