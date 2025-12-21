@@ -251,6 +251,13 @@ class ModelManager:
 
         except Exception as e:
             logger.error(f"[error]Download failed: {e}[/error]")
+            # Clean up partial download
+            if local_path.exists():
+                try:
+                    local_path.unlink()
+                    logger.info(f"  Cleaned up partial file: {local_path}")
+                except Exception as cleanup_err:
+                    logger.warning(f"  Could not clean up partial file: {cleanup_err}")
             # Notify error
             await self._notify_progress(repo_id, filename, 0, "error", str(e))
             raise
@@ -447,13 +454,18 @@ class ModelManager:
             logger.warning(f"Model not found: {name}")
             return False
 
-        # Delete file
+        # Delete file (ignore if already gone)
         file_path = Path(model["path"])
-        if file_path.exists():
-            file_path.unlink()
-            logger.info(f"  Deleted file: {file_path}")
+        try:
+            if file_path.exists():
+                file_path.unlink()
+                logger.info(f"  Deleted file: {file_path}")
+            else:
+                logger.info(f"  File already gone: {file_path}")
+        except Exception as e:
+            logger.warning(f"  Could not delete file: {e}")
 
-        # Delete from database
+        # Always try to delete database record
         if model["id"]:
             async with get_db_session() as session:
                 result = await session.execute(
