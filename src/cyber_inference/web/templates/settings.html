@@ -275,10 +275,218 @@
         </div>
     </div>
 </div>
+
+<div id="toastContainer" class="fixed top-24 right-6 z-50 space-y-3"></div>
+
+<div id="modalOverlay" class="fixed inset-0 z-50 hidden items-center justify-center bg-cyber-black/80 backdrop-blur-sm">
+    <div id="modalCard" class="cyber-card w-full max-w-lg overflow-hidden border border-cyber-neon/30">
+        <div id="modalHeader" class="px-6 py-4 border-b border-cyber-neon/20 flex items-center gap-3">
+            <div id="modalIcon" class="w-10 h-10 rounded-lg bg-cyber-neon/10 flex items-center justify-center text-cyber-neon">
+                <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M12 18a6 6 0 100-12 6 6 0 000 12z" />
+                </svg>
+            </div>
+            <div>
+                <div id="modalTitle" class="font-cyber text-lg text-cyber-neon">SYSTEM NOTICE</div>
+                <div id="modalSubtitle" class="text-xs font-mono text-gray-500">// ACTION REQUIRED</div>
+            </div>
+        </div>
+        <div class="p-6 space-y-4">
+            <p id="modalMessage" class="text-sm font-mono text-gray-300"></p>
+            <div id="modalStatus" class="hidden text-xs font-mono text-gray-500 flex items-center gap-2">
+                <svg class="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                <span id="modalStatusText"></span>
+            </div>
+            <div id="modalActions" class="flex justify-end gap-3">
+                <button id="modalCancelBtn" class="cyber-btn px-4 py-2 rounded-lg font-mono">Cancel</button>
+                <button id="modalConfirmBtn" class="cyber-btn px-4 py-2 rounded-lg font-mono">Confirm</button>
+            </div>
+        </div>
+    </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
 <script>
+    const toastContainer = document.getElementById('toastContainer');
+    const modalOverlay = document.getElementById('modalOverlay');
+    const modalCard = document.getElementById('modalCard');
+    const modalHeader = document.getElementById('modalHeader');
+    const modalIcon = document.getElementById('modalIcon');
+    const modalTitle = document.getElementById('modalTitle');
+    const modalSubtitle = document.getElementById('modalSubtitle');
+    const modalMessage = document.getElementById('modalMessage');
+    const modalStatus = document.getElementById('modalStatus');
+    const modalStatusText = document.getElementById('modalStatusText');
+    const modalActions = document.getElementById('modalActions');
+    const modalCancelBtn = document.getElementById('modalCancelBtn');
+    const modalConfirmBtn = document.getElementById('modalConfirmBtn');
+
+    const toneStyles = {
+        success: {
+            border: 'border-cyber-neon/30',
+            header: 'border-cyber-neon/20',
+            title: 'text-cyber-neon',
+            iconBg: 'bg-cyber-neon/10',
+            icon: 'text-cyber-neon',
+            confirmBtn: 'cyber-btn',
+        },
+        warning: {
+            border: 'border-cyber-yellow/30',
+            header: 'border-cyber-yellow/20',
+            title: 'text-cyber-yellow',
+            iconBg: 'bg-cyber-yellow/10',
+            icon: 'text-cyber-yellow',
+            confirmBtn: 'cyber-btn border-cyber-yellow text-cyber-yellow',
+        },
+        danger: {
+            border: 'border-cyber-red/30',
+            header: 'border-cyber-red/20',
+            title: 'text-cyber-red',
+            iconBg: 'bg-cyber-red/10',
+            icon: 'text-cyber-red',
+            confirmBtn: 'cyber-btn cyber-btn-danger',
+        },
+        info: {
+            border: 'border-cyber-blue/30',
+            header: 'border-cyber-blue/20',
+            title: 'text-cyber-blue',
+            iconBg: 'bg-cyber-blue/10',
+            icon: 'text-cyber-blue',
+            confirmBtn: 'cyber-btn',
+        },
+    };
+
+    let modalConfirmHandler = null;
+    let modalCancelHandler = null;
+
+    function applyModalTone(tone) {
+        const style = toneStyles[tone] || toneStyles.info;
+        modalCard.className = `cyber-card w-full max-w-lg overflow-hidden border ${style.border}`;
+        modalHeader.className = `px-6 py-4 border-b flex items-center gap-3 ${style.header}`;
+        modalTitle.className = `font-cyber text-lg ${style.title}`;
+        modalIcon.className = `w-10 h-10 rounded-lg flex items-center justify-center ${style.iconBg} ${style.icon}`;
+        modalConfirmBtn.className = `px-4 py-2 rounded-lg font-mono ${style.confirmBtn}`;
+    }
+
+    function openModal({
+        title,
+        message,
+        tone = 'info',
+        confirmText = 'Confirm',
+        cancelText = 'Cancel',
+        showConfirm = true,
+        showCancel = true,
+        statusText = '',
+        onConfirm = null,
+        onCancel = null,
+    }) {
+        applyModalTone(tone);
+        modalTitle.textContent = title || 'SYSTEM NOTICE';
+        modalMessage.textContent = message || '';
+        modalSubtitle.textContent = tone === 'danger' ? '// CRITICAL ACTION' : '// ACTION REQUIRED';
+
+        modalConfirmBtn.textContent = confirmText;
+        modalCancelBtn.textContent = cancelText;
+        modalConfirmBtn.classList.toggle('hidden', !showConfirm);
+        modalCancelBtn.classList.toggle('hidden', !showCancel);
+        modalActions.classList.toggle('hidden', !(showConfirm || showCancel));
+
+        modalStatusText.textContent = statusText;
+        modalStatus.classList.toggle('hidden', !statusText);
+
+        modalConfirmHandler = onConfirm;
+        modalCancelHandler = onCancel;
+
+        modalOverlay.classList.remove('hidden');
+        modalOverlay.classList.add('flex');
+    }
+
+    function closeModal() {
+        modalOverlay.classList.add('hidden');
+        modalOverlay.classList.remove('flex');
+        modalConfirmHandler = null;
+        modalCancelHandler = null;
+        modalStatusText.textContent = '';
+        modalStatus.classList.add('hidden');
+    }
+
+    modalConfirmBtn.addEventListener('click', () => {
+        const handler = modalConfirmHandler;
+        closeModal();
+        if (handler) handler();
+    });
+
+    modalCancelBtn.addEventListener('click', () => {
+        const handler = modalCancelHandler;
+        closeModal();
+        if (handler) handler();
+    });
+
+    function confirmAction(options) {
+        return new Promise(resolve => {
+            openModal({
+                ...options,
+                onConfirm: () => resolve(true),
+                onCancel: () => resolve(false),
+            });
+        });
+    }
+
+    function showToast({ message, tone = 'info', duration = 3200 }) {
+        if (!toastContainer) return;
+
+        const style = toneStyles[tone] || toneStyles.info;
+        const toast = document.createElement('div');
+        toast.className = `cyber-card border ${style.border} shadow-lg`;
+
+        const body = document.createElement('div');
+        body.className = 'flex items-start gap-3 p-4';
+
+        const icon = document.createElement('div');
+        icon.className = `w-9 h-9 rounded-lg flex items-center justify-center ${style.iconBg} ${style.icon}`;
+        icon.innerHTML = '<svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M12 18a6 6 0 100-12 6 6 0 000 12z" /></svg>';
+
+        const text = document.createElement('div');
+        text.className = 'text-sm font-mono text-gray-300';
+        text.textContent = message;
+
+        const closeBtn = document.createElement('button');
+        closeBtn.className = 'text-gray-500 hover:text-gray-300 transition-colors';
+        closeBtn.innerHTML = '<svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" /></svg>';
+        closeBtn.addEventListener('click', () => toast.remove());
+
+        body.appendChild(icon);
+        body.appendChild(text);
+        body.appendChild(closeBtn);
+        toast.appendChild(body);
+        toastContainer.appendChild(toast);
+
+        setTimeout(() => {
+            toast.classList.add('opacity-0');
+            setTimeout(() => toast.remove(), 200);
+        }, duration);
+    }
+
+    async function waitForServer({ timeoutMs = 45000, intervalMs = 1500 } = {}) {
+        const start = Date.now();
+        while (Date.now() - start < timeoutMs) {
+            try {
+                const response = await fetch('/health', { cache: 'no-store' });
+                if (response.ok) {
+                    return true;
+                }
+            } catch (error) {
+                // ignore while server is down
+            }
+            await new Promise(resolve => setTimeout(resolve, intervalMs));
+        }
+        return false;
+    }
+
     async function saveSettings(event) {
         event.preventDefault();
 
@@ -300,35 +508,35 @@
 
             // Validation
             if (maxContextSize < defaultContextSize) {
-                alert('Max Context Size must be greater than or equal to Default Context Size');
+                showToast({ tone: 'warning', message: 'Max Context Size must be greater than or equal to Default Context Size.' });
                 saveBtn.disabled = false;
                 saveBtn.innerHTML = originalText;
                 return;
             }
 
             if (defaultContextSize < 1024 || maxContextSize < 1024) {
-                alert('Context sizes must be at least 1024');
+                showToast({ tone: 'warning', message: 'Context sizes must be at least 1024.' });
                 saveBtn.disabled = false;
                 saveBtn.innerHTML = originalText;
                 return;
             }
 
             if (modelIdleTimeout < 60) {
-                alert('Idle timeout must be at least 60 seconds');
+                showToast({ tone: 'warning', message: 'Idle timeout must be at least 60 seconds.' });
                 saveBtn.disabled = false;
                 saveBtn.innerHTML = originalText;
                 return;
             }
 
             if (maxLoadedModels < 1) {
-                alert('Max loaded models must be at least 1');
+                showToast({ tone: 'warning', message: 'Max loaded models must be at least 1.' });
                 saveBtn.disabled = false;
                 saveBtn.innerHTML = originalText;
                 return;
             }
 
             if (maxMemoryPercent < 50 || maxMemoryPercent > 95) {
-                alert('Max memory percent must be between 50 and 95');
+                showToast({ tone: 'warning', message: 'Max memory percent must be between 50 and 95.' });
                 saveBtn.disabled = false;
                 saveBtn.innerHTML = originalText;
                 return;
@@ -368,19 +576,19 @@
                         errorMsg += settings[i].key + ' (HTTP ' + failures[i].value.status + '), ';
                     }
                 }
-                alert(errorMsg.slice(0, -2));
+                showToast({ tone: 'danger', message: errorMsg.slice(0, -2) });
                 saveBtn.disabled = false;
                 saveBtn.innerHTML = originalText;
                 return;
             }
 
             // Success - reload page to show updated values
-            alert('Settings saved successfully!');
-            location.reload();
+            showToast({ tone: 'success', message: 'Settings saved successfully.' });
+            setTimeout(() => location.reload(), 800);
 
         } catch (error) {
             console.error('Error saving settings:', error);
-            alert('Error saving settings: ' + error.message);
+            showToast({ tone: 'danger', message: 'Error saving settings: ' + error.message });
             saveBtn.disabled = false;
             saveBtn.innerHTML = originalText;
         }
@@ -389,16 +597,26 @@
     async function setAdminPassword() {
         const password = document.getElementById('adminPassword').value;
         if (!password) {
-            alert('Please enter a password');
+            showToast({ tone: 'warning', message: 'Please enter a password.' });
             return;
         }
 
         // Note: This would typically call an endpoint to set the password
-        alert('Password setting requires server restart with CYBER_INFERENCE_ADMIN_PASSWORD environment variable');
+        showToast({
+            tone: 'info',
+            message: 'Password setting requires a server restart with CYBER_INFERENCE_ADMIN_PASSWORD.',
+        });
     }
 
     async function unloadAllModels() {
-        if (!confirm('Unload all models? Active requests will be interrupted.')) return;
+        const confirmed = await confirmAction({
+            tone: 'warning',
+            title: 'Unload All Models',
+            message: 'Unload all models? Active requests will be interrupted.',
+            confirmText: 'Unload',
+            cancelText: 'Cancel',
+        });
+        if (!confirmed) return;
 
         try {
             const response = await fetch('/admin/sessions');
@@ -413,35 +631,76 @@
             location.reload();
         } catch (error) {
             console.error('Error:', error);
-            alert('Error unloading models');
+            showToast({ tone: 'danger', message: 'Error unloading models.' });
         }
     }
 
     async function restartServer() {
-        if (!confirm('Restart the server to apply saved settings? Active requests will be interrupted.')) return;
+        const confirmed = await confirmAction({
+            tone: 'warning',
+            title: 'Restart Server',
+            message: 'Restart the server to apply saved settings? Active requests will be interrupted.',
+            confirmText: 'Restart',
+            cancelText: 'Cancel',
+        });
+        if (!confirmed) return;
 
         try {
+            openModal({
+                tone: 'warning',
+                title: 'Restarting Server',
+                message: 'Shutting down the server and waiting for it to come back online.',
+                showConfirm: false,
+                showCancel: false,
+                statusText: 'Waiting for server to respond...',
+            });
             await fetch('/admin/shutdown', {
                 method: 'POST',
             });
-            alert('Server is shutting down. Restart it to apply the saved settings.');
         } catch (error) {
             console.error('Error:', error);
-            alert('Error restarting server');
+            closeModal();
+            showToast({ tone: 'danger', message: 'Error restarting server.' });
+            return;
         }
+
+        const ready = await waitForServer();
+        if (ready) {
+            location.reload();
+            return;
+        }
+
+        openModal({
+            tone: 'warning',
+            title: 'Restart In Progress',
+            message: 'The server is taking longer to come back. You can retry the page once it is online.',
+            confirmText: 'Reload Now',
+            cancelText: 'Close',
+            onConfirm: () => location.reload(),
+            onCancel: () => {},
+        });
     }
 
     async function shutdownServer() {
-        if (!confirm('Shutdown the server? This will stop all inference.')) return;
+        const confirmed = await confirmAction({
+            tone: 'danger',
+            title: 'Shutdown Server',
+            message: 'Shutdown the server? This will stop all inference.',
+            confirmText: 'Shutdown',
+            cancelText: 'Cancel',
+        });
+        if (!confirmed) return;
 
         try {
             await fetch('/admin/shutdown', {
                 method: 'POST',
             });
-            alert('Server is shutting down...');
+            showToast({ tone: 'warning', message: 'Server is shutting down...' });
         } catch (error) {
             console.error('Error:', error);
+            showToast({ tone: 'danger', message: 'Error shutting down server.' });
         }
     }
 </script>
 {% endblock %}
+
