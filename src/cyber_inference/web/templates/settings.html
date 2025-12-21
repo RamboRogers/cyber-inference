@@ -205,12 +205,19 @@
                     <div class="flex space-x-2">
                         <input type="password" id="adminPassword"
                                placeholder="Enter new password"
-                               class="cyber-input flex-1 px-4 py-2 rounded-lg font-mono">
+                               class="cyber-input flex-1 px-4 py-2 rounded-lg font-mono"
+                               {% if admin_enabled %}disabled{% endif %}>
                         <button onclick="setAdminPassword()"
-                                class="cyber-btn px-4 py-2 rounded-lg font-mono">
+                                class="cyber-btn px-4 py-2 rounded-lg font-mono"
+                                {% if admin_enabled %}disabled{% endif %}>
                             Set
                         </button>
                     </div>
+                    {% if admin_enabled %}
+                    <p class="text-xs text-gray-500 mt-1">
+                        Admin password is already set. Disable protection to change it.
+                    </p>
+                    {% endif %}
                 </div>
             </div>
         </div>
