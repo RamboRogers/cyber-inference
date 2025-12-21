@@ -50,7 +50,7 @@ RUN set -eux; \
         -DGGML_CUDA=ON \
         -DLLAMA_CURL=ON \
         -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_CUDA_ARCHITECTURES="72;87;89;90"; \
+        -DCMAKE_CUDA_ARCHITECTURES="87;89;90"; \
     cmake --build /tmp/llama.cpp/build -j$(nproc) --target llama-server; \
     mkdir -p /app/bin; \
     # Copy llama-server and all shared libraries
