@@ -52,73 +52,93 @@
             </div>
         </div>
 
-        <!-- Model Settings -->
-        <div class="cyber-card rounded-xl overflow-hidden">
-            <div class="px-6 py-4 border-b border-cyber-neon/20">
-                <h2 class="font-cyber text-xl font-semibold text-cyber-neon flex items-center space-x-2">
-                    <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4" />
-                    </svg>
-                    <span>MODEL SETTINGS</span>
-                </h2>
-            </div>
-            <div class="p-6 space-y-4">
-                <div>
-                    <label class="block text-sm font-mono text-gray-400 mb-2">Default Context Size</label>
-                    <input type="number" value="{{ settings.default_context_size }}"
-                           class="cyber-input w-full px-4 py-2 rounded-lg font-mono">
+        <!-- Settings Form -->
+        <form id="settingsForm" onsubmit="saveSettings(event)">
+            <!-- Model Settings -->
+            <div class="cyber-card rounded-xl overflow-hidden">
+                <div class="px-6 py-4 border-b border-cyber-neon/20">
+                    <h2 class="font-cyber text-xl font-semibold text-cyber-neon flex items-center space-x-2">
+                        <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4" />
+                        </svg>
+                        <span>MODEL SETTINGS</span>
+                    </h2>
                 </div>
-                <div>
-                    <label class="block text-sm font-mono text-gray-400 mb-2">Max Context Size</label>
-                    <input type="number" value="{{ settings.max_context_size }}"
-                           class="cyber-input w-full px-4 py-2 rounded-lg font-mono">
-                </div>
-                <div>
-                    <label class="block text-sm font-mono text-gray-400 mb-2">Idle Timeout (seconds)</label>
-                    <input type="number" value="{{ settings.model_idle_timeout }}"
-                           class="cyber-input w-full px-4 py-2 rounded-lg font-mono">
-                    <p class="text-xs text-gray-500 mt-1">Models unload after this idle time</p>
-                </div>
-                <div>
-                    <label class="block text-sm font-mono text-gray-400 mb-2">Max Loaded Models</label>
-                    <input type="number" value="{{ settings.max_loaded_models }}"
-                           class="cyber-input w-full px-4 py-2 rounded-lg font-mono">
-                </div>
-            </div>
-        </div>
-
-        <!-- Resource Limits -->
-        <div class="cyber-card rounded-xl overflow-hidden">
-            <div class="px-6 py-4 border-b border-cyber-neon/20">
-                <h2 class="font-cyber text-xl font-semibold text-cyber-neon flex items-center space-x-2">
-                    <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-                    </svg>
-                    <span>RESOURCE LIMITS</span>
-                </h2>
-            </div>
-            <div class="p-6 space-y-4">
-                <div>
-                    <label class="block text-sm font-mono text-gray-400 mb-2">
-                        Max Memory Usage (%)
-                    </label>
-                    <input type="range" min="50" max="95" value="{{ settings.max_memory_percent }}"
-                           class="w-full" id="memoryRange"
-                           oninput="document.getElementById('memoryValue').textContent = this.value + '%'">
-                    <div class="flex justify-between text-xs font-mono text-gray-500 mt-1">
-                        <span>50%</span>
-                        <span id="memoryValue">{{ settings.max_memory_percent }}%</span>
-                        <span>95%</span>
+                <div class="p-6 space-y-4">
+                    <div>
+                        <label class="block text-sm font-mono text-gray-400 mb-2">Default Context Size</label>
+                        <input type="number" id="default_context_size" name="default_context_size"
+                               value="{{ settings.default_context_size }}"
+                               class="cyber-input w-full px-4 py-2 rounded-lg font-mono" min="1024" required>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-mono text-gray-400 mb-2">Max Context Size</label>
+                        <input type="number" id="max_context_size" name="max_context_size"
+                               value="{{ settings.max_context_size }}"
+                               class="cyber-input w-full px-4 py-2 rounded-lg font-mono" min="1024" required>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-mono text-gray-400 mb-2">Idle Timeout (seconds)</label>
+                        <input type="number" id="model_idle_timeout" name="model_idle_timeout"
+                               value="{{ settings.model_idle_timeout }}"
+                               class="cyber-input w-full px-4 py-2 rounded-lg font-mono" min="60" required>
+                        <p class="text-xs text-gray-500 mt-1">Models unload after this idle time</p>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-mono text-gray-400 mb-2">Max Loaded Models</label>
+                        <input type="number" id="max_loaded_models" name="max_loaded_models"
+                               value="{{ settings.max_loaded_models }}"
+                               class="cyber-input w-full px-4 py-2 rounded-lg font-mono" min="1" required>
                     </div>
                 </div>
-                <div>
-                    <label class="block text-sm font-mono text-gray-400 mb-2">GPU Layers</label>
-                    <input type="number" value="{{ settings.llama_gpu_layers }}"
-                           class="cyber-input w-full px-4 py-2 rounded-lg font-mono">
-                    <p class="text-xs text-gray-500 mt-1">-1 = auto, 0 = CPU only</p>
+            </div>
+
+            <!-- Resource Limits -->
+            <div class="cyber-card rounded-xl overflow-hidden">
+                <div class="px-6 py-4 border-b border-cyber-neon/20">
+                    <h2 class="font-cyber text-xl font-semibold text-cyber-neon flex items-center space-x-2">
+                        <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                        </svg>
+                        <span>RESOURCE LIMITS</span>
+                    </h2>
+                </div>
+                <div class="p-6 space-y-4">
+                    <div>
+                        <label class="block text-sm font-mono text-gray-400 mb-2">
+                            Max Memory Usage (%)
+                        </label>
+                        <input type="range" id="max_memory_percent" name="max_memory_percent"
+                               min="50" max="95" value="{{ settings.max_memory_percent }}"
+                               class="w-full"
+                               oninput="document.getElementById('memoryValue').textContent = this.value + '%'">
+                        <div class="flex justify-between text-xs font-mono text-gray-500 mt-1">
+                            <span>50%</span>
+                            <span id="memoryValue">{{ settings.max_memory_percent }}%</span>
+                            <span>95%</span>
+                        </div>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-mono text-gray-400 mb-2">GPU Layers</label>
+                        <input type="number" id="llama_gpu_layers" name="llama_gpu_layers"
+                               value="{{ settings.llama_gpu_layers }}"
+                               class="cyber-input w-full px-4 py-2 rounded-lg font-mono" min="-1" required>
+                        <p class="text-xs text-gray-500 mt-1">-1 = auto, 0 = CPU only</p>
+                    </div>
                 </div>
             </div>
-        </div>
+
+            <!-- Save Button -->
+            <div class="flex justify-end mt-6">
+                <button type="submit" id="saveSettingsBtn"
+                        class="cyber-btn px-6 py-3 rounded-lg font-mono inline-flex items-center space-x-2">
+                    <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+                    </svg>
+                    <span>Save Settings</span>
+                </button>
+            </div>
+        </form>
 
         <!-- Security Settings -->
         <div class="cyber-card rounded-xl overflow-hidden">
@@ -227,6 +247,113 @@
 
 {% block scripts %}
 <script>
+    async function saveSettings(event) {
+        event.preventDefault();
+
+        const saveBtn = document.getElementById('saveSettingsBtn');
+        const originalText = saveBtn.innerHTML;
+
+        // Disable button and show loading state
+        saveBtn.disabled = true;
+        saveBtn.innerHTML = '<svg class="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg><span>Saving...</span>';
+
+        try {
+            // Collect all values
+            const defaultContextSize = parseInt(document.getElementById('default_context_size').value);
+            const maxContextSize = parseInt(document.getElementById('max_context_size').value);
+            const modelIdleTimeout = parseInt(document.getElementById('model_idle_timeout').value);
+            const maxLoadedModels = parseInt(document.getElementById('max_loaded_models').value);
+            const maxMemoryPercent = parseInt(document.getElementById('max_memory_percent').value);
+            const llamaGpuLayers = parseInt(document.getElementById('llama_gpu_layers').value);
+
+            // Validation
+            if (maxContextSize < defaultContextSize) {
+                alert('Max Context Size must be greater than or equal to Default Context Size');
+                saveBtn.disabled = false;
+                saveBtn.innerHTML = originalText;
+                return;
+            }
+
+            if (defaultContextSize < 1024 || maxContextSize < 1024) {
+                alert('Context sizes must be at least 1024');
+                saveBtn.disabled = false;
+                saveBtn.innerHTML = originalText;
+                return;
+            }
+
+            if (modelIdleTimeout < 60) {
+                alert('Idle timeout must be at least 60 seconds');
+                saveBtn.disabled = false;
+                saveBtn.innerHTML = originalText;
+                return;
+            }
+
+            if (maxLoadedModels < 1) {
+                alert('Max loaded models must be at least 1');
+                saveBtn.disabled = false;
+                saveBtn.innerHTML = originalText;
+                return;
+            }
+
+            if (maxMemoryPercent < 50 || maxMemoryPercent > 95) {
+                alert('Max memory percent must be between 50 and 95');
+                saveBtn.disabled = false;
+                saveBtn.innerHTML = originalText;
+                return;
+            }
+
+            // Settings to save
+            const settings = [
+                { key: 'default_context_size', value: defaultContextSize },
+                { key: 'max_context_size', value: maxContextSize },
+                { key: 'model_idle_timeout', value: modelIdleTimeout },
+                { key: 'max_loaded_models', value: maxLoadedModels },
+                { key: 'max_memory_percent', value: maxMemoryPercent },
+                { key: 'llama_gpu_layers', value: llamaGpuLayers },
+            ];
+
+            // Save each setting
+            const results = await Promise.allSettled(
+                settings.map(setting =>
+                    fetch(`/admin/config/${setting.key}`, {
+                        method: 'PUT',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({ value: setting.value }),
+                    })
+                )
+            );
+
+            // Check for failures
+            const failures = results.filter(r => r.status === 'rejected' || !r.value.ok);
+            if (failures.length > 0) {
+                let errorMsg = 'Failed to save some settings: ';
+                for (let i = 0; i < failures.length; i++) {
+                    if (failures[i].status === 'rejected') {
+                        errorMsg += settings[i].key + ' (network error), ';
+                    } else {
+                        errorMsg += settings[i].key + ' (HTTP ' + failures[i].value.status + '), ';
+                    }
+                }
+                alert(errorMsg.slice(0, -2));
+                saveBtn.disabled = false;
+                saveBtn.innerHTML = originalText;
+                return;
+            }
+
+            // Success - reload page to show updated values
+            alert('Settings saved successfully!');
+            location.reload();
+
+        } catch (error) {
+            console.error('Error saving settings:', error);
+            alert('Error saving settings: ' + error.message);
+            saveBtn.disabled = false;
+            saveBtn.innerHTML = originalText;
+        }
+    }
+
     async function setAdminPassword() {
         const password = document.getElementById('adminPassword').value;
         if (!password) {
