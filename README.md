@@ -63,6 +63,8 @@ Visit **http://localhost:8337** to access the web interface.
 
 ### First Steps
 
+<img src="download.png">
+
 1. Open the web GUI at http://localhost:8337
 2. Navigate to **Models** and download a model (e.g., `Qwen/Qwen3-VL-4B-Instruct-GGUF`)
 3. The model will automatically load when you make an API request

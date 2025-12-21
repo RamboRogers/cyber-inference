@@ -405,37 +405,57 @@ async def embeddings(
         logger.error(f"[error]Failed to load model: {e}[/error]")
         raise HTTPException(status_code=503, detail=f"Failed to load model: {e}")
 
-    # Prepare input
+    # Prepare input - OpenAI API accepts string or array of strings
     inputs = request.input if isinstance(request.input, list) else [request.input]
+    logger.info(f"  Inputs: {len(inputs)} text(s)")
+
+    embeddings_data = []
+    total_tokens = 0
 
     try:
         async with httpx.AsyncClient(timeout=120) as client:
-            response = await client.post(
-                f"{server_url}/embedding",
-                json={"content": inputs[0]},  # llama.cpp takes one at a time
-            )
-            response.raise_for_status()
-            result = response.json()
+            # Process each input (llama.cpp takes one at a time)
+            for idx, text in enumerate(inputs):
+                response = await client.post(
+                    f"{server_url}/embedding",
+                    json={"content": text},
+                )
+                response.raise_for_status()
+                result = response.json()
+
+                # Parse llama.cpp response format: [{"index": 0, "embedding": [[...]]}]
+                if isinstance(result, list) and len(result) > 0:
+                    item = result[0]
+                    embedding = item.get("embedding", [])
+                    # embedding might be nested [[...]] or flat [...]
+                    if isinstance(embedding, list) and len(embedding) > 0:
+                        if isinstance(embedding[0], list):
+                            embedding = embedding[0]  # Unnest
+                else:
+                    # Fallback for simple format {"embedding": [...]}
+                    embedding = result.get("embedding", [])
+
+                embeddings_data.append({
+                    "object": "embedding",
+                    "index": idx,
+                    "embedding": embedding,
+                })
+
+                # Rough token count (approximation)
+                total_tokens += len(text.split())
+
     except httpx.HTTPError as e:
         logger.error(f"[error]Embedding request failed: {e}[/error]")
         raise HTTPException(status_code=502, detail=f"Inference server error: {e}")
 
     await auto_loader.record_request(request.model)
 
-    embeddings_data = []
-    embedding = result.get("embedding", [])
-    embeddings_data.append({
-        "object": "embedding",
-        "index": 0,
-        "embedding": embedding,
-    })
-
     return EmbeddingResponse(
         data=embeddings_data,
         model=request.model,
         usage={
-            "prompt_tokens": len(inputs[0].split()),
-            "total_tokens": len(inputs[0].split()),
+            "prompt_tokens": total_tokens,
+            "total_tokens": total_tokens,
         },
     )
 

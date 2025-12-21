@@ -150,6 +150,7 @@ class ProcessManager:
         context_size: Optional[int] = None,
         gpu_layers: Optional[int] = None,
         threads: Optional[int] = None,
+        embedding: bool = False,
     ) -> LlamaProcess:
         """
         Start a new llama-server process for a model.
@@ -196,6 +197,11 @@ class ProcessManager:
 
         if n_threads:
             cmd.extend(["--threads", str(n_threads)])
+
+        # Enable embedding endpoint for embedding models
+        if embedding:
+            cmd.append("--embedding")
+            logger.info("  Embedding mode enabled")
 
         logger.debug(f"  Command: {' '.join(cmd)}")
 

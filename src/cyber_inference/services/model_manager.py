@@ -302,9 +302,26 @@ class ModelManager:
                 existing.size_bytes = size_bytes
                 existing.is_downloaded = True
                 existing.download_progress = 100.0
+
+                # Auto-detect model type if not set
+                if not existing.model_type:
+                    name_lower = model_name.lower()
+                    embedding_patterns = ["embed", "bge", "e5-", "gte-", "stella", "nomic"]
+                    if any(pattern in name_lower for pattern in embedding_patterns):
+                        existing.model_type = "embedding"
+                        logger.info(f"  Auto-detected model type: embedding")
+
                 await session.commit()
                 logger.debug(f"Updated existing model record: {model_name}")
                 return existing
+
+            # Auto-detect model type from name
+            model_type = None
+            name_lower = model_name.lower()
+            embedding_patterns = ["embed", "bge", "e5-", "gte-", "stella", "nomic"]
+            if any(pattern in name_lower for pattern in embedding_patterns):
+                model_type = "embedding"
+                logger.info(f"  Auto-detected model type: embedding")
 
             # Create new record
             model = Model(
@@ -315,6 +332,7 @@ class ModelManager:
                 hf_filename=filename,
                 size_bytes=size_bytes,
                 quantization=quantization,
+                model_type=model_type,
                 is_downloaded=True,
                 download_progress=100.0,
             )

@@ -244,15 +244,32 @@ class AutoLoader:
         mm = self._get_model_manager()
         pm = self._get_process_manager()
 
-        # Get model path
+        # Get model info (includes path and type)
+        model_info = await mm.get_model(model_name)
+        if not model_info:
+            raise ValueError(f"Model not found: {model_name}")
+
         model_path = await mm.get_model_path(model_name)
         if not model_path:
-            raise ValueError(f"Model not found: {model_name}")
+            raise ValueError(f"Model path not found: {model_name}")
 
         logger.debug(f"Model path: {model_path}")
 
+        # Check if it's an embedding model (by type or name patterns)
+        model_type = model_info.get("model_type")
+        is_embedding = model_type == "embedding"
+
+        # Auto-detect embedding models by name if type not set
+        if not is_embedding:
+            name_lower = model_name.lower()
+            embedding_patterns = ["embed", "bge", "e5-", "gte-", "stella", "nomic"]
+            is_embedding = any(pattern in name_lower for pattern in embedding_patterns)
+
+        if is_embedding:
+            logger.info(f"  Model type: embedding")
+
         # Start the server
-        proc = await pm.start_server(model_name, model_path)
+        proc = await pm.start_server(model_name, model_path, embedding=is_embedding)
 
         if proc.status != "running":
             raise RuntimeError(f"Failed to start server: {proc.error_message}")
