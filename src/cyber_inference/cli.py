@@ -33,7 +33,7 @@ def serve(
     host: str = typer.Option("0.0.0.0", "--host", "-h", help="Host to bind to"),
     port: int = typer.Option(8337, "--port", "-p", help="Port to bind to"),
     reload: bool = typer.Option(False, "--reload", "-r", help="Enable auto-reload for development"),
-    log_level: str = typer.Option("debug", "--log-level", "-l", help="Log level (debug, info, warning, error)"),
+    log_level: str = typer.Option("info", "--log-level", "-l", help="Log level (debug, info, warning, error)"),
     data_dir: Optional[Path] = typer.Option(None, "--data-dir", "-d", help="Data directory path"),
     models_dir: Optional[Path] = typer.Option(None, "--models-dir", "-m", help="Models directory path"),
 ) -> None:
@@ -86,14 +86,26 @@ def serve(
     os.environ["CYBER_INFERENCE_DATA_DIR"] = str(data_dir)
     os.environ["CYBER_INFERENCE_MODELS_DIR"] = str(models_dir)
 
-    # Run the server
+    # Configure uvicorn loggers to suppress verbose debug messages
+    # Always use 'info' for uvicorn to prevent WebSocket/connection debug spam
+    # Our application logging is configured separately, so this only affects uvicorn's internal logs
+    uvicorn_logger = logging.getLogger("uvicorn")
+    uvicorn_error_logger = logging.getLogger("uvicorn.error")
+    uvicorn_access_logger = logging.getLogger("uvicorn.access")
+
+    # Set uvicorn loggers to INFO to suppress DEBUG messages
+    uvicorn_logger.setLevel(logging.INFO)
+    uvicorn_error_logger.setLevel(logging.INFO)
+    uvicorn_access_logger.setLevel(logging.INFO if level <= logging.INFO else logging.WARNING)
+
+    # Run the server with uvicorn log level set to 'info' to suppress debug messages
     uvicorn.run(
         "cyber_inference.main:app",
         host=host,
         port=port,
         reload=reload,
-        log_level=log_level.lower(),
-        access_log=True,
+        log_level="info",  # Always use 'info' to suppress uvicorn's verbose debug output
+        access_log=(level <= logging.INFO),
     )
 
 
