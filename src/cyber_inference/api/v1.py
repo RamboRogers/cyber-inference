@@ -60,6 +60,35 @@ def get_auto_loader() -> AutoLoader:
     return _auto_loader
 
 
+def _guess_image_mime(base64_data: str) -> str:
+    if base64_data.startswith("/9j/"):
+        return "image/jpeg"
+    if base64_data.startswith("iVBORw0KGgo"):
+        return "image/png"
+    if base64_data.startswith("R0lGOD"):
+        return "image/gif"
+    if base64_data.startswith("UklGR"):
+        return "image/webp"
+    return "image/png"
+
+
+def _normalize_image_url_value(value):
+    if isinstance(value, str):
+        trimmed = value.strip()
+        if not trimmed:
+            return value
+        if trimmed.startswith("data:") or trimmed.startswith("http://") or trimmed.startswith("https://"):
+            return trimmed
+        mime = _guess_image_mime(trimmed)
+        return f"data:{mime};base64,{trimmed}"
+    if isinstance(value, dict):
+        url_value = value.get("url")
+        if isinstance(url_value, str):
+            value["url"] = _normalize_image_url_value(url_value)
+        return value
+    return value
+
+
 def _normalize_content_part(part):
     if hasattr(part, "model_dump"):
         data = part.model_dump(exclude_none=True)
@@ -70,8 +99,11 @@ def _normalize_content_part(part):
 
     if data.get("type") == "image_url":
         image_value = data.get("image_url")
+        image_value = _normalize_image_url_value(image_value)
         if isinstance(image_value, str):
             data["image_url"] = {"url": image_value}
+        else:
+            data["image_url"] = image_value
     return data
 
 
@@ -173,6 +205,7 @@ async def chat_completions(
     logger.debug(f"  Server URL: {server_url}")
 
     # Prepare request for llama-server
+    token_limit = request.max_tokens or 512
     llama_request = {
         "messages": [
             {
@@ -184,7 +217,8 @@ async def chat_completions(
         ],
         "temperature": request.temperature,
         "top_p": request.top_p,
-        "n_predict": request.max_tokens or 512,
+        "n_predict": token_limit,
+        "max_tokens": token_limit,
         "stream": request.stream,
     }
 
@@ -203,6 +237,12 @@ async def chat_completions(
                 f"{server_url}/v1/chat/completions",
                 json=llama_request,
             )
+            if response.status_code >= 400:
+                logger.error(
+                    "[error]llama-server error %s: %s[/error]",
+                    response.status_code,
+                    response.text.strip() or "no response body",
+                )
             response.raise_for_status()
             result = response.json()
     except httpx.HTTPError as e:
@@ -263,7 +303,14 @@ async def _stream_chat_completion(
                 f"{server_url}/v1/chat/completions",
                 json=request,
             ) as response:
-                response.raise_for_status()
+                if response.status_code >= 400:
+                    error_body = (await response.aread()).decode("utf-8", "ignore")
+                    logger.error(
+                        "[error]llama-server error %s: %s[/error]",
+                        response.status_code,
+                        error_body.strip() or "no response body",
+                    )
+                    response.raise_for_status()
 
                 async for line in response.aiter_lines():
                     if line.startswith("data: "):
