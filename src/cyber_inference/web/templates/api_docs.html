@@ -1,0 +1,192 @@
+{% extends "base.html" %}
+
+{% block title %}API Documentation | {{ app_name }}{% endblock %}
+
+{% block content %}
+<div class="space-y-8">
+    <!-- Header -->
+    <div>
+        <h1 class="font-cyber text-3xl font-bold text-cyber-neon neon-text-subtle">
+            API DOCUMENTATION
+        </h1>
+        <p class="mt-1 text-gray-400 font-mono text-sm">
+            // OpenAI-compatible REST API
+        </p>
+    </div>
+
+    <!-- Quick Links -->
+    <div class="flex flex-wrap gap-4">
+        <a href="/docs" class="cyber-btn px-4 py-2 rounded-lg font-mono text-sm inline-flex items-center space-x-2">
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            </svg>
+            <span>Interactive Swagger Docs</span>
+        </a>
+        <a href="/redoc" class="cyber-btn px-4 py-2 rounded-lg font-mono text-sm inline-flex items-center space-x-2">
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+            </svg>
+            <span>ReDoc</span>
+        </a>
+    </div>
+
+    <!-- Base URL -->
+    <div class="cyber-card rounded-xl p-6">
+        <h2 class="font-cyber text-xl font-semibold text-cyber-neon mb-4">BASE URL</h2>
+        <code class="block p-4 bg-cyber-black rounded-lg font-mono text-cyber-neon">
+            http://localhost:8337
+        </code>
+    </div>
+
+    <!-- Endpoints -->
+    <div class="space-y-6">
+        <!-- Chat Completions -->
+        <div class="cyber-card rounded-xl overflow-hidden">
+            <div class="px-6 py-4 border-b border-cyber-neon/20 flex items-center justify-between">
+                <div class="flex items-center space-x-3">
+                    <span class="px-3 py-1 text-xs font-mono rounded bg-cyber-neon/20 text-cyber-neon">POST</span>
+                    <code class="font-mono text-white">/v1/chat/completions</code>
+                </div>
+            </div>
+            <div class="p-6">
+                <p class="text-gray-400 mb-4">Create a chat completion. Compatible with OpenAI's API.</p>
+
+                <h4 class="font-mono text-cyber-neon text-sm mb-2">Request Body</h4>
+                <pre class="p-4 bg-cyber-black rounded-lg overflow-x-auto"><code class="text-sm text-gray-300">{
+  "model": "llama-3.2-3b-instruct",
+  "messages": [
+    {"role": "system", "content": "You are a helpful assistant."},
+    {"role": "user", "content": "Hello!"}
+  ],
+  "temperature": 0.7,
+  "max_tokens": 512,
+  "stream": false
+}</code></pre>
+
+                <h4 class="font-mono text-cyber-neon text-sm mt-4 mb-2">Example (curl)</h4>
+                <pre class="p-4 bg-cyber-black rounded-lg overflow-x-auto"><code class="text-sm text-gray-300">curl http://localhost:8337/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "llama-3.2-3b-instruct",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'</code></pre>
+            </div>
+        </div>
+
+        <!-- Completions -->
+        <div class="cyber-card rounded-xl overflow-hidden">
+            <div class="px-6 py-4 border-b border-cyber-neon/20 flex items-center justify-between">
+                <div class="flex items-center space-x-3">
+                    <span class="px-3 py-1 text-xs font-mono rounded bg-cyber-neon/20 text-cyber-neon">POST</span>
+                    <code class="font-mono text-white">/v1/completions</code>
+                </div>
+            </div>
+            <div class="p-6">
+                <p class="text-gray-400 mb-4">Create a text completion (legacy endpoint).</p>
+
+                <h4 class="font-mono text-cyber-neon text-sm mb-2">Request Body</h4>
+                <pre class="p-4 bg-cyber-black rounded-lg overflow-x-auto"><code class="text-sm text-gray-300">{
+  "model": "llama-3.2-3b-instruct",
+  "prompt": "Once upon a time",
+  "max_tokens": 100,
+  "temperature": 0.8
+}</code></pre>
+            </div>
+        </div>
+
+        <!-- Embeddings -->
+        <div class="cyber-card rounded-xl overflow-hidden">
+            <div class="px-6 py-4 border-b border-cyber-neon/20 flex items-center justify-between">
+                <div class="flex items-center space-x-3">
+                    <span class="px-3 py-1 text-xs font-mono rounded bg-cyber-neon/20 text-cyber-neon">POST</span>
+                    <code class="font-mono text-white">/v1/embeddings</code>
+                </div>
+            </div>
+            <div class="p-6">
+                <p class="text-gray-400 mb-4">Generate embeddings for text.</p>
+
+                <h4 class="font-mono text-cyber-neon text-sm mb-2">Request Body</h4>
+                <pre class="p-4 bg-cyber-black rounded-lg overflow-x-auto"><code class="text-sm text-gray-300">{
+  "model": "llama-3.2-3b-instruct",
+  "input": "The quick brown fox"
+}</code></pre>
+            </div>
+        </div>
+
+        <!-- Models -->
+        <div class="cyber-card rounded-xl overflow-hidden">
+            <div class="px-6 py-4 border-b border-cyber-neon/20 flex items-center justify-between">
+                <div class="flex items-center space-x-3">
+                    <span class="px-3 py-1 text-xs font-mono rounded bg-cyber-blue/20 text-cyber-blue">GET</span>
+                    <code class="font-mono text-white">/v1/models</code>
+                </div>
+            </div>
+            <div class="p-6">
+                <p class="text-gray-400 mb-4">List available models.</p>
+
+                <h4 class="font-mono text-cyber-neon text-sm mb-2">Example Response</h4>
+                <pre class="p-4 bg-cyber-black rounded-lg overflow-x-auto"><code class="text-sm text-gray-300">{
+  "object": "list",
+  "data": [
+    {
+      "id": "llama-3.2-3b-instruct",
+      "object": "model",
+      "created": 1234567890,
+      "owned_by": "cyber-inference"
+    }
+  ]
+}</code></pre>
+            </div>
+        </div>
+
+        <!-- Health -->
+        <div class="cyber-card rounded-xl overflow-hidden">
+            <div class="px-6 py-4 border-b border-cyber-neon/20 flex items-center justify-between">
+                <div class="flex items-center space-x-3">
+                    <span class="px-3 py-1 text-xs font-mono rounded bg-cyber-blue/20 text-cyber-blue">GET</span>
+                    <code class="font-mono text-white">/health</code>
+                </div>
+            </div>
+            <div class="p-6">
+                <p class="text-gray-400 mb-4">Health check endpoint.</p>
+
+                <h4 class="font-mono text-cyber-neon text-sm mb-2">Example Response</h4>
+                <pre class="p-4 bg-cyber-black rounded-lg overflow-x-auto"><code class="text-sm text-gray-300">{
+  "status": "healthy",
+  "version": "0.1.0",
+  "service": "cyber-inference"
+}</code></pre>
+            </div>
+        </div>
+    </div>
+
+    <!-- Python Example -->
+    <div class="cyber-card rounded-xl overflow-hidden">
+        <div class="px-6 py-4 border-b border-cyber-neon/20">
+            <h2 class="font-cyber text-xl font-semibold text-cyber-neon">PYTHON EXAMPLE</h2>
+        </div>
+        <div class="p-6">
+            <pre class="p-4 bg-cyber-black rounded-lg overflow-x-auto"><code class="text-sm text-gray-300">from openai import OpenAI
+
+# Point to your local Cyber-Inference server
+client = OpenAI(
+    base_url="http://localhost:8337/v1",
+    api_key="not-needed"  # No API key required by default
+)
+
+response = client.chat.completions.create(
+    model="llama-3.2-3b-instruct",  # Use your downloaded model name
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": "What is the meaning of life?"}
+    ],
+    temperature=0.7,
+    max_tokens=512
+)
+
+print(response.choices[0].message.content)</code></pre>
+        </div>
+    </div>
+</div>
+{% endblock %}
+

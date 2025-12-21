@@ -1,0 +1,241 @@
+{% extends "base.html" %}
+
+{% block title %}Logs | {{ app_name }}{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <!-- Header -->
+    <div class="flex flex-col md:flex-row md:items-center md:justify-between">
+        <div>
+            <h1 class="font-cyber text-3xl font-bold text-cyber-neon neon-text-subtle">
+                SYSTEM LOGS
+            </h1>
+            <p class="mt-1 text-gray-400 font-mono text-sm">
+                // Real-time log streaming
+            </p>
+        </div>
+        <div class="mt-4 md:mt-0 flex items-center space-x-4">
+            <!-- Log Level Filter -->
+            <select id="logLevelFilter"
+                    class="cyber-input px-4 py-2 rounded-lg font-mono text-sm"
+                    onchange="filterLogs()">
+                <option value="all">All Levels</option>
+                <option value="DEBUG">DEBUG</option>
+                <option value="INFO">INFO</option>
+                <option value="WARNING">WARNING</option>
+                <option value="ERROR">ERROR</option>
+            </select>
+
+            <!-- Auto-scroll toggle -->
+            <label class="flex items-center space-x-2 cursor-pointer">
+                <input type="checkbox" id="autoScroll" checked
+                       class="w-4 h-4 rounded bg-cyber-dark border-cyber-neon/50 text-cyber-neon focus:ring-cyber-neon">
+                <span class="text-sm font-mono text-gray-400">Auto-scroll</span>
+            </label>
+
+            <!-- Clear button -->
+            <button onclick="clearLogs()"
+                    class="cyber-btn px-4 py-2 rounded-lg font-mono text-sm">
+                Clear
+            </button>
+        </div>
+    </div>
+
+    <!-- Connection Status -->
+    <div class="flex items-center space-x-2">
+        <span id="connectionStatus" class="w-3 h-3 rounded-full bg-gray-600"></span>
+        <span id="connectionText" class="text-sm font-mono text-gray-400">Connecting...</span>
+    </div>
+
+    <!-- Log Container -->
+    <div class="cyber-card rounded-xl overflow-hidden">
+        <div id="logContainer"
+             class="h-[600px] overflow-y-auto p-4 font-mono text-sm bg-cyber-black/50">
+            <!-- Logs will be inserted here -->
+            <div id="logPlaceholder" class="text-center text-gray-500 py-8">
+                <div class="animate-pulse">Waiting for logs...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Log Stats -->
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div class="bg-cyber-dark/50 rounded-lg p-4 border border-cyber-gray">
+            <div class="text-2xl font-cyber font-bold text-white" id="totalCount">0</div>
+            <div class="text-xs font-mono text-gray-500">Total Logs</div>
+        </div>
+        <div class="bg-cyber-dark/50 rounded-lg p-4 border border-cyber-blue/30">
+            <div class="text-2xl font-cyber font-bold text-cyber-blue" id="infoCount">0</div>
+            <div class="text-xs font-mono text-gray-500">INFO</div>
+        </div>
+        <div class="bg-cyber-dark/50 rounded-lg p-4 border border-cyber-yellow/30">
+            <div class="text-2xl font-cyber font-bold text-cyber-yellow" id="warningCount">0</div>
+            <div class="text-xs font-mono text-gray-500">WARNING</div>
+        </div>
+        <div class="bg-cyber-dark/50 rounded-lg p-4 border border-cyber-red/30">
+            <div class="text-2xl font-cyber font-bold text-cyber-red" id="errorCount">0</div>
+            <div class="text-xs font-mono text-gray-500">ERROR</div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .log-line {
+        padding: 2px 0;
+        border-bottom: 1px solid rgba(0, 255, 159, 0.05);
+    }
+
+    .log-line:hover {
+        background: rgba(0, 255, 159, 0.05);
+    }
+
+    .log-DEBUG { color: #6b7280; }
+    .log-INFO { color: #00d4ff; }
+    .log-WARNING { color: #fbbf24; }
+    .log-ERROR { color: #ef4444; }
+    .log-CRITICAL { color: #dc2626; font-weight: bold; }
+
+    .log-timestamp { color: #4b5563; }
+    .log-module { color: #00ff9f; }
+</style>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    let ws;
+    let logs = [];
+    let logCounts = { DEBUG: 0, INFO: 0, WARNING: 0, ERROR: 0 };
+
+    function connectWebSocket() {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        ws = new WebSocket(`${protocol}//${window.location.host}/ws/logs`);
+
+        ws.onopen = function() {
+            document.getElementById('connectionStatus').className = 'w-3 h-3 rounded-full bg-cyber-neon animate-pulse';
+            document.getElementById('connectionText').textContent = 'Connected';
+            document.getElementById('logPlaceholder').style.display = 'none';
+        };
+
+        ws.onmessage = function(event) {
+            const data = JSON.parse(event.data);
+
+            if (data.type === 'keepalive' || data.type === 'pong') {
+                return;
+            }
+
+            addLogLine(data);
+        };
+
+        ws.onclose = function() {
+            document.getElementById('connectionStatus').className = 'w-3 h-3 rounded-full bg-cyber-red';
+            document.getElementById('connectionText').textContent = 'Disconnected - Reconnecting...';
+            setTimeout(connectWebSocket, 3000);
+        };
+
+        ws.onerror = function(error) {
+            console.error('WebSocket error:', error);
+        };
+
+        // Send ping every 25 seconds
+        setInterval(() => {
+            if (ws.readyState === WebSocket.OPEN) {
+                ws.send('ping');
+            }
+        }, 25000);
+    }
+
+    function addLogLine(log) {
+        logs.push(log);
+
+        // Update counts
+        if (log.level && logCounts.hasOwnProperty(log.level)) {
+            logCounts[log.level]++;
+        }
+        updateCounts();
+
+        // Create log element
+        const container = document.getElementById('logContainer');
+        const line = document.createElement('div');
+        line.className = `log-line log-${log.level}`;
+        line.dataset.level = log.level;
+
+        const timestamp = new Date(log.timestamp).toLocaleTimeString('en-US', {
+            hour12: false,
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            fractionalSecondDigits: 3
+        });
+
+        line.innerHTML = `
+            <span class="log-timestamp">[${timestamp}]</span>
+            <span class="log-${log.level}">[${log.level}]</span>
+            <span class="log-module">${log.module}</span>:
+            <span>${escapeHtml(log.message)}</span>
+        `;
+
+        container.appendChild(line);
+
+        // Apply filter
+        const filter = document.getElementById('logLevelFilter').value;
+        if (filter !== 'all' && log.level !== filter) {
+            line.style.display = 'none';
+        }
+
+        // Auto-scroll
+        if (document.getElementById('autoScroll').checked) {
+            container.scrollTop = container.scrollHeight;
+        }
+
+        // Limit logs in memory
+        if (logs.length > 5000) {
+            logs.shift();
+            const firstLine = container.querySelector('.log-line');
+            if (firstLine) firstLine.remove();
+        }
+    }
+
+    function updateCounts() {
+        document.getElementById('totalCount').textContent = logs.length;
+        document.getElementById('infoCount').textContent = logCounts.INFO;
+        document.getElementById('warningCount').textContent = logCounts.WARNING;
+        document.getElementById('errorCount').textContent = logCounts.ERROR;
+    }
+
+    function filterLogs() {
+        const filter = document.getElementById('logLevelFilter').value;
+        const lines = document.querySelectorAll('.log-line');
+
+        lines.forEach(line => {
+            if (filter === 'all' || line.dataset.level === filter) {
+                line.style.display = '';
+            } else {
+                line.style.display = 'none';
+            }
+        });
+    }
+
+    function clearLogs() {
+        logs = [];
+        logCounts = { DEBUG: 0, INFO: 0, WARNING: 0, ERROR: 0 };
+        updateCounts();
+
+        const container = document.getElementById('logContainer');
+        container.innerHTML = `
+            <div id="logPlaceholder" class="text-center text-gray-500 py-8">
+                <div>Logs cleared. Waiting for new logs...</div>
+            </div>
+        `;
+    }
+
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    // Connect on page load
+    connectWebSocket();
+</script>
+{% endblock %}
+

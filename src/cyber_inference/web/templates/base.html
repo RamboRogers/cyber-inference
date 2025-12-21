@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en" class="dark" style="background: #0a0a0f;">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}{{ app_name }}{% endblock %}</title>
+
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;600;700;800;900&family=Share+Tech+Mono&family=Rajdhani:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Tailwind CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        cyber: {
+                            black: '#0a0a0f',
+                            darker: '#0d0d14',
+                            dark: '#12121a',
+                            gray: '#1a1a24',
+                            light: '#2a2a38',
+                            neon: '#00ff9f',
+                            neonDark: '#00cc7f',
+                            neonGlow: '#00ff9f40',
+                            pink: '#ff00ff',
+                            blue: '#00d4ff',
+                            orange: '#ff6600',
+                            red: '#ff3333',
+                            yellow: '#ffff00',
+                        }
+                    },
+                    fontFamily: {
+                        'cyber': ['Orbitron', 'sans-serif'],
+                        'mono': ['Share Tech Mono', 'monospace'],
+                        'display': ['Rajdhani', 'sans-serif'],
+                    },
+                    animation: {
+                        'pulse-slow': 'pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite',
+                        'glow': 'glow 2s ease-in-out infinite alternate',
+                        'scan': 'scan 8s linear infinite',
+                        'flicker': 'flicker 0.15s infinite',
+                    },
+                    keyframes: {
+                        glow: {
+                            '0%': { boxShadow: '0 0 5px #00ff9f, 0 0 10px #00ff9f, 0 0 15px #00ff9f' },
+                            '100%': { boxShadow: '0 0 10px #00ff9f, 0 0 20px #00ff9f, 0 0 30px #00ff9f' },
+                        },
+                        scan: {
+                            '0%': { backgroundPosition: '0 -100vh' },
+                            '100%': { backgroundPosition: '0 100vh' },
+                        },
+                        flicker: {
+                            '0%, 100%': { opacity: '1' },
+                            '50%': { opacity: '0.8' },
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+
+    <style>
+        /* Custom cyberpunk styles */
+        html, body {
+            background-color: #0a0a0f !important;
+        }
+
+        body {
+            background: linear-gradient(135deg, #0a0a0f 0%, #12121a 50%, #0d0d14 100%) !important;
+            min-height: 100vh;
+        }
+
+        /* Scanline effect */
+        .scanlines::before {
+            content: '';
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: repeating-linear-gradient(
+                0deg,
+                transparent,
+                transparent 2px,
+                rgba(0, 255, 159, 0.03) 2px,
+                rgba(0, 255, 159, 0.03) 4px
+            );
+            pointer-events: none;
+            z-index: 1000;
+        }
+
+        /* Neon glow text */
+        .neon-text {
+            text-shadow:
+                0 0 5px #00ff9f,
+                0 0 10px #00ff9f,
+                0 0 20px #00ff9f,
+                0 0 40px #00ff9f;
+        }
+
+        .neon-text-subtle {
+            text-shadow:
+                0 0 5px #00ff9f,
+                0 0 10px #00ff9f;
+        }
+
+        /* Neon border */
+        .neon-border {
+            border: 1px solid #00ff9f;
+            box-shadow:
+                0 0 5px #00ff9f,
+                inset 0 0 5px rgba(0, 255, 159, 0.1);
+        }
+
+        .neon-border-pulse {
+            animation: borderPulse 2s ease-in-out infinite;
+        }
+
+        @keyframes borderPulse {
+            0%, 100% { box-shadow: 0 0 5px #00ff9f, inset 0 0 5px rgba(0, 255, 159, 0.1); }
+            50% { box-shadow: 0 0 20px #00ff9f, inset 0 0 10px rgba(0, 255, 159, 0.2); }
+        }
+
+        /* Card styles */
+        .cyber-card {
+            background: linear-gradient(135deg, rgba(26, 26, 36, 0.9) 0%, rgba(18, 18, 26, 0.95) 100%);
+            border: 1px solid rgba(0, 255, 159, 0.3);
+            backdrop-filter: blur(10px);
+        }
+
+        .cyber-card:hover {
+            border-color: rgba(0, 255, 159, 0.6);
+            box-shadow: 0 0 20px rgba(0, 255, 159, 0.2);
+        }
+
+        /* Button styles */
+        .cyber-btn {
+            background: linear-gradient(135deg, rgba(0, 255, 159, 0.1) 0%, rgba(0, 255, 159, 0.05) 100%);
+            border: 1px solid #00ff9f;
+            color: #00ff9f;
+            transition: all 0.3s ease;
+        }
+
+        .cyber-btn:hover {
+            background: rgba(0, 255, 159, 0.2);
+            box-shadow: 0 0 20px rgba(0, 255, 159, 0.4);
+            transform: translateY(-2px);
+        }
+
+        .cyber-btn-danger {
+            border-color: #ff3333;
+            color: #ff3333;
+        }
+
+        .cyber-btn-danger:hover {
+            background: rgba(255, 51, 51, 0.2);
+            box-shadow: 0 0 20px rgba(255, 51, 51, 0.4);
+        }
+
+        /* Input styles */
+        .cyber-input {
+            background: rgba(10, 10, 15, 0.8);
+            border: 1px solid rgba(0, 255, 159, 0.3);
+            color: #00ff9f;
+            transition: all 0.3s ease;
+        }
+
+        .cyber-input:focus {
+            border-color: #00ff9f;
+            box-shadow: 0 0 10px rgba(0, 255, 159, 0.3);
+            outline: none;
+        }
+
+        .cyber-input::placeholder {
+            color: rgba(0, 255, 159, 0.4);
+        }
+
+        /* Progress bar */
+        .cyber-progress {
+            background: rgba(0, 255, 159, 0.1);
+            border: 1px solid rgba(0, 255, 159, 0.3);
+        }
+
+        .cyber-progress-bar {
+            background: linear-gradient(90deg, #00ff9f 0%, #00cc7f 100%);
+            box-shadow: 0 0 10px #00ff9f;
+        }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: #0a0a0f;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #00ff9f40;
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #00ff9f60;
+        }
+
+        /* Grid pattern background */
+        .grid-pattern {
+            background-image:
+                linear-gradient(rgba(0, 255, 159, 0.03) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(0, 255, 159, 0.03) 1px, transparent 1px);
+            background-size: 50px 50px;
+        }
+    </style>
+
+    {% block head %}{% endblock %}
+</head>
+<body class="scanlines grid-pattern font-display text-gray-300 antialiased bg-cyber-black">
+    <!-- Navigation -->
+    <nav class="fixed top-0 left-0 right-0 z-50 bg-cyber-darker/90 backdrop-blur-md border-b border-cyber-neon/20">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex items-center justify-between h-16">
+                <!-- Logo -->
+                <div class="flex items-center space-x-4">
+                    <a href="/" class="flex items-center space-x-3 group">
+                        <div class="w-10 h-10 rounded-lg bg-cyber-neon/10 border border-cyber-neon/50 flex items-center justify-center group-hover:animate-glow">
+                            <svg class="w-6 h-6 text-cyber-neon" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                            </svg>
+                        </div>
+                        <span class="font-cyber text-xl font-bold text-cyber-neon neon-text-subtle">
+                            CYBER-INFERENCE
+                        </span>
+                    </a>
+                </div>
+
+                <!-- Nav Links -->
+                <div class="hidden md:flex items-center space-x-2 bg-cyber-dark/50 rounded-xl px-2 py-1 border border-cyber-neon/10">
+                    <a href="/" class="nav-link {% if page == 'dashboard' %}active{% endif %}">
+                        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 5a1 1 0 011-1h14a1 1 0 011 1v2a1 1 0 01-1 1H5a1 1 0 01-1-1V5zM4 13a1 1 0 011-1h6a1 1 0 011 1v6a1 1 0 01-1 1H5a1 1 0 01-1-1v-6zM16 13a1 1 0 011-1h2a1 1 0 011 1v6a1 1 0 01-1 1h-2a1 1 0 01-1-1v-6z" />
+                        </svg>
+                        <span>Dashboard</span>
+                    </a>
+                    <span class="text-cyber-neon/20">│</span>
+                    <a href="/models" class="nav-link {% if page == 'models' %}active{% endif %}">
+                        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+                        </svg>
+                        <span>Models</span>
+                    </a>
+                    <span class="text-cyber-neon/20">│</span>
+                    <a href="/logs" class="nav-link {% if page == 'logs' %}active{% endif %}">
+                        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                        </svg>
+                        <span>Logs</span>
+                    </a>
+                    <span class="text-cyber-neon/20">│</span>
+                    <a href="/settings" class="nav-link {% if page == 'settings' %}active{% endif %}">
+                        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                        </svg>
+                        <span>Settings</span>
+                    </a>
+                </div>
+
+                <!-- Version -->
+                <div class="hidden md:flex items-center">
+                    <span class="text-xs font-mono text-cyber-neon/50">v{{ version }}</span>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <style>
+        .nav-link {
+            @apply flex items-center gap-2 px-3 py-1.5 rounded-lg text-gray-400 hover:text-cyber-neon hover:bg-cyber-neon/10 transition-all duration-200 text-sm font-medium;
+        }
+        .nav-link.active {
+            @apply text-cyber-neon bg-cyber-neon/15 shadow-sm shadow-cyber-neon/20;
+        }
+    </style>
+
+    <!-- Main Content -->
+    <main class="pt-20 pb-8 min-h-screen">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            {% block content %}{% endblock %}
+        </div>
+    </main>
+
+    <!-- Footer -->
+    <footer class="border-t border-cyber-neon/10 py-8 mt-8">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <!-- Main Footer Content -->
+            <div class="flex flex-col md:flex-row items-center justify-between gap-6">
+                <!-- Left: Branding -->
+                <div class="flex items-center gap-4">
+                    <div class="w-12 h-12 rounded-full overflow-hidden border-2 border-cyber-neon/50 shadow-lg shadow-cyber-neon/20">
+                        <img src="https://github.com/RamboRogers/cyberpamnow/raw/master/media/ramborogers.png"
+                             alt="Matthew Rogers"
+                             class="w-full h-full object-cover">
+                    </div>
+                    <div>
+                        <div class="font-cyber text-cyber-neon text-sm neon-text-subtle">CYBER-INFERENCE</div>
+                        <div class="text-xs text-gray-500 font-mono">v{{ version }} • by Matthew Rogers</div>
+                    </div>
+                </div>
+
+                <!-- Center: Social Links -->
+                <div class="flex items-center gap-3">
+                    <a href="https://github.com/matthewrogers"
+                       target="_blank"
+                       rel="noopener noreferrer"
+                       class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-cyber-dark/50 border border-cyber-neon/20 text-gray-400 hover:text-cyber-neon hover:border-cyber-neon/50 transition-all duration-200 text-sm">
+                        <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                            <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
+                        </svg>
+                        <span>GitHub</span>
+                    </a>
+                    <a href="https://x.com/matthewrogers"
+                       target="_blank"
+                       rel="noopener noreferrer"
+                       class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-cyber-dark/50 border border-cyber-neon/20 text-gray-400 hover:text-cyber-neon hover:border-cyber-neon/50 transition-all duration-200 text-sm">
+                        <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                            <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/>
+                        </svg>
+                        <span>@matthewrogers</span>
+                    </a>
+                    <a href="https://matthewrogers.org"
+                       target="_blank"
+                       rel="noopener noreferrer"
+                       class="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-cyber-dark/50 border border-cyber-neon/20 text-gray-400 hover:text-cyber-neon hover:border-cyber-neon/50 transition-all duration-200 text-sm">
+                        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9"/>
+                        </svg>
+                        <span>Website</span>
+                    </a>
+                </div>
+
+                <!-- Right: Links & License -->
+                <div class="flex items-center gap-4 text-sm text-gray-500">
+                    <a href="/docs" class="hover:text-cyber-neon transition-colors font-mono">API Docs</a>
+                    <span class="text-cyber-neon/30">│</span>
+                    <span class="font-mono text-cyber-neon/60">GPLv3</span>
+                </div>
+            </div>
+
+            <!-- Copyright -->
+            <div class="mt-6 pt-4 border-t border-cyber-neon/5 text-center">
+                <p class="text-xs text-gray-600 font-mono">
+                    © 2025 Matthew Rogers. All rights reserved.
+                    <span class="text-cyber-neon/40">•</span>
+                    <span class="text-gray-500">Free Software</span>
+                </p>
+            </div>
+        </div>
+    </footer>
+
+    {% block scripts %}{% endblock %}
+</body>
+</html>
+

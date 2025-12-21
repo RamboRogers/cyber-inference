@@ -1,0 +1,82 @@
+# Cyber-Inference Docker Compose - NVIDIA Jetson Configuration
+#
+# Optimized for Jetson Thor, Orin, AGX, and Nano devices
+#
+# Usage:
+#   docker-compose -f docker-compose.jetson.yml up -d
+#
+# Requirements:
+#   - JetPack 6.0+ installed
+#   - NVIDIA Container Runtime configured as default
+#   - Docker service restarted after runtime configuration
+
+services:
+  cyber-inference:
+    build:
+      context: .
+      dockerfile: Dockerfile.nvidia
+    image: cyber-inference:jetson
+    container_name: cyber-inference
+    restart: unless-stopped
+
+    # NVIDIA runtime for Jetson
+    runtime: nvidia
+
+    ports:
+      - "8337:8337"
+
+    volumes:
+      - cyber-data:/app/data
+      - cyber-models:/app/models
+      - cyber-bin:/app/bin
+
+    environment:
+      # NVIDIA Jetson settings
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+      # Server configuration
+      - CYBER_INFERENCE_HOST=0.0.0.0
+      - CYBER_INFERENCE_PORT=8337
+      - CYBER_INFERENCE_LOG_LEVEL=INFO
+
+      # Jetson-optimized settings (unified memory)
+      - CYBER_INFERENCE_LLAMA_GPU_LAYERS=-1
+      - CYBER_INFERENCE_DEFAULT_CONTEXT_SIZE=4096
+      - CYBER_INFERENCE_MAX_CONTEXT_SIZE=32768
+      - CYBER_INFERENCE_MAX_LOADED_MODELS=1
+      - CYBER_INFERENCE_MAX_MEMORY_PERCENT=85
+      - CYBER_INFERENCE_MODEL_IDLE_TIMEOUT=600
+
+    # Jetson uses unified memory - no need for device reservation
+    # Memory limits based on device:
+    #   Thor: 128GB+
+    #   Orin: 32-64GB
+    #   AGX: 16-32GB
+    #   Nano: 4-8GB
+    deploy:
+      resources:
+        limits:
+          memory: 120G  # Adjust based on your Jetson model
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8337/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 180s  # Jetson may need more startup time
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+volumes:
+  cyber-data:
+    name: cyber-inference-data
+  cyber-models:
+    name: cyber-inference-models
+  cyber-bin:
+    name: cyber-inference-bin
+

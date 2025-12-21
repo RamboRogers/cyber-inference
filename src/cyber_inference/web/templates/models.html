@@ -1,0 +1,543 @@
+{% extends "base.html" %}
+
+{% block title %}Models | {{ app_name }}{% endblock %}
+
+{% block content %}
+<div class="space-y-8">
+    <!-- Header -->
+    <div class="flex flex-col md:flex-row md:items-center md:justify-between">
+        <div>
+            <h1 class="font-cyber text-3xl font-bold text-cyber-neon neon-text-subtle">
+                MODEL MANAGEMENT
+            </h1>
+            <p class="mt-1 text-gray-400 font-mono text-sm">
+                // Download, load, and manage GGUF models
+            </p>
+        </div>
+        <div class="mt-4 md:mt-0">
+            <button onclick="openDownloadModal()"
+                    class="cyber-btn px-6 py-3 rounded-lg font-mono inline-flex items-center space-x-2">
+                <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                </svg>
+                <span>Download Model</span>
+            </button>
+        </div>
+    </div>
+
+    <!-- Models Grid -->
+    <div class="cyber-card rounded-xl overflow-hidden">
+        <div class="px-6 py-4 border-b border-cyber-neon/20 flex items-center justify-between">
+            <h2 class="font-cyber text-xl font-semibold text-cyber-neon">
+                AVAILABLE MODELS
+            </h2>
+            <span class="text-sm font-mono text-gray-400">{{ models|length }} models</span>
+        </div>
+
+        <div class="p-6">
+            {% if models %}
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {% for model in models %}
+                <div class="bg-cyber-dark/50 rounded-xl p-6 border border-cyber-neon/20 hover:border-cyber-neon/50 transition-all duration-300 group">
+                    <div class="flex items-start justify-between mb-4">
+                        <div class="flex-1 min-w-0">
+                            <div class="flex items-center space-x-3">
+                                {% if model.is_loaded %}
+                                <span class="w-3 h-3 rounded-full bg-cyber-neon animate-pulse" title="Loaded"></span>
+                                {% else %}
+                                <span class="w-3 h-3 rounded-full bg-gray-600" title="Not loaded"></span>
+                                {% endif %}
+                                <h3 class="font-mono text-lg text-white truncate" title="{{ model.name }}">
+                                    {{ model.name }}
+                                </h3>
+                            </div>
+                            <div class="mt-2 flex flex-wrap gap-2">
+                                {% if model.quantization %}
+                                <span class="px-2 py-1 text-xs font-mono rounded bg-cyber-blue/20 text-cyber-blue border border-cyber-blue/30">
+                                    {{ model.quantization }}
+                                </span>
+                                {% endif %}
+                                <span class="px-2 py-1 text-xs font-mono rounded bg-cyber-gray text-gray-400">
+                                    {{ "%.2f"|format(model.size_bytes / (1024*1024*1024)) }} GB
+                                </span>
+                                {% if model.context_length %}
+                                <span class="px-2 py-1 text-xs font-mono rounded bg-cyber-gray text-gray-400">
+                                    {{ model.context_length }} ctx
+                                </span>
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
+
+                    {% if model.hf_repo_id %}
+                    <div class="text-xs font-mono text-gray-500 mb-4 truncate" title="{{ model.hf_repo_id }}">
+                        HF: {{ model.hf_repo_id }}
+                    </div>
+                    {% endif %}
+
+                    <div class="flex items-center space-x-3">
+                        {% if model.is_loaded %}
+                        <button onclick="unloadModel('{{ model.name }}')"
+                                class="flex-1 cyber-btn cyber-btn-danger px-4 py-2 rounded-lg font-mono text-sm">
+                            Unload
+                        </button>
+                        {% else %}
+                        <button onclick="loadModel('{{ model.name }}')"
+                                class="flex-1 cyber-btn px-4 py-2 rounded-lg font-mono text-sm">
+                            Load
+                        </button>
+                        {% endif %}
+                        <button onclick="deleteModel('{{ model.name }}')"
+                                class="p-2 text-gray-500 hover:text-cyber-red transition-colors"
+                                title="Delete model">
+                            <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+            {% else %}
+            <div class="text-center py-16">
+                <div class="w-20 h-20 mx-auto rounded-full bg-cyber-gray/50 flex items-center justify-center mb-6">
+                    <svg class="w-10 h-10 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4" />
+                    </svg>
+                </div>
+                <h3 class="text-xl font-cyber text-white mb-2">No Models Found</h3>
+                <p class="text-gray-400 mb-6">Download a model from HuggingFace to get started</p>
+                <button onclick="openDownloadModal()"
+                        class="cyber-btn px-6 py-3 rounded-lg font-mono inline-flex items-center space-x-2">
+                    <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                    </svg>
+                    <span>Download Your First Model</span>
+                </button>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Popular Models Section -->
+    <div class="cyber-card rounded-xl overflow-hidden">
+        <div class="px-6 py-4 border-b border-cyber-neon/20">
+            <h2 class="font-cyber text-xl font-semibold text-cyber-neon">
+                POPULAR MODELS
+            </h2>
+            <p class="text-xs text-gray-500 mt-1 font-mono">// Click to download from HuggingFace</p>
+        </div>
+        <div class="p-6">
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                <!-- GPT-OSS 20B -->
+                <div class="bg-cyber-dark/30 rounded-lg p-4 border border-cyber-gray hover:border-cyber-neon/30 transition-all cursor-pointer group"
+                     onclick="downloadFromRepo('ggml-org/gpt-oss-20b-GGUF')">
+                    <div class="flex items-center space-x-3 mb-2">
+                        <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-cyber-neon/20 to-cyber-blue/20 flex items-center justify-center group-hover:shadow-lg group-hover:shadow-cyber-neon/20 transition-all">
+                            <span class="text-cyber-neon font-bold text-lg">⚡</span>
+                        </div>
+                        <div>
+                            <div class="font-mono text-white">GPT-OSS 20B</div>
+                            <div class="text-xs text-gray-500">ggml-org</div>
+                        </div>
+                    </div>
+                    <div class="text-xs text-gray-400">OpenAI's open-source GPT, powerful conversational AI</div>
+                    <div class="mt-2 flex gap-2">
+                        <span class="text-[10px] px-2 py-0.5 rounded bg-cyber-neon/10 text-cyber-neon">21B</span>
+                        <span class="text-[10px] px-2 py-0.5 rounded bg-cyber-blue/10 text-cyber-blue">Chat</span>
+                    </div>
+                </div>
+
+                <!-- Qwen3 4B -->
+                <div class="bg-cyber-dark/30 rounded-lg p-4 border border-cyber-gray hover:border-cyber-neon/30 transition-all cursor-pointer group"
+                     onclick="downloadFromRepo('ggml-org/Qwen3-4B-GGUF')">
+                    <div class="flex items-center space-x-3 mb-2">
+                        <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-cyber-blue/20 to-cyber-pink/20 flex items-center justify-center group-hover:shadow-lg group-hover:shadow-cyber-blue/20 transition-all">
+                            <span class="text-cyber-blue font-bold text-lg">Q</span>
+                        </div>
+                        <div>
+                            <div class="font-mono text-white">Qwen3 4B</div>
+                            <div class="text-xs text-gray-500">ggml-org</div>
+                        </div>
+                    </div>
+                    <div class="text-xs text-gray-400">Latest Qwen3 series, excellent multilingual</div>
+                    <div class="mt-2 flex gap-2">
+                        <span class="text-[10px] px-2 py-0.5 rounded bg-cyber-blue/10 text-cyber-blue">4B</span>
+                        <span class="text-[10px] px-2 py-0.5 rounded bg-cyber-pink/10 text-cyber-pink">Chat</span>
+                    </div>
+                </div>
+
+                <!-- Nemotron Nano 3 -->
+                <div class="bg-cyber-dark/30 rounded-lg p-4 border border-cyber-gray hover:border-cyber-neon/30 transition-all cursor-pointer group"
+                     onclick="downloadFromRepo('ggml-org/Nemotron-Nano-3-30B-A3B-GGUF')">
+                    <div class="flex items-center space-x-3 mb-2">
+                        <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-cyber-neon/20 to-cyber-yellow/20 flex items-center justify-center group-hover:shadow-lg group-hover:shadow-cyber-neon/20 transition-all">
+                            <span class="text-cyber-yellow font-bold text-lg">🔥</span>
+                        </div>
+                        <div>
+                            <div class="font-mono text-white">Nemotron Nano 3</div>
+                            <div class="text-xs text-gray-500">ggml-org</div>
+                        </div>
+                    </div>
+                    <div class="text-xs text-gray-400">NVIDIA MoE 30B params, 3B active - fast!</div>
+                    <div class="mt-2 flex gap-2">
+                        <span class="text-[10px] px-2 py-0.5 rounded bg-cyber-yellow/10 text-cyber-yellow">NVIDIA</span>
+                        <span class="text-[10px] px-2 py-0.5 rounded bg-cyber-neon/10 text-cyber-neon">MoE</span>
+                    </div>
+                </div>
+
+                <!-- GLM 4.6V Flash -->
+                <div class="bg-cyber-dark/30 rounded-lg p-4 border border-cyber-gray hover:border-cyber-neon/30 transition-all cursor-pointer group"
+                     onclick="downloadFromRepo('ggml-org/GLM-4.6V-Flash-GGUF')">
+                    <div class="flex items-center space-x-3 mb-2">
+                        <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-cyber-pink/20 to-cyber-orange/20 flex items-center justify-center group-hover:shadow-lg group-hover:shadow-cyber-pink/20 transition-all">
+                            <span class="text-cyber-pink font-bold text-lg">👁</span>
+                        </div>
+                        <div>
+                            <div class="font-mono text-white">GLM 4.6V Flash</div>
+                            <div class="text-xs text-gray-500">ggml-org</div>
+                        </div>
+                    </div>
+                    <div class="text-xs text-gray-400">Vision-language model, image understanding</div>
+                    <div class="mt-2 flex gap-2">
+                        <span class="text-[10px] px-2 py-0.5 rounded bg-cyber-pink/10 text-cyber-pink">Vision</span>
+                        <span class="text-[10px] px-2 py-0.5 rounded bg-cyber-orange/10 text-cyber-orange">9B</span>
+                    </div>
+                </div>
+
+                <!-- Qwen3 Embedding -->
+                <div class="bg-cyber-dark/30 rounded-lg p-4 border border-cyber-gray hover:border-cyber-neon/30 transition-all cursor-pointer group"
+                     onclick="downloadFromRepo('Qwen/Qwen3-Embedding-0.6B-GGUF')">
+                    <div class="flex items-center space-x-3 mb-2">
+                        <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-cyber-blue/20 to-cyber-neon/20 flex items-center justify-center group-hover:shadow-lg group-hover:shadow-cyber-blue/20 transition-all">
+                            <span class="text-cyber-blue font-bold text-lg">📊</span>
+                        </div>
+                        <div>
+                            <div class="font-mono text-white">Qwen3 Embedding</div>
+                            <div class="text-xs text-gray-500">Qwen</div>
+                        </div>
+                    </div>
+                    <div class="text-xs text-gray-400">Text embedding, 100+ languages, MTEB #1</div>
+                    <div class="mt-2 flex gap-2">
+                        <span class="text-[10px] px-2 py-0.5 rounded bg-cyber-blue/10 text-cyber-blue">Embed</span>
+                        <span class="text-[10px] px-2 py-0.5 rounded bg-cyber-neon/10 text-cyber-neon">0.6B</span>
+                    </div>
+                </div>
+
+                <!-- BGE M3 -->
+                <div class="bg-cyber-dark/30 rounded-lg p-4 border border-cyber-gray hover:border-cyber-neon/30 transition-all cursor-pointer group"
+                     onclick="downloadFromRepo('ggml-org/bge-m3-Q8_0-GGUF')">
+                    <div class="flex items-center space-x-3 mb-2">
+                        <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-cyber-orange/20 to-cyber-red/20 flex items-center justify-center group-hover:shadow-lg group-hover:shadow-cyber-orange/20 transition-all">
+                            <span class="text-cyber-orange font-bold text-lg">🔍</span>
+                        </div>
+                        <div>
+                            <div class="font-mono text-white">BGE M3</div>
+                            <div class="text-xs text-gray-500">ggml-org</div>
+                        </div>
+                    </div>
+                    <div class="text-xs text-gray-400">Multi-modal embedding, dense+sparse+colbert</div>
+                    <div class="mt-2 flex gap-2">
+                        <span class="text-[10px] px-2 py-0.5 rounded bg-cyber-orange/10 text-cyber-orange">Embed</span>
+                        <span class="text-[10px] px-2 py-0.5 rounded bg-cyber-red/10 text-cyber-red">Q8_0</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Download Modal -->
+<div id="downloadModal" class="fixed inset-0 z-50 hidden items-center justify-center bg-black/80 backdrop-blur-sm">
+    <div class="cyber-card rounded-xl w-full max-w-lg mx-4 neon-border">
+        <div class="px-6 py-4 border-b border-cyber-neon/20 flex items-center justify-between">
+            <h3 class="font-cyber text-xl text-cyber-neon">DOWNLOAD MODEL</h3>
+            <button onclick="closeDownloadModal()" class="text-gray-400 hover:text-white">
+                <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+            </button>
+        </div>
+        <form id="downloadForm" class="p-6 space-y-4">
+            <div>
+                <label class="block text-sm font-mono text-gray-400 mb-2">
+                    HuggingFace Repository ID
+                </label>
+                <input type="text"
+                       id="repoId"
+                       name="hf_repo_id"
+                       placeholder="e.g., TheBloke/Llama-2-7B-GGUF"
+                       class="cyber-input w-full px-4 py-3 rounded-lg font-mono"
+                       required>
+            </div>
+            <div>
+                <label class="block text-sm font-mono text-gray-400 mb-2">
+                    Filename (optional - auto-selects if empty)
+                </label>
+                <input type="text"
+                       id="filename"
+                       name="hf_filename"
+                       placeholder="e.g., llama-2-7b.Q4_K_M.gguf"
+                       class="cyber-input w-full px-4 py-3 rounded-lg font-mono">
+            </div>
+            <div id="downloadProgress" class="hidden">
+                <div class="flex items-center justify-between mb-2">
+                    <span id="downloadStatus" class="text-sm font-mono text-gray-400">Downloading...</span>
+                    <span id="progressPercent" class="text-sm font-mono text-cyber-neon">0%</span>
+                </div>
+                <div class="cyber-progress h-3 rounded-full overflow-hidden">
+                    <div id="progressBar" class="cyber-progress-bar h-full rounded-full transition-all duration-300" style="width: 0%"></div>
+                </div>
+                <p class="text-xs text-gray-500 mt-2 font-mono">
+                    Note: Large models may take several minutes to download.
+                </p>
+            </div>
+            <div class="flex justify-end space-x-3 pt-4">
+                <button type="button"
+                        onclick="closeDownloadModal()"
+                        class="px-6 py-2 rounded-lg font-mono text-gray-400 hover:text-white transition-colors">
+                    Cancel
+                </button>
+                <button type="submit"
+                        class="cyber-btn px-6 py-2 rounded-lg font-mono">
+                    Download
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // WebSocket for progress updates
+    let statusWs = null;
+    let downloadInProgress = false;
+
+    function connectStatusWebSocket() {
+        const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        statusWs = new WebSocket(`${wsProtocol}//${window.location.host}/ws/status`);
+
+        statusWs.onmessage = function(event) {
+            const data = JSON.parse(event.data);
+
+            if (data.type === 'download_progress') {
+                handleDownloadProgress(data);
+            }
+        };
+
+        statusWs.onclose = function() {
+            // Reconnect after a delay
+            setTimeout(connectStatusWebSocket, 3000);
+        };
+
+        statusWs.onerror = function(err) {
+            console.error('WebSocket error:', err);
+        };
+    }
+
+    function handleDownloadProgress(data) {
+        const progressEl = document.getElementById('downloadProgress');
+        const percentEl = document.getElementById('progressPercent');
+        const barEl = document.getElementById('progressBar');
+        const statusEl = document.getElementById('downloadStatus');
+
+        if (!progressEl) return;
+
+        // Show progress bar
+        progressEl.classList.remove('hidden');
+
+        // Update progress
+        percentEl.textContent = `${Math.round(data.progress)}%`;
+        barEl.style.width = `${data.progress}%`;
+
+        // Update status text
+        if (statusEl) {
+            if (data.status === 'starting') {
+                statusEl.textContent = 'Starting download...';
+            } else if (data.status === 'downloading') {
+                statusEl.textContent = 'Downloading...';
+            } else if (data.status === 'complete') {
+                statusEl.textContent = 'Download complete!';
+            } else if (data.status === 'error') {
+                statusEl.textContent = `Error: ${data.error || 'Unknown error'}`;
+            }
+        }
+
+        // Handle completion
+        if (data.status === 'complete') {
+            setTimeout(() => {
+                closeDownloadModal();
+                location.reload();
+            }, 1500);
+        } else if (data.status === 'error') {
+            downloadInProgress = false;
+            barEl.classList.add('bg-red-500');
+        }
+    }
+
+    // Connect on page load
+    connectStatusWebSocket();
+
+    function openDownloadModal() {
+        document.getElementById('downloadModal').classList.remove('hidden');
+        document.getElementById('downloadModal').classList.add('flex');
+    }
+
+    function closeDownloadModal() {
+        document.getElementById('downloadModal').classList.add('hidden');
+        document.getElementById('downloadModal').classList.remove('flex');
+        document.getElementById('downloadForm').reset();
+        document.getElementById('downloadProgress').classList.add('hidden');
+        document.getElementById('progressBar').style.width = '0%';
+        document.getElementById('progressBar').classList.remove('bg-red-500');
+        downloadInProgress = false;
+    }
+
+    function downloadFromRepo(repoId) {
+        document.getElementById('repoId').value = repoId;
+        openDownloadModal();
+    }
+
+    document.getElementById('downloadForm').addEventListener('submit', async function(e) {
+        e.preventDefault();
+
+        if (downloadInProgress) {
+            alert('Download already in progress');
+            return;
+        }
+
+        const repoId = document.getElementById('repoId').value;
+        const filename = document.getElementById('filename').value;
+
+        downloadInProgress = true;
+        document.getElementById('downloadProgress').classList.remove('hidden');
+        document.getElementById('progressPercent').textContent = '0%';
+        document.getElementById('progressBar').style.width = '0%';
+
+        // Update status text
+        const statusEl = document.getElementById('downloadStatus');
+        if (statusEl) {
+            statusEl.textContent = 'Initiating download...';
+        }
+
+        try {
+            const response = await fetch('/admin/models/download', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    name: filename ? filename.replace('.gguf', '') : null,
+                    hf_repo_id: repoId,
+                    hf_filename: filename || null,
+                }),
+            });
+
+            if (response.ok) {
+                // Success - WebSocket will update progress to 100%
+                document.getElementById('progressPercent').textContent = '100%';
+                document.getElementById('progressBar').style.width = '100%';
+                if (statusEl) {
+                    statusEl.textContent = 'Download complete!';
+                }
+                setTimeout(() => {
+                    closeDownloadModal();
+                    location.reload();
+                }, 1000);
+            } else {
+                downloadInProgress = false;
+                let errorMsg = 'Unknown error';
+                try {
+                    const error = await response.json();
+                    errorMsg = error.detail || errorMsg;
+                } catch (e) {
+                    errorMsg = `HTTP ${response.status}: ${response.statusText}`;
+                }
+                alert('Download failed: ' + errorMsg);
+                document.getElementById('downloadProgress').classList.add('hidden');
+            }
+        } catch (error) {
+            downloadInProgress = false;
+            console.error('Error:', error);
+            alert('Download failed: ' + error.message);
+            document.getElementById('downloadProgress').classList.add('hidden');
+        }
+    });
+
+    async function loadModel(modelName) {
+        // Show loading state
+        const btn = event.target;
+        const originalText = btn.textContent;
+        btn.textContent = 'Loading...';
+        btn.disabled = true;
+
+        try {
+            const response = await fetch(`/admin/models/${encodeURIComponent(modelName)}/load`, {
+                method: 'POST',
+            });
+
+            if (response.ok) {
+                location.reload();
+            } else {
+                let errorMsg = 'Unknown error';
+                try {
+                    const error = await response.json();
+                    errorMsg = error.detail || errorMsg;
+                } catch (e) {
+                    errorMsg = `HTTP ${response.status}`;
+                }
+                alert('Failed to load model: ' + errorMsg);
+                btn.textContent = originalText;
+                btn.disabled = false;
+            }
+        } catch (error) {
+            console.error('Error:', error);
+            alert('Error loading model: ' + error.message);
+            btn.textContent = originalText;
+            btn.disabled = false;
+        }
+    }
+
+    async function unloadModel(modelName) {
+        if (!confirm(`Unload model "${modelName}"?`)) return;
+
+        try {
+            const response = await fetch(`/admin/models/${encodeURIComponent(modelName)}/unload`, {
+                method: 'POST',
+            });
+
+            if (response.ok) {
+                location.reload();
+            } else {
+                alert('Failed to unload model');
+            }
+        } catch (error) {
+            console.error('Error:', error);
+            alert('Error unloading model');
+        }
+    }
+
+    async function deleteModel(modelName) {
+        if (!confirm(`Delete model "${modelName}"? This cannot be undone.`)) return;
+
+        try {
+            const response = await fetch(`/admin/models/${encodeURIComponent(modelName)}`, {
+                method: 'DELETE',
+            });
+
+            if (response.ok) {
+                location.reload();
+            } else {
+                alert('Failed to delete model');
+            }
+        } catch (error) {
+            console.error('Error:', error);
+            alert('Error deleting model');
+        }
+    }
+</script>
+{% endblock %}
+
+
+

@@ -1,0 +1,89 @@
+# Cyber-Inference Dockerfile - NVIDIA GPU Support
+# Based on NVIDIA CUDA image for GPU acceleration
+
+# =============================================================================
+# Stage 1: Builder
+# =============================================================================
+FROM nvidia/cuda:12.4.0-devel-ubuntu22.04 as builder
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.12 \
+    python3.12-venv \
+    python3.12-dev \
+    python3-pip \
+    build-essential \
+    cmake \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install uv
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.cargo/bin:$PATH"
+
+WORKDIR /app
+
+# Copy dependency files
+COPY pyproject.toml ./
+
+# Create virtual environment and install dependencies
+RUN python3.12 -m venv /app/.venv
+ENV PATH="/app/.venv/bin:$PATH"
+RUN uv pip install .
+
+# =============================================================================
+# Stage 2: Runtime
+# =============================================================================
+FROM nvidia/cuda:12.4.0-runtime-ubuntu22.04 as runtime
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.12 \
+    python3.12-venv \
+    curl \
+    wget \
+    libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user
+RUN useradd -m -u 1000 -s /bin/bash cyber
+
+WORKDIR /app
+
+# Copy virtual environment from builder
+COPY --from=builder /app/.venv /app/.venv
+ENV PATH="/app/.venv/bin:$PATH"
+
+# Copy application code
+COPY src/ ./src/
+COPY pyproject.toml ./
+
+# Create directories
+RUN mkdir -p /app/data /app/models /app/bin /app/data/logs \
+    && chown -R cyber:cyber /app
+
+# Environment variables
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    CYBER_INFERENCE_DATA_DIR=/app/data \
+    CYBER_INFERENCE_MODELS_DIR=/app/models \
+    CYBER_INFERENCE_BIN_DIR=/app/bin \
+    CYBER_INFERENCE_HOST=0.0.0.0 \
+    CYBER_INFERENCE_PORT=8337 \
+    CYBER_INFERENCE_LOG_LEVEL=INFO \
+    CYBER_INFERENCE_LLAMA_GPU_LAYERS=-1 \
+    NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+EXPOSE 8337
+
+USER cyber
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
+    CMD curl -f http://localhost:8337/health || exit 1
+
+VOLUME ["/app/data", "/app/models", "/app/bin"]
+
+CMD ["python3.12", "-m", "cyber_inference.cli", "serve", "--host", "0.0.0.0", "--port", "8337"]
+

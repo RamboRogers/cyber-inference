@@ -1,0 +1,78 @@
+# Cyber-Inference Docker Compose - NVIDIA GPU Configuration
+#
+# Usage:
+#   docker-compose -f docker-compose.nvidia.yml up -d
+#
+# Requirements:
+#   - NVIDIA Container Toolkit installed
+#   - docker-compose v2.x with GPU support
+
+version: '3.8'
+
+services:
+  cyber-inference-gpu:
+    build:
+      context: .
+      dockerfile: Dockerfile.nvidia
+    container_name: cyber-inference-gpu
+    restart: unless-stopped
+
+    # NVIDIA runtime
+    runtime: nvidia
+
+    ports:
+      - "8337:8337"
+
+    volumes:
+      - cyber-data:/app/data
+      - cyber-models:/app/models
+      - cyber-bin:/app/bin
+
+    environment:
+      # NVIDIA settings
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+      # Server configuration
+      - CYBER_INFERENCE_HOST=0.0.0.0
+      - CYBER_INFERENCE_PORT=8337
+      - CYBER_INFERENCE_LOG_LEVEL=INFO
+
+      # GPU-optimized settings
+      - CYBER_INFERENCE_LLAMA_GPU_LAYERS=-1
+      - CYBER_INFERENCE_DEFAULT_CONTEXT_SIZE=8192
+      - CYBER_INFERENCE_MAX_CONTEXT_SIZE=65536
+      - CYBER_INFERENCE_MAX_LOADED_MODELS=1
+      - CYBER_INFERENCE_MAX_MEMORY_PERCENT=90
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+        limits:
+          memory: 32G
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8337/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
+
+volumes:
+  cyber-data:
+    name: cyber-inference-data
+  cyber-models:
+    name: cyber-inference-models
+  cyber-bin:
+    name: cyber-inference-bin
+

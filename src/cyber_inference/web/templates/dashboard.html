@@ -1,0 +1,270 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard | {{ app_name }}{% endblock %}
+
+{% block content %}
+<div class="space-y-8">
+    <!-- Header -->
+    <div class="flex flex-col md:flex-row md:items-center md:justify-between">
+        <div>
+            <h1 class="font-cyber text-3xl font-bold text-cyber-neon neon-text-subtle">
+                SYSTEM DASHBOARD
+            </h1>
+            <p class="mt-1 text-gray-400 font-mono text-sm">
+                // Real-time inference server monitoring
+            </p>
+        </div>
+        <div class="mt-4 md:mt-0 flex items-center space-x-3">
+            <div class="flex items-center space-x-2 px-4 py-2 rounded-lg bg-cyber-neon/10 border border-cyber-neon/30">
+                <span class="w-2 h-2 rounded-full bg-cyber-neon animate-pulse"></span>
+                <span class="text-cyber-neon font-mono text-sm">ONLINE</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Resource Stats Grid -->
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        <!-- CPU Card -->
+        <div class="cyber-card rounded-xl p-6 transition-all duration-300">
+            <div class="flex items-center justify-between mb-4">
+                <div class="w-12 h-12 rounded-lg bg-cyber-blue/10 border border-cyber-blue/30 flex items-center justify-center">
+                    <svg class="w-6 h-6 text-cyber-blue" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z" />
+                    </svg>
+                </div>
+                <span class="text-xs font-mono text-gray-500">CPU</span>
+            </div>
+            <div class="space-y-2">
+                <div class="flex items-end justify-between">
+                    <span class="text-3xl font-cyber font-bold text-white" id="cpu-percent">
+                        {{ "%.1f"|format(resources.cpu_percent) if resources else "0.0" }}%
+                    </span>
+                </div>
+                <div class="cyber-progress h-2 rounded-full overflow-hidden">
+                    <div class="cyber-progress-bar h-full rounded-full transition-all duration-500"
+                         style="width: {{ resources.cpu_percent if resources else 0 }}%; background: linear-gradient(90deg, #00d4ff, #00a3cc);"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Memory Card -->
+        <div class="cyber-card rounded-xl p-6 transition-all duration-300">
+            <div class="flex items-center justify-between mb-4">
+                <div class="w-12 h-12 rounded-lg bg-cyber-pink/10 border border-cyber-pink/30 flex items-center justify-center">
+                    <svg class="w-6 h-6 text-cyber-pink" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+                    </svg>
+                </div>
+                <span class="text-xs font-mono text-gray-500">MEMORY</span>
+            </div>
+            <div class="space-y-2">
+                <div class="flex items-end justify-between">
+                    <span class="text-3xl font-cyber font-bold text-white" id="memory-percent">
+                        {{ "%.1f"|format(resources.memory_percent) if resources else "0.0" }}%
+                    </span>
+                    <span class="text-sm text-gray-400 font-mono">
+                        {{ "%.1f"|format(resources.memory_used_gb) if resources else "0" }}/{{ "%.1f"|format(resources.memory_total_gb) if resources else "0" }} GB
+                    </span>
+                </div>
+                <div class="cyber-progress h-2 rounded-full overflow-hidden">
+                    <div class="cyber-progress-bar h-full rounded-full transition-all duration-500"
+                         style="width: {{ resources.memory_percent if resources else 0 }}%; background: linear-gradient(90deg, #ff00ff, #cc00cc);"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- GPU Card -->
+        <div class="cyber-card rounded-xl p-6 transition-all duration-300">
+            <div class="flex items-center justify-between mb-4">
+                <div class="w-12 h-12 rounded-lg bg-cyber-neon/10 border border-cyber-neon/30 flex items-center justify-center">
+                    <svg class="w-6 h-6 text-cyber-neon" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                    </svg>
+                </div>
+                <span class="text-xs font-mono text-gray-500">GPU</span>
+            </div>
+            <div class="space-y-2">
+                {% if resources and resources.gpu_info %}
+                <div class="flex items-end justify-between">
+                    <span class="text-lg font-mono text-white truncate" title="{{ resources.gpu_info }}">
+                        {{ resources.gpu_info[:20] }}...
+                    </span>
+                </div>
+                <div class="text-sm text-gray-400 font-mono">
+                    {{ "%.1f"|format(resources.gpu_memory_used) }}/{{ "%.1f"|format(resources.gpu_memory_total) }} GB
+                </div>
+                {% else %}
+                <div class="flex items-center space-x-2">
+                    <span class="text-gray-500 font-mono">CPU Mode</span>
+                </div>
+                <div class="text-sm text-gray-500">No GPU detected</div>
+                {% endif %}
+            </div>
+        </div>
+
+        <!-- Models Card -->
+        <div class="cyber-card rounded-xl p-6 transition-all duration-300">
+            <div class="flex items-center justify-between mb-4">
+                <div class="w-12 h-12 rounded-lg bg-cyber-orange/10 border border-cyber-orange/30 flex items-center justify-center">
+                    <svg class="w-6 h-6 text-cyber-orange" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4" />
+                    </svg>
+                </div>
+                <span class="text-xs font-mono text-gray-500">MODELS</span>
+            </div>
+            <div class="space-y-2">
+                <div class="flex items-end justify-between">
+                    <span class="text-3xl font-cyber font-bold text-white" id="model-count">
+                        {{ model_count }}
+                    </span>
+                    <span class="text-sm text-gray-400">loaded</span>
+                </div>
+                <a href="/models" class="block text-sm text-cyber-neon hover:underline">
+                    Manage Models →
+                </a>
+            </div>
+        </div>
+    </div>
+
+    <!-- Active Models Section -->
+    <div class="cyber-card rounded-xl overflow-hidden">
+        <div class="px-6 py-4 border-b border-cyber-neon/20">
+            <h2 class="font-cyber text-xl font-semibold text-cyber-neon">
+                ACTIVE MODELS
+            </h2>
+        </div>
+        <div class="p-6">
+            {% if running_models %}
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {% for model in running_models %}
+                <div class="bg-cyber-dark/50 rounded-lg p-4 border border-cyber-neon/20 hover:border-cyber-neon/50 transition-all">
+                    <div class="flex items-start justify-between">
+                        <div class="flex items-center space-x-3">
+                            <div class="w-3 h-3 rounded-full bg-cyber-neon animate-pulse"></div>
+                            <span class="font-mono text-white truncate" title="{{ model }}">
+                                {{ model[:30] }}{% if model|length > 30 %}...{% endif %}
+                            </span>
+                        </div>
+                        <button onclick="unloadModel('{{ model }}')"
+                                class="text-cyber-red hover:text-red-400 transition-colors p-1"
+                                title="Unload model">
+                            <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                        </button>
+                    </div>
+                    <div class="mt-2 text-xs font-mono text-gray-500">
+                        Status: <span class="text-cyber-neon">Running</span>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+            {% else %}
+            <div class="text-center py-12">
+                <div class="w-16 h-16 mx-auto rounded-full bg-cyber-gray/50 flex items-center justify-center mb-4">
+                    <svg class="w-8 h-8 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
+                    </svg>
+                </div>
+                <p class="text-gray-400 mb-4">No models currently loaded</p>
+                <a href="/models" class="cyber-btn px-6 py-2 rounded-lg font-mono inline-block">
+                    Load a Model
+                </a>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Quick Actions -->
+    <div class="cyber-card rounded-xl overflow-hidden">
+        <div class="px-6 py-4 border-b border-cyber-neon/20">
+            <h2 class="font-cyber text-xl font-semibold text-cyber-neon">
+                QUICK ACTIONS
+            </h2>
+        </div>
+        <div class="p-6 grid grid-cols-1 md:grid-cols-3 gap-4">
+            <a href="/models" class="cyber-btn rounded-lg p-4 text-center group">
+                <svg class="w-8 h-8 mx-auto mb-2 group-hover:scale-110 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                </svg>
+                <span class="font-mono">Download Model</span>
+            </a>
+            <a href="/logs" class="cyber-btn rounded-lg p-4 text-center group">
+                <svg class="w-8 h-8 mx-auto mb-2 group-hover:scale-110 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                <span class="font-mono">View Logs</span>
+            </a>
+            <a href="/docs" class="cyber-btn rounded-lg p-4 text-center group">
+                <svg class="w-8 h-8 mx-auto mb-2 group-hover:scale-110 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
+                </svg>
+                <span class="font-mono">API Docs</span>
+            </a>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // WebSocket for real-time updates
+    let ws;
+
+    function connectWebSocket() {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        ws = new WebSocket(`${protocol}//${window.location.host}/ws/status`);
+
+        ws.onmessage = function(event) {
+            const data = JSON.parse(event.data);
+
+            if (data.type === 'status_update') {
+                // Update resource stats
+                if (data.resources) {
+                    document.getElementById('cpu-percent').textContent =
+                        data.resources.cpu_percent.toFixed(1) + '%';
+                    document.getElementById('memory-percent').textContent =
+                        data.resources.memory_percent.toFixed(1) + '%';
+                }
+
+                if (data.models) {
+                    document.getElementById('model-count').textContent = data.models.count;
+                }
+            }
+        };
+
+        ws.onclose = function() {
+            console.log('WebSocket closed, reconnecting...');
+            setTimeout(connectWebSocket, 3000);
+        };
+
+        ws.onerror = function(error) {
+            console.error('WebSocket error:', error);
+        };
+    }
+
+    // Connect on page load
+    connectWebSocket();
+
+    // Unload model function
+    async function unloadModel(modelName) {
+        if (!confirm(`Unload model "${modelName}"?`)) return;
+
+        try {
+            const response = await fetch(`/admin/models/${modelName}/unload`, {
+                method: 'POST',
+            });
+
+            if (response.ok) {
+                location.reload();
+            } else {
+                alert('Failed to unload model');
+            }
+        } catch (error) {
+            console.error('Error:', error);
+            alert('Error unloading model');
+        }
+    }
+</script>
+{% endblock %}
+
