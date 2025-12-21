@@ -44,20 +44,14 @@ RUN set -eux; \
         python3-pip \
         wget; \
     rm -rf /var/lib/apt/lists/*; \
-    # Build llama.cpp with CUDA (link against stubs for container build)
+    # Build llama.cpp (CPU for now - CUDA linking issues in container)
     git clone --depth 1 https://github.com/ggerganov/llama.cpp /tmp/llama.cpp; \
-    export CUDA_PATH=/usr/local/cuda; \
-    export LD_LIBRARY_PATH="${CUDA_PATH}/lib64/stubs:${LD_LIBRARY_PATH}"; \
-    ln -s /usr/local/cuda/lib64/stubs/libcuda.so /usr/local/cuda/lib64/stubs/libcuda.so.1 || true; \
     cmake -S /tmp/llama.cpp -B /tmp/llama.cpp/build \
-        -DGGML_CUDA=ON \
         -DLLAMA_CURL=ON \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc; \
+        -DCMAKE_BUILD_TYPE=Release; \
     cmake --build /tmp/llama.cpp/build -j$(nproc) --target llama-server; \
     mkdir -p /app/bin; \
     cp /tmp/llama.cpp/build/bin/llama-server /app/bin/; \
-    cp /tmp/llama.cpp/build/bin/*.so* /app/bin/ 2>/dev/null || true; \
     rm -rf /tmp/llama.cpp; \
     # Install Python app
     python3 -m venv "${VENV_PATH}"; \

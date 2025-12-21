@@ -174,7 +174,7 @@ docker run -p 8337:8337 -v cyber-models:/app/models cyber-inference
 ```bash
 # On Jetson device or with buildx for ARM64
 docker build -f Dockerfile.nvidia -t cyber-inference:jetson .
-docker run --runtime nvidia --gpus all -p 8337:8337 -v cyber-models:/app/models cyber-inference:jetson
+docker run --name cyber-inference --runtime nvidia -d --gpus all -p 8337:8337 -v cyber-models:/app/models cyber-inference:jetson
 ```
 
 ## ⚙️ Configuration
