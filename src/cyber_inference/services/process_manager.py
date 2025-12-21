@@ -33,8 +33,8 @@ class LlamaProcess:
     """Represents a running llama-server process."""
     model_name: str
     model_path: Path
-    mmproj_path: Optional[Path] = None
     port: int
+    mmproj_path: Optional[Path] = None
     pid: Optional[int] = None
     process: Optional[asyncio.subprocess.Process] = None
     status: str = "starting"  # starting, running, stopping, stopped, error
