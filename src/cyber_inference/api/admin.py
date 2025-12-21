@@ -189,6 +189,7 @@ async def get_resources(
             and resources.gpu.used_memory_mb is not None
             else None
         ),
+        gpu_memory_note=resources.gpu.memory_note if resources.gpu else None,
     )
 
 

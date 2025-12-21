@@ -258,6 +258,7 @@ class SystemResourcesResponse(BaseModel):
     gpu_info: Optional[str]
     gpu_memory_total_gb: Optional[float]
     gpu_memory_used_gb: Optional[float]
+    gpu_memory_note: Optional[str] = None
 
 
 class ConfigurationResponse(BaseModel):

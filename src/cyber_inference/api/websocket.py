@@ -216,6 +216,7 @@ async def websocket_status(websocket: WebSocket) -> None:
                         "name": resources.gpu.name,
                         "memory_used_gb": memory_used_gb,
                         "memory_total_gb": memory_total_gb,
+                        "memory_note": resources.gpu.memory_note,
                     }
 
                 await websocket.send_text(json.dumps(status))

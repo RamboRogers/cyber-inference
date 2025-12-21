@@ -34,6 +34,7 @@ class GPUInfo:
     used_memory_mb: float
     temperature: Optional[float] = None
     utilization_percent: Optional[float] = None
+    memory_note: Optional[str] = None
 
 
 @dataclass
@@ -356,6 +357,14 @@ class ResourceMonitor:
             if not self._thor_memory_override_logged:
                 logger.info("[info]Applying Thor memory override: 128GB[/info]")
                 self._thor_memory_override_logged = True
+
+        if gpu and "thor" in gpu.name.lower() and gpu.total_memory_mb <= 0:
+            gpu.total_memory_mb = total_memory_mb
+            gpu.used_memory_mb = used_memory_mb
+            gpu.memory_note = "Unified memory"
+
+        if gpu and gpu.total_memory_mb <= 0 and gpu.memory_note is None:
+            gpu.memory_note = "Memory telemetry unavailable"
 
         return SystemResources(
             timestamp=datetime.now(),

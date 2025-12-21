@@ -119,18 +119,11 @@ async def dashboard(request: Request) -> HTMLResponse:
         gpu_info = resources.gpu.name if resources.gpu else None
         gpu_memory_total = None
         gpu_memory_used = None
-        gpu_memory_note = None
-        if resources.gpu:
-            if resources.gpu.total_memory_mb > 0:
-                gpu_memory_total = resources.gpu.total_memory_mb / 1024
-                if resources.gpu.used_memory_mb is not None:
-                    gpu_memory_used = resources.gpu.used_memory_mb / 1024
-            elif "thor" in resources.gpu.name.lower():
-                gpu_memory_total = resources.total_memory_mb / 1024
-                gpu_memory_used = resources.used_memory_mb / 1024
-                gpu_memory_note = "Unified memory"
-            else:
-                gpu_memory_note = "Memory telemetry unavailable"
+        gpu_memory_note = resources.gpu.memory_note if resources.gpu else None
+        if resources.gpu and resources.gpu.total_memory_mb > 0:
+            gpu_memory_total = resources.gpu.total_memory_mb / 1024
+            if resources.gpu.used_memory_mb is not None:
+                gpu_memory_used = resources.gpu.used_memory_mb / 1024
 
         context = _template_context(
             request,
