@@ -51,7 +51,10 @@ RUN set -eux; \
         -DCMAKE_BUILD_TYPE=Release; \
     cmake --build /tmp/llama.cpp/build -j$(nproc) --target llama-server; \
     mkdir -p /app/bin; \
-    cp /tmp/llama.cpp/build/bin/llama-server /app/bin/; \
+    # Find and copy llama-server (path varies by version)
+    find /tmp/llama.cpp/build -name "llama-server" -type f -executable -exec cp {} /app/bin/ \; ; \
+    ls -la /app/bin/; \
+    test -f /app/bin/llama-server || (echo "ERROR: llama-server not found!" && exit 1); \
     rm -rf /tmp/llama.cpp; \
     # Install Python app
     python3 -m venv "${VENV_PATH}"; \
