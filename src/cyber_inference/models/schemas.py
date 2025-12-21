@@ -42,10 +42,21 @@ class SessionStatus(str, Enum):
 # OpenAI-Compatible Schemas (V1 API)
 # =============================================================================
 
+class ChatContentPart(BaseModel):
+    """Structured chat content part (text, image, etc.)."""
+    type: str = Field(..., description="Content part type (text, image_url, etc.)")
+    text: Optional[str] = Field(None, description="Text content")
+    image_url: Optional[dict[str, Any]] = Field(None, description="Image payload (url or base64)")
+
+    model_config = {"extra": "allow"}
+
+
 class ChatMessage(BaseModel):
     """Chat message in a conversation."""
     role: str = Field(..., description="Role of the message author (system, user, assistant)")
-    content: str = Field(..., description="Content of the message")
+    content: Union[str, list[ChatContentPart], dict[str, Any]] = Field(
+        ..., description="Content of the message"
+    )
     name: Optional[str] = Field(None, description="Optional name of the author")
 
 
@@ -289,4 +300,3 @@ class StatusUpdate(BaseModel):
     """Status update for WebSocket streaming."""
     type: str  # model_loaded, model_unloaded, resource_update, etc.
     data: dict
-

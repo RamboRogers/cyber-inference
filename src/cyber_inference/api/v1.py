@@ -60,6 +60,20 @@ def get_auto_loader() -> AutoLoader:
     return _auto_loader
 
 
+def _serialize_message_content(content):
+    if isinstance(content, list):
+        serialized = []
+        for part in content:
+            if hasattr(part, "model_dump"):
+                serialized.append(part.model_dump(exclude_none=True))
+            else:
+                serialized.append(part)
+        return serialized
+    if hasattr(content, "model_dump"):
+        return content.model_dump(exclude_none=True)
+    return content
+
+
 async def init_auto_loader(auto_loader: AutoLoader) -> None:
     """Initialize the auto-loader (called from main.py)."""
     global _auto_loader
@@ -141,7 +155,14 @@ async def chat_completions(
 
     # Prepare request for llama-server
     llama_request = {
-        "messages": [{"role": m.role, "content": m.content} for m in request.messages],
+        "messages": [
+            {
+                "role": m.role,
+                "content": _serialize_message_content(m.content),
+                **({"name": m.name} if m.name else {}),
+            }
+            for m in request.messages
+        ],
         "temperature": request.temperature,
         "top_p": request.top_p,
         "n_predict": request.max_tokens or 512,
@@ -458,4 +479,3 @@ async def embeddings(
             "total_tokens": total_tokens,
         },
     )
-
