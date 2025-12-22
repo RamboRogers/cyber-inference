@@ -62,6 +62,18 @@ class ModelManager:
                 raise ValueError("Unexpected end of file")
             return data
 
+        def read_u8(handle) -> int:
+            return int.from_bytes(read_exact(handle, 1), "little", signed=False)
+
+        def read_i8(handle) -> int:
+            return int.from_bytes(read_exact(handle, 1), "little", signed=True)
+
+        def read_u16(handle) -> int:
+            return int.from_bytes(read_exact(handle, 2), "little", signed=False)
+
+        def read_i16(handle) -> int:
+            return int.from_bytes(read_exact(handle, 2), "little", signed=True)
+
         def read_u32(handle) -> int:
             return int.from_bytes(read_exact(handle, 4), "little", signed=False)
 
@@ -106,7 +118,111 @@ class ModelManager:
             "context_length",
             "n_ctx",
             "llama.n_ctx",
+            "n_ctx_train",
+            "llama.n_ctx_train",
         }
+
+        def is_context_key(key: str) -> bool:
+            if key in context_keys:
+                return True
+            if key.endswith((".context_length", ".n_ctx", ".n_ctx_train")):
+                return True
+            return False
+
+        def skip_array(handle, elem_type: int, length: int) -> None:
+            if elem_type == GGUF_STRING:
+                for _ in range(length):
+                    skip_string(handle)
+                return
+            elem_size = type_sizes.get(elem_type)
+            if elem_size is None:
+                raise ValueError("Unknown GGUF array element type")
+            read_exact(handle, elem_size * length)
+
+        def skip_value(handle, value_type: int) -> None:
+            if value_type == GGUF_STRING:
+                skip_string(handle)
+                return
+            if value_type == GGUF_ARRAY:
+                elem_type = read_u32(handle)
+                length = read_u64(handle)
+                skip_array(handle, elem_type, length)
+                return
+            size = type_sizes.get(value_type)
+            if size is None:
+                raise ValueError("Unknown GGUF value type")
+            read_exact(handle, size)
+
+        def read_numeric_value(handle, value_type: int) -> Optional[int]:
+            if value_type == 0:
+                return read_u8(handle)
+            if value_type == 1:
+                return read_i8(handle)
+            if value_type == 2:
+                return read_u16(handle)
+            if value_type == 3:
+                return read_i16(handle)
+            if value_type == 4:
+                return read_u32(handle)
+            if value_type == 5:
+                return read_i32(handle)
+            if value_type == 7:
+                return read_u8(handle)
+            if value_type == 10:
+                return read_u64(handle)
+            if value_type == 11:
+                return read_i64(handle)
+            if value_type == GGUF_STRING:
+                value = read_string(handle)
+                if value.isdigit():
+                    return int(value)
+                return None
+            if value_type == GGUF_ARRAY:
+                elem_type = read_u32(handle)
+                length = read_u64(handle)
+                if length == 1:
+                    return read_numeric_value(handle, elem_type)
+                skip_array(handle, elem_type, length)
+                return None
+            skip_value(handle, value_type)
+            return None
+
+        def select_context_length(
+            architecture: Optional[str],
+            candidates: dict[str, int],
+        ) -> Optional[int]:
+            if not candidates:
+                return None
+
+            if architecture:
+                arch_variants = {
+                    architecture,
+                    architecture.replace("-", "_"),
+                    architecture.replace("_", "-"),
+                }
+                for arch in arch_variants:
+                    for suffix in ("context_length", "n_ctx", "n_ctx_train"):
+                        key = f"{arch}.{suffix}"
+                        if key in candidates:
+                            return candidates[key]
+
+            for key in (
+                "llama.context_length",
+                "llama.n_ctx",
+                "llama.n_ctx_train",
+                "context_length",
+                "n_ctx",
+                "n_ctx_train",
+            ):
+                if key in candidates:
+                    return candidates[key]
+
+            for key, value in candidates.items():
+                if key.startswith(("clip.", "vision.", "mmproj.")):
+                    continue
+                return value
+
+            return None
 
         try:
             with file_path.open("rb") as handle:
@@ -118,67 +234,30 @@ class ModelManager:
                 _tensor_count = read_u64(handle)
                 kv_count = read_u64(handle)
 
+                architecture = None
+                candidates: dict[str, int] = {}
+
                 for _ in range(kv_count):
                     key = read_string(handle)
+                    key_lower = key.lower()
                     value_type = read_u32(handle)
 
-                    if key in context_keys:
-                        if value_type == 4:
-                            return read_u32(handle)
-                        if value_type == 5:
-                            return read_i32(handle)
-                        if value_type == 10:
-                            return read_u64(handle)
-                        if value_type == 11:
-                            return read_i64(handle)
+                    if key_lower == "general.architecture":
                         if value_type == GGUF_STRING:
-                            value = read_string(handle)
-                            if value.isdigit():
-                                return int(value)
-                            return None
-                        if value_type == GGUF_ARRAY:
-                            elem_type = read_u32(handle)
-                            length = read_u64(handle)
-                            if elem_type in (4, 5, 10, 11) and length == 1:
-                                if elem_type == 4:
-                                    return read_u32(handle)
-                                if elem_type == 5:
-                                    return read_i32(handle)
-                                if elem_type == 10:
-                                    return read_u64(handle)
-                                if elem_type == 11:
-                                    return read_i64(handle)
-                            # Skip array payload
-                            elem_size = type_sizes.get(elem_type)
-                            if elem_size is None:
-                                for _ in range(length):
-                                    if elem_type == GGUF_STRING:
-                                        skip_string(handle)
-                                    else:
-                                        break
-                            else:
-                                read_exact(handle, elem_size * length)
-                            return None
-
-                    # Skip value payload
-                    if value_type == GGUF_STRING:
-                        skip_string(handle)
-                    elif value_type == GGUF_ARRAY:
-                        elem_type = read_u32(handle)
-                        length = read_u64(handle)
-                        if elem_type == GGUF_STRING:
-                            for _ in range(length):
-                                skip_string(handle)
+                            architecture = read_string(handle).lower()
                         else:
-                            elem_size = type_sizes.get(elem_type)
-                            if elem_size is None:
-                                raise ValueError("Unknown GGUF array element type")
-                            read_exact(handle, elem_size * length)
-                    else:
-                        size = type_sizes.get(value_type)
-                        if size is None:
-                            raise ValueError("Unknown GGUF value type")
-                        read_exact(handle, size)
+                            skip_value(handle, value_type)
+                        continue
+
+                    if is_context_key(key_lower):
+                        value = read_numeric_value(handle, value_type)
+                        if value is not None:
+                            candidates[key_lower] = int(value)
+                        continue
+
+                    skip_value(handle, value_type)
+
+                return select_context_length(architecture, candidates)
         except Exception as e:
             logger.debug(f"Failed to read GGUF metadata from {file_path.name}: {e}")
             return None
@@ -583,7 +662,16 @@ class ModelManager:
             result = await session.execute(select(Model))
             db_models = result.scalars().all()
 
+            updated = False
             for model in db_models:
+                if model.file_path and (model.context_length is None or model.context_length == 4096):
+                    file_path = Path(model.file_path)
+                    if file_path.exists() and file_path.suffix == ".gguf":
+                        context_length = self._read_gguf_context_length(file_path)
+                        if context_length and context_length != model.context_length:
+                            model.context_length = context_length
+                            updated = True
+
                 models.append({
                     "id": model.id,
                     "name": model.name,
@@ -599,6 +687,9 @@ class ModelManager:
                     "last_used_at": model.last_used_at,
                     "registered": True,
                 })
+
+            if updated:
+                await session.commit()
 
         # Scan for unregistered local files
         registered_files = {m["filename"] for m in models}
