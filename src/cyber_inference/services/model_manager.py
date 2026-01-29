@@ -563,6 +563,7 @@ class ModelManager:
 
         Args:
             repo_id: HuggingFace repository ID
+            files: Optional pre-fetched list of filenames (sizes will be fetched separately)
 
         Returns:
             List of file information dicts
@@ -570,21 +571,28 @@ class ModelManager:
         logger.info(f"[info]Listing files in repo: {repo_id}[/info]")
 
         try:
-            files = files or list_repo_files(repo_id, token=self._hf_token)
+            # If files list provided, we still need sizes - fetch repo tree
+            repo_tree = await asyncio.to_thread(
+                self._hf_api.list_repo_tree,
+                repo_id,
+                recursive=True,
+            )
+
+            # Build a map of filename -> size
+            file_sizes: dict[str, int] = {}
+            all_files: list[str] = []
+            for item in repo_tree:
+                if hasattr(item, 'path') and hasattr(item, 'size'):
+                    file_sizes[item.path] = item.size or 0
+                    all_files.append(item.path)
+
+            # Use provided files list or all files from tree
+            filenames_to_check = files if files else all_files
 
             gguf_files = []
-            for filename in files:
+            for filename in filenames_to_check:
                 if filename.endswith(".gguf") and not self._is_mmproj_file(filename):
-                    # Get file info
-                    try:
-                        info = self._hf_api.get_hf_file_metadata(
-                            f"https://huggingface.co/{repo_id}/resolve/main/{filename}"
-                        )
-                        size = info.size if hasattr(info, 'size') else 0
-                    except Exception:
-                        size = 0
-
-                    # Extract quantization from filename
+                    size = file_sizes.get(filename, 0)
                     quantization = self._extract_quant_suffix(filename)
 
                     gguf_files.append({
@@ -613,23 +621,26 @@ class ModelManager:
         logger.info(f"[info]Listing detailed files in repo: {repo_id}[/info]")
 
         try:
-            all_files = list_repo_files(repo_id, token=self._hf_token)
+            # Use list_repo_tree to get file info including sizes in one API call
+            repo_tree = await asyncio.to_thread(
+                self._hf_api.list_repo_tree,
+                repo_id,
+                recursive=True,
+            )
+
+            # Build a map of filename -> size from repo tree
+            file_sizes: dict[str, int] = {}
+            for item in repo_tree:
+                # RepoFile objects have path and size attributes
+                if hasattr(item, 'path') and hasattr(item, 'size'):
+                    file_sizes[item.path] = item.size or 0
 
             model_files = []
             mmproj_files = []
 
-            for filename in all_files:
+            for filename, size in file_sizes.items():
                 if not filename.endswith(".gguf"):
                     continue
-
-                # Get file size
-                try:
-                    info = self._hf_api.get_hf_file_metadata(
-                        f"https://huggingface.co/{repo_id}/resolve/main/{filename}"
-                    )
-                    size = info.size if hasattr(info, 'size') else 0
-                except Exception:
-                    size = 0
 
                 quantization = self._extract_quant_suffix(filename)
 
