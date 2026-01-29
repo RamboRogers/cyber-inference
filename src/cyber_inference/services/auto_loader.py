@@ -244,7 +244,7 @@ class AutoLoader:
         mm = self._get_model_manager()
         pm = self._get_process_manager()
 
-        # Get model info (includes path and type)
+        # Get model info (includes path, type, and mmproj_path)
         model_info = await mm.get_model(model_name)
         if not model_info:
             raise ValueError(f"Model not found: {model_name}")
@@ -254,6 +254,12 @@ class AutoLoader:
             raise ValueError(f"Model path not found: {model_name}")
 
         logger.debug(f"Model path: {model_path}")
+
+        # Get mmproj_path if this is a multimodal model
+        mmproj_path = None
+        if model_info.get("mmproj_path"):
+            mmproj_path = Path(model_info["mmproj_path"])
+            logger.debug(f"mmproj path from DB: {mmproj_path}")
 
         # Check if it's an embedding model (by type or name patterns)
         model_type = model_info.get("model_type")
@@ -268,8 +274,13 @@ class AutoLoader:
         if is_embedding:
             logger.info(f"  Model type: embedding")
 
-        # Start the server
-        proc = await pm.start_server(model_name, model_path, embedding=is_embedding)
+        # Start the server with mmproj_path if available
+        proc = await pm.start_server(
+            model_name,
+            model_path,
+            embedding=is_embedding,
+            mmproj_path=mmproj_path,
+        )
 
         if proc.status != "running":
             raise RuntimeError(f"Failed to start server: {proc.error_message}")

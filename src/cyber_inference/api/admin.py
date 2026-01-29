@@ -34,6 +34,8 @@ from cyber_inference.models.schemas import (
     ModelResponse,
     ModelSessionResponse,
     ModelUpdate,
+    RepoFileInfo,
+    RepoFilesResponse,
     SystemResourcesResponse,
 )
 from cyber_inference.services.auto_loader import AutoLoader
@@ -217,6 +219,7 @@ async def list_models(
                 quantization=m.quantization,
                 context_length=m.context_length,
                 model_type=m.model_type,
+                mmproj_path=m.mmproj_path,
                 is_downloaded=m.is_downloaded,
                 is_enabled=m.is_enabled,
                 download_progress=m.download_progress,
@@ -225,6 +228,79 @@ async def list_models(
             )
             for m in models
         ]
+
+
+@router.get("/models/repo-files")
+async def list_repo_files(
+    repo_id: str,
+    _: bool = Depends(verify_admin_token),
+) -> RepoFilesResponse:
+    """
+    List available GGUF files in a HuggingFace repository.
+
+    Returns model files and mmproj files separately, with suggestions
+    for which files to download.
+    """
+    logger.info(f"[info]GET /admin/models/repo-files?repo_id={repo_id}[/info]")
+
+    mm = ModelManager()
+
+    try:
+        result = await mm.list_repo_files_detailed(repo_id)
+
+        return RepoFilesResponse(
+            repo_id=result["repo_id"],
+            model_files=[
+                RepoFileInfo(
+                    filename=f["filename"],
+                    size_bytes=f["size_bytes"],
+                    quantization=f.get("quantization"),
+                    is_mmproj=f.get("is_mmproj", False),
+                )
+                for f in result["model_files"]
+            ],
+            mmproj_files=[
+                RepoFileInfo(
+                    filename=f["filename"],
+                    size_bytes=f["size_bytes"],
+                    quantization=f.get("quantization"),
+                    is_mmproj=True,
+                )
+                for f in result["mmproj_files"]
+            ],
+            is_multimodal=result["is_multimodal"],
+            suggested_model=result.get("suggested_model"),
+            suggested_mmproj=result.get("suggested_mmproj"),
+        )
+    except Exception as e:
+        logger.error(f"[error]Failed to list repo files: {e}[/error]")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+
+
+@router.get("/models/suggest-mmproj")
+async def suggest_mmproj(
+    model_filename: str,
+    mmproj_files: str,  # Comma-separated list of mmproj filenames
+    _: bool = Depends(verify_admin_token),
+) -> dict:
+    """
+    Get the suggested mmproj file for a given model filename.
+
+    Args:
+        model_filename: The model filename to match
+        mmproj_files: Comma-separated list of available mmproj filenames
+    """
+    logger.debug(f"GET /admin/models/suggest-mmproj?model_filename={model_filename}")
+
+    mm = ModelManager()
+    mmproj_list = [f.strip() for f in mmproj_files.split(",") if f.strip()]
+
+    suggestion = mm.get_suggested_mmproj(model_filename, mmproj_list)
+
+    return {"suggested_mmproj": suggestion}
 
 
 @router.post("/models/download")
@@ -236,6 +312,9 @@ async def download_model(
     Download a model from HuggingFace.
 
     Progress updates are sent via WebSocket to /ws/status.
+
+    For multimodal/vision models, you can specify hf_mmproj_filename to download
+    the specific mmproj file. If not specified, it will be auto-selected.
     """
     # Validate that hf_repo_id is provided
     if not request.hf_repo_id:
@@ -246,6 +325,8 @@ async def download_model(
 
     logger.info(f"[highlight]POST /admin/models/download: {request.hf_repo_id}[/highlight]")
     logger.info(f"  Filename: {request.hf_filename or 'auto-select'}")
+    if request.hf_mmproj_filename:
+        logger.info(f"  mmproj Filename: {request.hf_mmproj_filename}")
 
     mm = ModelManager()
 
@@ -253,6 +334,7 @@ async def download_model(
         path = await mm.download_model(
             repo_id=request.hf_repo_id,
             filename=request.hf_filename,
+            mmproj_filename=request.hf_mmproj_filename,
         )
 
         # Auto-generate model name if not provided
@@ -284,6 +366,7 @@ async def download_model(
                 quantization=None,
                 context_length=4096,
                 model_type=None,
+                mmproj_path=None,
                 is_downloaded=True,
                 is_enabled=True,
                 download_progress=100.0,
@@ -301,6 +384,7 @@ async def download_model(
             quantization=model.get("quantization"),
             context_length=model["context_length"],
             model_type=model.get("model_type"),
+            mmproj_path=model.get("mmproj_path"),
             is_downloaded=True,
             is_enabled=True,
             download_progress=100.0,

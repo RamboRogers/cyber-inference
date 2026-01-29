@@ -249,8 +249,8 @@
 
 <!-- Download Modal -->
 <div id="downloadModal" class="fixed inset-0 z-50 hidden items-center justify-center bg-black/80 backdrop-blur-sm">
-    <div class="cyber-card rounded-xl w-full max-w-lg mx-4 neon-border">
-        <div class="px-6 py-4 border-b border-cyber-neon/20 flex items-center justify-between">
+    <div class="cyber-card rounded-xl w-full max-w-2xl mx-4 neon-border max-h-[90vh] overflow-y-auto">
+        <div class="px-6 py-4 border-b border-cyber-neon/20 flex items-center justify-between sticky top-0 bg-cyber-dark z-10">
             <h3 class="font-cyber text-xl text-cyber-neon">DOWNLOAD MODEL</h3>
             <button onclick="closeDownloadModal()" class="text-gray-400 hover:text-white">
                 <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -259,27 +259,103 @@
             </button>
         </div>
         <form id="downloadForm" class="p-6 space-y-4">
+            <!-- Step 1: Enter Repo ID -->
             <div>
                 <label class="block text-sm font-mono text-gray-400 mb-2">
                     HuggingFace Repo ID or Direct .gguf Path
                 </label>
-                <input type="text"
-                       id="repoId"
-                       name="hf_repo_id"
-                       placeholder="e.g., ggml-org/gpt-oss-20b-GGUF or unsloth/Qwen3-VL-30B-A3B-Instruct-GGUF/Qwen3-VL-30B-A3B-Instruct-UD-Q4_K_XL.gguf"
-                       class="cyber-input w-full px-4 py-3 rounded-lg font-mono"
-                       required>
+                <div class="flex space-x-2">
+                    <input type="text"
+                           id="repoId"
+                           name="hf_repo_id"
+                           placeholder="e.g., ggml-org/gpt-oss-20b-GGUF"
+                           class="cyber-input flex-1 px-4 py-3 rounded-lg font-mono"
+                           required>
+                    <button type="button"
+                            id="fetchFilesBtn"
+                            onclick="fetchRepoFiles()"
+                            class="cyber-btn px-4 py-2 rounded-lg font-mono text-sm whitespace-nowrap">
+                        Fetch Files
+                    </button>
+                </div>
+                <p class="text-xs text-gray-500 mt-1 font-mono">
+                    Enter a repo ID to see available files, or paste a direct .gguf URL
+                </p>
             </div>
-            <div>
+
+            <!-- File Selection (shown after fetching) -->
+            <div id="fileSelectionSection" class="hidden space-y-4">
+                <!-- Multimodal Badge -->
+                <div id="multimodalBadge" class="hidden">
+                    <span class="px-3 py-1 text-xs font-mono rounded bg-cyber-pink/20 text-cyber-pink border border-cyber-pink/30 inline-flex items-center space-x-2">
+                        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                        </svg>
+                        <span>Vision/Multimodal Model Detected</span>
+                    </span>
+                </div>
+
+                <!-- Model File Selection -->
+                <div>
+                    <label class="block text-sm font-mono text-gray-400 mb-2">
+                        Select Model File
+                    </label>
+                    <select id="modelFileSelect"
+                            name="hf_filename"
+                            class="cyber-input w-full px-4 py-3 rounded-lg font-mono bg-cyber-dark"
+                            onchange="onModelFileChange()">
+                        <option value="">Auto-select best quantization</option>
+                    </select>
+                </div>
+
+                <!-- mmproj File Selection (for multimodal models) -->
+                <div id="mmprojSection" class="hidden">
+                    <label class="block text-sm font-mono text-gray-400 mb-2">
+                        Select Vision Projector (mmproj)
+                        <span class="text-cyber-pink">*</span>
+                    </label>
+                    <select id="mmprojFileSelect"
+                            name="hf_mmproj_filename"
+                            class="cyber-input w-full px-4 py-3 rounded-lg font-mono bg-cyber-dark">
+                        <option value="">Auto-select matching mmproj</option>
+                    </select>
+                    <p class="text-xs text-gray-500 mt-1 font-mono">
+                        Required for vision/multimodal models to process images
+                    </p>
+                </div>
+
+                <!-- File Info -->
+                <div id="fileInfoSection" class="hidden bg-cyber-dark/50 rounded-lg p-4 border border-cyber-gray">
+                    <div class="text-sm font-mono space-y-1">
+                        <div class="flex justify-between">
+                            <span class="text-gray-400">Model Size:</span>
+                            <span id="modelSizeInfo" class="text-white">-</span>
+                        </div>
+                        <div class="flex justify-between">
+                            <span class="text-gray-400">Quantization:</span>
+                            <span id="quantInfo" class="text-cyber-blue">-</span>
+                        </div>
+                        <div id="mmprojInfoRow" class="hidden flex justify-between">
+                            <span class="text-gray-400">mmproj Size:</span>
+                            <span id="mmprojSizeInfo" class="text-white">-</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Manual Filename Input (fallback) -->
+            <div id="manualFilenameSection">
                 <label class="block text-sm font-mono text-gray-400 mb-2">
-                    Filename (optional - auto-selects if empty)
+                    Or Enter Filename Manually (optional)
                 </label>
                 <input type="text"
                        id="filename"
-                       name="hf_filename"
-                       placeholder="e.g., gpt-oss-20b-mxfp4.gguf"
+                       placeholder="e.g., model-Q4_K_M.gguf"
                        class="cyber-input w-full px-4 py-3 rounded-lg font-mono">
             </div>
+
+            <!-- Download Progress -->
             <div id="downloadProgress" class="hidden">
                 <div class="flex items-center justify-between mb-2">
                     <span id="downloadStatus" class="text-sm font-mono text-gray-400">Downloading...</span>
@@ -292,6 +368,7 @@
                     Note: Large models may take several minutes to download.
                 </p>
             </div>
+
             <div class="flex justify-end space-x-3 pt-4">
                 <button type="button"
                         onclick="closeDownloadModal()"
@@ -299,6 +376,7 @@
                     Cancel
                 </button>
                 <button type="submit"
+                        id="downloadBtn"
                         class="cyber-btn px-6 py-2 rounded-lg font-mono">
                     Download
                 </button>
@@ -313,6 +391,9 @@
     // WebSocket for progress updates
     let statusWs = null;
     let downloadInProgress = false;
+
+    // Store fetched repo data
+    let repoData = null;
 
     function connectStatusWebSocket() {
         const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -379,6 +460,14 @@
     // Connect on page load
     connectStatusWebSocket();
 
+    function formatBytes(bytes) {
+        if (bytes === 0) return '0 B';
+        const k = 1024;
+        const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    }
+
     function openDownloadModal() {
         document.getElementById('downloadModal').classList.remove('hidden');
         document.getElementById('downloadModal').classList.add('flex');
@@ -391,18 +480,199 @@
         document.getElementById('downloadProgress').classList.add('hidden');
         document.getElementById('progressBar').style.width = '0%';
         document.getElementById('progressBar').classList.remove('bg-red-500');
+
+        // Reset file selection UI
+        document.getElementById('fileSelectionSection').classList.add('hidden');
+        document.getElementById('multimodalBadge').classList.add('hidden');
+        document.getElementById('mmprojSection').classList.add('hidden');
+        document.getElementById('fileInfoSection').classList.add('hidden');
+        document.getElementById('manualFilenameSection').classList.remove('hidden');
+
+        repoData = null;
         downloadInProgress = false;
     }
 
     function downloadFromRepo(repoId) {
         // Clear any previous state
+        closeDownloadModal();
         document.getElementById('repoId').value = repoId.trim();
-        document.getElementById('filename').value = '';
-        document.getElementById('downloadProgress').classList.add('hidden');
-        document.getElementById('progressBar').style.width = '0%';
-        document.getElementById('progressBar').classList.remove('bg-red-500');
-        downloadInProgress = false;
         openDownloadModal();
+
+        // Auto-fetch files for the repo
+        fetchRepoFiles();
+    }
+
+    async function fetchRepoFiles() {
+        const repoId = document.getElementById('repoId').value.trim();
+        if (!repoId) {
+            alert('Please enter a HuggingFace repo ID');
+            return;
+        }
+
+        // Check if it's a direct file URL
+        if (repoId.endsWith('.gguf')) {
+            // Direct file URL, skip file selection
+            document.getElementById('fileSelectionSection').classList.add('hidden');
+            document.getElementById('manualFilenameSection').classList.remove('hidden');
+            return;
+        }
+
+        const fetchBtn = document.getElementById('fetchFilesBtn');
+        const originalText = fetchBtn.textContent;
+        fetchBtn.textContent = 'Loading...';
+        fetchBtn.disabled = true;
+
+        try {
+            const response = await adminFetch(`/admin/models/repo-files?repo_id=${encodeURIComponent(repoId)}`);
+
+            if (!response.ok) {
+                let errorMsg = 'Failed to fetch files';
+                try {
+                    const error = await response.json();
+                    errorMsg = error.detail || errorMsg;
+                } catch (e) {}
+                alert(errorMsg);
+                return;
+            }
+
+            repoData = await response.json();
+            populateFileSelections(repoData);
+
+            // Show file selection, hide manual input
+            document.getElementById('fileSelectionSection').classList.remove('hidden');
+            document.getElementById('manualFilenameSection').classList.add('hidden');
+
+        } catch (error) {
+            console.error('Error:', error);
+            alert('Error fetching repo files: ' + error.message);
+        } finally {
+            fetchBtn.textContent = originalText;
+            fetchBtn.disabled = false;
+        }
+    }
+
+    function populateFileSelections(data) {
+        const modelSelect = document.getElementById('modelFileSelect');
+        const mmprojSelect = document.getElementById('mmprojFileSelect');
+
+        // Clear existing options
+        modelSelect.innerHTML = '<option value="">Auto-select best quantization</option>';
+        mmprojSelect.innerHTML = '<option value="">Auto-select matching mmproj</option>';
+
+        // Populate model files
+        data.model_files.forEach(file => {
+            const option = document.createElement('option');
+            option.value = file.filename;
+            const size = formatBytes(file.size_bytes);
+            const quant = file.quantization ? ` (${file.quantization.toUpperCase()})` : '';
+            option.textContent = `${file.filename}${quant} - ${size}`;
+            if (file.filename === data.suggested_model) {
+                option.selected = true;
+            }
+            modelSelect.appendChild(option);
+        });
+
+        // Handle multimodal models
+        if (data.is_multimodal && data.mmproj_files.length > 0) {
+            document.getElementById('multimodalBadge').classList.remove('hidden');
+            document.getElementById('mmprojSection').classList.remove('hidden');
+
+            // Populate mmproj files
+            data.mmproj_files.forEach(file => {
+                const option = document.createElement('option');
+                option.value = file.filename;
+                const size = formatBytes(file.size_bytes);
+                const quant = file.quantization ? ` (${file.quantization.toUpperCase()})` : '';
+                option.textContent = `${file.filename}${quant} - ${size}`;
+                if (file.filename === data.suggested_mmproj) {
+                    option.selected = true;
+                }
+                mmprojSelect.appendChild(option);
+            });
+        } else {
+            document.getElementById('multimodalBadge').classList.add('hidden');
+            document.getElementById('mmprojSection').classList.add('hidden');
+        }
+
+        // Update file info
+        updateFileInfo();
+    }
+
+    function onModelFileChange() {
+        // Update suggested mmproj when model selection changes
+        if (repoData && repoData.is_multimodal) {
+            const modelFilename = document.getElementById('modelFileSelect').value;
+            if (modelFilename && repoData.mmproj_files.length > 0) {
+                // Call API to get suggested mmproj
+                updateSuggestedMmproj(modelFilename);
+            }
+        }
+        updateFileInfo();
+    }
+
+    async function updateSuggestedMmproj(modelFilename) {
+        if (!repoData || !repoData.mmproj_files.length) return;
+
+        const mmprojFiles = repoData.mmproj_files.map(f => f.filename).join(',');
+        try {
+            const response = await adminFetch(
+                `/admin/models/suggest-mmproj?model_filename=${encodeURIComponent(modelFilename)}&mmproj_files=${encodeURIComponent(mmprojFiles)}`
+            );
+            if (response.ok) {
+                const data = await response.json();
+                if (data.suggested_mmproj) {
+                    document.getElementById('mmprojFileSelect').value = data.suggested_mmproj;
+                    updateFileInfo();
+                }
+            }
+        } catch (e) {
+            console.error('Error getting mmproj suggestion:', e);
+        }
+    }
+
+    function updateFileInfo() {
+        if (!repoData) return;
+
+        const modelFilename = document.getElementById('modelFileSelect').value;
+        const mmprojFilename = document.getElementById('mmprojFileSelect').value;
+
+        if (!modelFilename && !mmprojFilename) {
+            document.getElementById('fileInfoSection').classList.add('hidden');
+            return;
+        }
+
+        document.getElementById('fileInfoSection').classList.remove('hidden');
+
+        // Find model file info
+        const modelFile = repoData.model_files.find(f => f.filename === modelFilename);
+        if (modelFile) {
+            document.getElementById('modelSizeInfo').textContent = formatBytes(modelFile.size_bytes);
+            document.getElementById('quantInfo').textContent = modelFile.quantization ?
+                modelFile.quantization.toUpperCase() : '-';
+        } else if (repoData.suggested_model) {
+            const suggested = repoData.model_files.find(f => f.filename === repoData.suggested_model);
+            if (suggested) {
+                document.getElementById('modelSizeInfo').textContent = formatBytes(suggested.size_bytes) + ' (auto)';
+                document.getElementById('quantInfo').textContent = suggested.quantization ?
+                    suggested.quantization.toUpperCase() + ' (auto)' : '-';
+            }
+        }
+
+        // Find mmproj file info
+        if (repoData.is_multimodal) {
+            const mmprojFile = repoData.mmproj_files.find(f => f.filename === mmprojFilename);
+            document.getElementById('mmprojInfoRow').classList.remove('hidden');
+            if (mmprojFile) {
+                document.getElementById('mmprojSizeInfo').textContent = formatBytes(mmprojFile.size_bytes);
+            } else if (repoData.suggested_mmproj) {
+                const suggested = repoData.mmproj_files.find(f => f.filename === repoData.suggested_mmproj);
+                if (suggested) {
+                    document.getElementById('mmprojSizeInfo').textContent = formatBytes(suggested.size_bytes) + ' (auto)';
+                }
+            }
+        } else {
+            document.getElementById('mmprojInfoRow').classList.add('hidden');
+        }
     }
 
     document.getElementById('downloadForm').addEventListener('submit', async function(e) {
@@ -414,7 +684,18 @@
         }
 
         const repoId = document.getElementById('repoId').value;
-        const filename = document.getElementById('filename').value;
+
+        // Get filename from dropdown or manual input
+        let filename = document.getElementById('modelFileSelect').value;
+        if (!filename) {
+            filename = document.getElementById('filename').value;
+        }
+
+        // Get mmproj filename if applicable
+        let mmprojFilename = null;
+        if (repoData && repoData.is_multimodal) {
+            mmprojFilename = document.getElementById('mmprojFileSelect').value || null;
+        }
 
         downloadInProgress = true;
         document.getElementById('downloadProgress').classList.remove('hidden');
@@ -428,16 +709,23 @@
         }
 
         try {
+            const requestBody = {
+                name: filename ? filename.replace('.gguf', '') : null,
+                hf_repo_id: repoId,
+                hf_filename: filename || null,
+            };
+
+            // Include mmproj filename for multimodal models
+            if (mmprojFilename) {
+                requestBody.hf_mmproj_filename = mmprojFilename;
+            }
+
             const response = await adminFetch('/admin/models/download', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({
-                    name: filename ? filename.replace('.gguf', '') : null,
-                    hf_repo_id: repoId,
-                    hf_filename: filename || null,
-                }),
+                body: JSON.stringify(requestBody),
             });
 
             if (response.ok) {

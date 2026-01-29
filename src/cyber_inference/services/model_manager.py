@@ -306,7 +306,59 @@ class ModelManager:
         return new_repo_id, new_filename
 
     @staticmethod
+    def _extract_model_base_name(filename: str) -> str:
+        """
+        Extract the base model name by removing quantization suffixes.
+
+        Handles patterns like:
+        - Model-Name-Q4_K_M.gguf -> Model-Name
+        - Model-Name.Q8_0.gguf -> Model-Name
+        - Model-Name.BF16.gguf -> Model-Name
+        - Model-Name-F16.gguf -> Model-Name
+        """
+        stem = Path(filename).stem
+        # Remove common quantization patterns (case-insensitive)
+        # Pattern 1: -Q4_K_M, -Q8_0, etc. (hyphen prefix)
+        # Pattern 2: .Q4_K_M, .Q8_0, .BF16, .F16, .F32 (dot prefix)
+        # Pattern 3: _Q4_K_M (underscore prefix)
+        patterns = [
+            r"(?i)[._-]q\d+[_a-z0-9]*$",  # Q4_K_M, Q8_0, etc.
+            r"(?i)[._-](?:bf16|f16|f32)$",  # BF16, F16, F32
+            r"(?i)[._-](?:fp16|fp32)$",  # FP16, FP32
+        ]
+        for pattern in patterns:
+            stem = re.sub(pattern, "", stem)
+        return stem
+
+    @staticmethod
+    def _extract_quant_suffix(filename: str) -> Optional[str]:
+        """
+        Extract the quantization suffix from a filename.
+
+        Returns lowercase suffix like 'bf16', 'f16', 'q8_0', 'q4_k_m', etc.
+        """
+        stem = Path(filename).stem.lower()
+        # Match quantization patterns at end of filename
+        patterns = [
+            r"[._-](q\d+[_a-z0-9]*)$",  # Q4_K_M, Q8_0, etc.
+            r"[._-](bf16|f16|f32|fp16|fp32)$",  # BF16, F16, etc.
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, stem, re.IGNORECASE)
+            if match:
+                return match.group(1).lower()
+        return None
+
+    @staticmethod
     def _select_mmproj_file(files: list[str], model_filename: str) -> Optional[str]:
+        """
+        Select the appropriate mmproj file for a model.
+
+        Handles various naming patterns:
+        - mmproj-{model}.gguf
+        - {Model}.mmproj-{quant}.gguf (e.g., Cosmos-Reason2-8B.mmproj-bf16.gguf)
+        - mmproj-{quant}.gguf
+        """
         mmproj_files = sorted([f for f in files if ModelManager._is_mmproj_file(f)])
         if not mmproj_files:
             return None
@@ -314,45 +366,78 @@ class ModelManager:
         def basename(path: str) -> str:
             return Path(path).name
 
-        def pick_by_basename(names: list[str]) -> Optional[str]:
-            preferred = (
-                "mmproj-f16.gguf",
-                "mmproj-f32.gguf",
-                "mmproj-q8_0.gguf",
-                "mmproj-q4_0.gguf",
-            )
-            lowered = {basename(name).lower(): name for name in names}
-            for candidate in preferred:
-                if candidate in lowered:
-                    return lowered[candidate]
-            return None
+        def pick_by_quant_preference(candidates: list[str], model_quant: Optional[str]) -> Optional[str]:
+            """Pick from candidates preferring matching quant or default order."""
+            if not candidates:
+                return None
+
+            # If we have a model quantization, try to match it exactly first
+            if model_quant:
+                model_quant_lower = model_quant.lower()
+                for candidate in candidates:
+                    cand_lower = basename(candidate).lower()
+                    # Check for exact quantization match (e.g., bf16 matches bf16, not f16)
+                    if f"mmproj-{model_quant_lower}" in cand_lower or f".mmproj-{model_quant_lower}" in cand_lower:
+                        return candidate
+
+            # Preference order: f16 > bf16 > f32 > q8_0 > others
+            preferred_suffixes = ("f16", "bf16", "f32", "q8_0", "q4_0")
+            for suffix in preferred_suffixes:
+                for candidate in candidates:
+                    cand_lower = basename(candidate).lower()
+                    if f"mmproj-{suffix}" in cand_lower or f".mmproj-{suffix}" in cand_lower:
+                        return candidate
+
+            # Return shortest name as fallback
+            return sorted(candidates, key=lambda x: len(basename(x)))[0]
 
         model_stem = Path(model_filename).stem
+        model_base = ModelManager._extract_model_base_name(model_filename)
+        model_quant = ModelManager._extract_quant_suffix(model_filename)
+        model_base_lower = model_base.lower()
+
+        # Strategy 1: Exact match - mmproj-{model_stem}.gguf
         exact = f"mmproj-{model_stem}.gguf".lower()
         for candidate in mmproj_files:
             if basename(candidate).lower() == exact:
                 return candidate
 
-        base_name = re.sub(r"(?i)-q\d+.*$", "", model_stem)
-        prefix = f"mmproj-{base_name}".lower()
-        prefixed = [f for f in mmproj_files if basename(f).lower().startswith(prefix)]
-        if len(prefixed) == 1:
-            return prefixed[0]
-        if prefixed:
-            return sorted(prefixed, key=lambda name: len(basename(name)))[0]
+        # Strategy 2: Pattern {ModelBase}.mmproj-{quant}.gguf
+        # e.g., Cosmos-Reason2-8B.mmproj-bf16.gguf for Cosmos-Reason2-8B.BF16.gguf
+        pattern_matches = []
+        for candidate in mmproj_files:
+            cand_lower = basename(candidate).lower()
+            # Check if filename starts with model base name and contains .mmproj
+            if cand_lower.startswith(model_base_lower) and ".mmproj" in cand_lower:
+                pattern_matches.append(candidate)
 
+        if pattern_matches:
+            return pick_by_quant_preference(pattern_matches, model_quant)
+
+        # Strategy 3: Prefix match - mmproj-{model_base}*.gguf
+        prefix = f"mmproj-{model_base_lower}"
+        prefixed = [f for f in mmproj_files if basename(f).lower().startswith(prefix)]
+        if prefixed:
+            return pick_by_quant_preference(prefixed, model_quant)
+
+        # Strategy 4: Single mmproj file in repo
         if len(mmproj_files) == 1:
             return mmproj_files[0]
 
-        generic = pick_by_basename(mmproj_files)
-        if generic:
-            return generic
+        # Strategy 5: Generic mmproj files (no model name prefix)
+        generic_patterns = [
+            "mmproj-f16.gguf", "mmproj-bf16.gguf", "mmproj-f32.gguf",
+            "mmproj-q8_0.gguf", "mmproj-q4_0.gguf", "mmproj.gguf"
+        ]
+        lowered_map = {basename(f).lower(): f for f in mmproj_files}
+        for pattern in generic_patterns:
+            if pattern in lowered_map:
+                return lowered_map[pattern]
 
-        contains = [f for f in mmproj_files if base_name.lower() in basename(f).lower()]
-        if len(contains) == 1:
-            return contains[0]
+        # Strategy 6: Model base name appears anywhere in mmproj filename
+        contains = [f for f in mmproj_files if model_base_lower in basename(f).lower()]
         if contains:
-            return sorted(contains, key=lambda name: len(basename(name)))[0]
+            return pick_by_quant_preference(contains, model_quant)
 
         logger.warning(
             "[warning]Multiple mmproj files found but none matched model %s[/warning]",
@@ -365,16 +450,38 @@ class ModelManager:
         repo_id: str,
         model_path: Path,
         repo_files: Optional[list[str]] = None,
+        mmproj_filename: Optional[str] = None,
         force: bool = False,
     ) -> Optional[Path]:
+        """
+        Download the mmproj file for a multimodal model.
+
+        Args:
+            repo_id: HuggingFace repository ID
+            model_path: Path to the main model file
+            repo_files: Optional list of repo files (to avoid re-fetching)
+            mmproj_filename: Explicit mmproj filename to download (auto-select if None)
+            force: Force redownload even if exists
+
+        Returns:
+            Path to downloaded mmproj file, or None if not applicable
+        """
         try:
             files = repo_files or list_repo_files(repo_id, token=self._hf_token)
         except Exception as e:
             logger.warning(f"[warning]Could not list repo files for mmproj: {e}[/warning]")
             return None
 
-        mmproj_filename = self._select_mmproj_file(files, model_path.name)
+        # Use explicit filename or auto-select
         if not mmproj_filename:
+            mmproj_filename = self._select_mmproj_file(files, model_path.name)
+
+        if not mmproj_filename:
+            return None
+
+        # Verify the file exists in repo
+        if mmproj_filename not in files:
+            logger.warning(f"[warning]Specified mmproj file not found in repo: {mmproj_filename}[/warning]")
             return None
 
         local_path = model_path.parent / f"mmproj-{model_path.stem}.gguf"
@@ -478,8 +585,7 @@ class ModelManager:
                         size = 0
 
                     # Extract quantization from filename
-                    quant_match = re.search(r'[qQ](\d+)_?([kKmM])?', filename)
-                    quantization = quant_match.group(0) if quant_match else None
+                    quantization = self._extract_quant_suffix(filename)
 
                     gguf_files.append({
                         "filename": filename,
@@ -494,10 +600,109 @@ class ModelManager:
             logger.error(f"[error]Failed to list repo files: {e}[/error]")
             raise
 
+    async def list_repo_files_detailed(self, repo_id: str) -> dict:
+        """
+        List all GGUF files in a repository with model/mmproj pairing.
+
+        Args:
+            repo_id: HuggingFace repository ID
+
+        Returns:
+            Dict with model_files, mmproj_files, is_multimodal, and suggestions
+        """
+        logger.info(f"[info]Listing detailed files in repo: {repo_id}[/info]")
+
+        try:
+            all_files = list_repo_files(repo_id, token=self._hf_token)
+
+            model_files = []
+            mmproj_files = []
+
+            for filename in all_files:
+                if not filename.endswith(".gguf"):
+                    continue
+
+                # Get file size
+                try:
+                    info = self._hf_api.get_hf_file_metadata(
+                        f"https://huggingface.co/{repo_id}/resolve/main/{filename}"
+                    )
+                    size = info.size if hasattr(info, 'size') else 0
+                except Exception:
+                    size = 0
+
+                quantization = self._extract_quant_suffix(filename)
+
+                file_info = {
+                    "filename": filename,
+                    "size_bytes": size,
+                    "quantization": quantization,
+                    "is_mmproj": self._is_mmproj_file(filename),
+                }
+
+                if self._is_mmproj_file(filename):
+                    mmproj_files.append(file_info)
+                else:
+                    model_files.append(file_info)
+
+            is_multimodal = len(mmproj_files) > 0
+
+            # Auto-suggest best model file (prefer Q4_K_M, then others)
+            suggested_model = None
+            if model_files:
+                preferred_quants = ["q4_k_m", "q4_k_s", "q5_k_m", "q5_k_s", "q4_0", "q8_0"]
+                for quant in preferred_quants:
+                    for f in model_files:
+                        if f["quantization"] and quant == f["quantization"].lower():
+                            suggested_model = f["filename"]
+                            break
+                    if suggested_model:
+                        break
+                if not suggested_model:
+                    suggested_model = model_files[0]["filename"]
+
+            # Auto-suggest mmproj for the suggested model
+            suggested_mmproj = None
+            if suggested_model and mmproj_files:
+                suggested_mmproj = self._select_mmproj_file(
+                    [f["filename"] for f in mmproj_files],
+                    suggested_model
+                )
+
+            result = {
+                "repo_id": repo_id,
+                "model_files": model_files,
+                "mmproj_files": mmproj_files,
+                "is_multimodal": is_multimodal,
+                "suggested_model": suggested_model,
+                "suggested_mmproj": suggested_mmproj,
+            }
+
+            logger.info(f"[success]Found {len(model_files)} model files, {len(mmproj_files)} mmproj files[/success]")
+            return result
+
+        except Exception as e:
+            logger.error(f"[error]Failed to list repo files: {e}[/error]")
+            raise
+
+    def get_suggested_mmproj(self, model_filename: str, mmproj_files: list[str]) -> Optional[str]:
+        """
+        Get the suggested mmproj file for a given model filename.
+
+        Args:
+            model_filename: The model filename to match
+            mmproj_files: List of available mmproj filenames
+
+        Returns:
+            Suggested mmproj filename or None
+        """
+        return self._select_mmproj_file(mmproj_files, model_filename)
+
     async def download_model(
         self,
         repo_id: str,
         filename: Optional[str] = None,
+        mmproj_filename: Optional[str] = None,
         force: bool = False,
     ) -> Path:
         """
@@ -506,6 +711,7 @@ class ModelManager:
         Args:
             repo_id: HuggingFace repository ID
             filename: Specific file to download (auto-detect if None)
+            mmproj_filename: Specific mmproj file to download for vision models (auto-detect if None)
             force: Force redownload even if exists
 
         Returns:
@@ -513,6 +719,7 @@ class ModelManager:
         """
         repo_id = repo_id.strip()
         filename = filename.strip() if filename else None
+        mmproj_filename = mmproj_filename.strip() if mmproj_filename else None
         parsed = self._split_repo_and_filename(repo_id, filename)
         repo_id, filename = parsed
 
@@ -548,9 +755,16 @@ class ModelManager:
         if local_path.exists() and not force:
             logger.info(f"[success]Model already exists: {local_path}[/success]")
 
-            # Ensure it's registered in DB
-            await self._register_model(repo_id, filename, local_path)
-            await self._download_mmproj(repo_id, local_path, repo_files=repo_files, force=force)
+            # Download mmproj and get path
+            mmproj_path = await self._download_mmproj(
+                repo_id, local_path,
+                repo_files=repo_files,
+                mmproj_filename=mmproj_filename,
+                force=force
+            )
+
+            # Ensure it's registered in DB with mmproj_path
+            await self._register_model(repo_id, filename, local_path, mmproj_path=mmproj_path)
 
             # Notify complete
             await self._notify_progress(repo_id, filename, 100, "complete")
@@ -599,9 +813,16 @@ class ModelManager:
 
             logger.info(f"[success]Download complete: {local_path}[/success]")
 
-            # Register in database
-            await self._register_model(repo_id, filename, local_path)
-            await self._download_mmproj(repo_id, local_path, repo_files=repo_files, force=force)
+            # Download mmproj and get path
+            mmproj_path = await self._download_mmproj(
+                repo_id, local_path,
+                repo_files=repo_files,
+                mmproj_filename=mmproj_filename,
+                force=force
+            )
+
+            # Register in database with mmproj_path
+            await self._register_model(repo_id, filename, local_path, mmproj_path=mmproj_path)
 
             # Notify complete
             await self._notify_progress(repo_id, filename, 100, "complete")
@@ -641,13 +862,13 @@ class ModelManager:
         repo_id: str,
         filename: str,
         file_path: Path,
+        mmproj_path: Optional[Path] = None,
     ) -> Model:
         """Register a model in the database."""
         logger.debug(f"Registering model: {filename}")
 
-        # Extract info from filename
-        quant_match = re.search(r'[qQ](\d+)_?([kKmM])?', filename)
-        quantization = quant_match.group(0) if quant_match else None
+        # Extract quantization from filename using our improved method
+        quantization = self._extract_quant_suffix(filename)
 
         # Get file size
         size_bytes = file_path.stat().st_size if file_path.exists() else 0
@@ -655,6 +876,9 @@ class ModelManager:
         # Determine model name (use filename without extension)
         model_name = filename.replace(".gguf", "")
         context_length = self._read_gguf_context_length(file_path)
+
+        # Convert mmproj_path to string if provided
+        mmproj_path_str = str(mmproj_path) if mmproj_path else None
 
         async with get_db_session() as session:
             # Check if already registered
@@ -671,6 +895,11 @@ class ModelManager:
                 existing.download_progress = 100.0
                 if context_length:
                     existing.context_length = context_length
+
+                # Update mmproj_path
+                if mmproj_path_str:
+                    existing.mmproj_path = mmproj_path_str
+                    logger.info(f"  Updated mmproj path: {mmproj_path_str}")
 
                 # Auto-detect model type if not set
                 if not existing.model_type:
@@ -703,13 +932,17 @@ class ModelManager:
                 quantization=quantization,
                 context_length=context_length or 4096,
                 model_type=model_type,
+                mmproj_path=mmproj_path_str,
                 is_downloaded=True,
                 download_progress=100.0,
             )
             session.add(model)
             await session.commit()
 
-            logger.info(f"[success]Model registered: {model_name}[/success]")
+            if mmproj_path_str:
+                logger.info(f"[success]Model registered: {model_name} (with mmproj)[/success]")
+            else:
+                logger.info(f"[success]Model registered: {model_name}[/success]")
             return model
 
     async def list_models(self) -> list[dict]:
@@ -748,6 +981,7 @@ class ModelManager:
                     "quantization": model.quantization,
                     "context_length": model.context_length,
                     "model_type": model.model_type,
+                    "mmproj_path": model.mmproj_path,
                     "is_downloaded": model.is_downloaded,
                     "is_enabled": model.is_enabled,
                     "last_used_at": model.last_used_at,
@@ -765,6 +999,12 @@ class ModelManager:
                 continue
             if file_path.name not in registered_files:
                 context_length = self._read_gguf_context_length(file_path)
+                # Try to find associated mmproj file
+                mmproj_path = None
+                potential_mmproj = file_path.parent / f"mmproj-{file_path.stem}.gguf"
+                if potential_mmproj.exists():
+                    mmproj_path = str(potential_mmproj)
+
                 models.append({
                     "id": None,
                     "name": file_path.stem,
@@ -775,6 +1015,7 @@ class ModelManager:
                     "quantization": None,
                     "context_length": context_length or 4096,
                     "model_type": None,
+                    "mmproj_path": mmproj_path,
                     "is_downloaded": True,
                     "is_enabled": True,
                     "last_used_at": None,

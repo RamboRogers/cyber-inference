@@ -165,24 +165,47 @@ class ProcessManager:
             logger.debug(f"Released port: {port}")
 
     def _find_mmproj(self, model_path: Path) -> Optional[Path]:
+        """
+        Find the mmproj file for a model by scanning the models directory.
+
+        This is a fallback when mmproj_path is not stored in the database.
+        Prefers the standardized naming: mmproj-{model_stem}.gguf
+        """
         mmproj_files = sorted(
             [p for p in model_path.parent.glob("*.gguf") if "mmproj" in p.name.lower()]
         )
         if not mmproj_files:
             return None
 
+        # Strategy 1: Exact match - mmproj-{model_stem}.gguf
         exact = model_path.parent / f"mmproj-{model_path.stem}.gguf"
         if exact.exists():
             return exact
 
-        base_name = re.sub(r"(?i)-q\d+.*$", "", model_path.stem)
-        prefix = f"mmproj-{base_name}".lower()
+        # Strategy 2: Match by base name (without quant suffix)
+        # Remove quantization patterns: -Q4_K_M, .BF16, etc.
+        patterns = [
+            r"(?i)[._-]q\d+[_a-z0-9]*$",
+            r"(?i)[._-](?:bf16|f16|f32|fp16|fp32)$",
+        ]
+        base_name = model_path.stem
+        for pattern in patterns:
+            base_name = re.sub(pattern, "", base_name)
 
+        prefix = f"mmproj-{base_name}".lower()
         prefixed = [p for p in mmproj_files if p.name.lower().startswith(prefix)]
         if len(prefixed) == 1:
             return prefixed[0]
         if prefixed:
             return sorted(prefixed, key=lambda p: len(p.name))[0]
+
+        # Strategy 3: Base name appears anywhere in mmproj filename
+        base_lower = base_name.lower()
+        contains = [p for p in mmproj_files if base_lower in p.name.lower()]
+        if len(contains) == 1:
+            return contains[0]
+        if contains:
+            return sorted(contains, key=lambda p: len(p.name))[0]
 
         logger.info(
             "[info]No mmproj match found for model %s[/info]",
@@ -198,6 +221,7 @@ class ProcessManager:
         gpu_layers: Optional[int] = None,
         threads: Optional[int] = None,
         embedding: bool = False,
+        mmproj_path: Optional[Path] = None,
     ) -> LlamaProcess:
         """
         Start a new llama-server process for a model.
@@ -208,6 +232,8 @@ class ProcessManager:
             context_size: Context window size (default from settings)
             gpu_layers: Number of GPU layers (-1 for auto)
             threads: Number of CPU threads
+            embedding: Enable embedding mode
+            mmproj_path: Path to mmproj file for vision models (auto-detect if None)
 
         Returns:
             LlamaProcess instance
@@ -232,7 +258,13 @@ class ProcessManager:
         ctx_size = context_size or settings.default_context_size
         n_gpu_layers = gpu_layers if gpu_layers is not None else settings.llama_gpu_layers
         n_threads = threads or settings.llama_threads
-        mmproj_path = self._find_mmproj(model_path)
+
+        # Use provided mmproj_path or try to find one
+        if mmproj_path is None:
+            mmproj_path = self._find_mmproj(model_path)
+        elif not mmproj_path.exists():
+            logger.warning(f"[warning]Specified mmproj not found: {mmproj_path}[/warning]")
+            mmproj_path = self._find_mmproj(model_path)
 
         cmd = [
             str(llama_server),
@@ -243,7 +275,7 @@ class ProcessManager:
             "--n-gpu-layers", str(n_gpu_layers),
         ]
 
-        if mmproj_path:
+        if mmproj_path and mmproj_path.exists():
             cmd.extend(["--mmproj", str(mmproj_path)])
             logger.info(f"  Using mmproj: {mmproj_path.name}")
 

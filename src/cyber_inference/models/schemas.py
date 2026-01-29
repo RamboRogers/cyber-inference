@@ -188,6 +188,7 @@ class ModelCreate(BaseModel):
     name: Optional[str] = Field(None, description="Unique model name (auto-generated if not provided)")
     hf_repo_id: Optional[str] = Field(None, description="HuggingFace repository ID")
     hf_filename: Optional[str] = Field(None, description="Specific filename to download")
+    hf_mmproj_filename: Optional[str] = Field(None, description="Specific mmproj filename to download for vision models")
     model_type: ModelType = Field(ModelType.CHAT, description="Type of model")
     context_length: int = Field(4096, description="Context length")
 
@@ -211,6 +212,7 @@ class ModelResponse(BaseModel):
     quantization: Optional[str]
     context_length: int
     model_type: Optional[str]
+    mmproj_path: Optional[str] = None
     is_downloaded: bool
     is_enabled: bool
     download_progress: float
@@ -219,6 +221,24 @@ class ModelResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class RepoFileInfo(BaseModel):
+    """Information about a file in a HuggingFace repository."""
+    filename: str
+    size_bytes: int
+    quantization: Optional[str] = None
+    is_mmproj: bool = False
+
+
+class RepoFilesResponse(BaseModel):
+    """Response with repository files information."""
+    repo_id: str
+    model_files: list[RepoFileInfo] = Field(default_factory=list, description="Main model GGUF files")
+    mmproj_files: list[RepoFileInfo] = Field(default_factory=list, description="mmproj files for vision models")
+    is_multimodal: bool = Field(False, description="Whether repo contains vision/multimodal model files")
+    suggested_model: Optional[str] = Field(None, description="Auto-suggested model file to download")
+    suggested_mmproj: Optional[str] = Field(None, description="Auto-suggested mmproj file for selected model")
 
 
 class ModelSessionResponse(BaseModel):
