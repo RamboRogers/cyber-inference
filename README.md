@@ -4,6 +4,7 @@
   <img src="https://img.shields.io/badge/Python-3.12+-00ff9f?style=for-the-badge&logo=python&logoColor=00ff9f" alt="Python">
   <img src="https://img.shields.io/badge/License-GPLv3-00ff9f?style=for-the-badge" alt="License">
   <img src="https://img.shields.io/badge/llama.cpp-Powered-00ff9f?style=for-the-badge" alt="llama.cpp">
+  <img src="https://img.shields.io/badge/whisper.cpp-Powered-00ff9f?style=for-the-badge" alt="whisper.cpp">
   <img src="https://img.shields.io/badge/NVIDIA-Jetson-76B900?style=for-the-badge&logo=nvidia&logoColor=white" alt="Jetson">
 </p>
 
@@ -14,7 +15,7 @@
 
 ---
 
-Cyber-Inference is a web GUI management tool for running OpenAI-compatible inference servers. Built on llama.cpp, it provides automatic model management, dynamic resource allocation, and a beautiful cyberpunk-themed interface designed for edge deployment. VLM/LLM and whatever llama.cpp supports.
+Cyber-Inference is a web GUI management tool for running OpenAI-compatible inference servers. Built on llama.cpp and whisper.cpp, it provides automatic model management, dynamic resource allocation, and a beautiful cyberpunk-themed interface designed for edge deployment. Supports LLMs, Vision Language Models (VLM), Embeddings, and Audio Transcription (Whisper).
 
 ## Why Cyber-Inference?
 
@@ -35,6 +36,18 @@ Specifically, I made this project for MacOS and NVIDIA Jetson devices.
 - **📊 Resource Monitoring** - Real-time CPU, RAM, and GPU usage tracking
 - **🔒 Optional Security** - Admin password protection with JWT authentication
 - **🐳 Docker Ready** - Full Docker and docker-compose support with NVIDIA runtime
+- **🎙️ Audio Transcription** - Speech-to-text with Whisper models via whisper.cpp
+- **👁️ Vision Models** - Multimodal support with automatic mmproj file handling
+- **📊 Embeddings** - Text embedding models for RAG and semantic search
+
+## 🎯 Supported Model Types
+
+| Type | Server | Models | API Endpoint |
+|------|--------|--------|--------------|
+| **Chat/LLM** | llama-server | Llama, Qwen, Mistral, etc. | `/v1/chat/completions` |
+| **Vision (VLM)** | llama-server | Qwen-VL, GLM-4V, etc. | `/v1/chat/completions` |
+| **Embeddings** | llama-server | BGE, Qwen-Embed, E5, etc. | `/v1/embeddings` |
+| **Transcription** | whisper-server | Whisper Large V3, etc. | `/v1/audio/transcriptions` |
 
 ## 🚀 Quick Start
 
@@ -85,13 +98,13 @@ Visit **http://localhost:8337** to access the web interface.
 <img src="download.png">
 
 1. Open the web GUI at http://localhost:8337
-2. Navigate to **Models** and download a model (e.g., `Qwen/Qwen3-VL-4B-Instruct-GGUF`)
+2. Navigate to **Models** and download a model (e.g., `ggml-org/Qwen3-4B-GGUF`)
 3. The model will automatically load when you make an API request
 4. Use the OpenAI-compatible API at http://localhost:8337/v1/
 
 ## 📖 API Usage
 
-### Python (OpenAI SDK)
+### Chat Completion (Python)
 
 ```python
 from openai import OpenAI
@@ -102,7 +115,7 @@ client = OpenAI(
 )
 
 response = client.chat.completions.create(
-    model="Llama-3.2-3B-Instruct-Q4_K_M",  # Your downloaded model name
+    model="Qwen3-4B-Q4_K_M",  # Your downloaded model name
     messages=[
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": "Hello!"}
@@ -112,15 +125,60 @@ response = client.chat.completions.create(
 print(response.choices[0].message.content)
 ```
 
-### cURL
+### Embeddings (Python)
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8337/v1", api_key="not-needed")
+
+response = client.embeddings.create(
+    model="Qwen3-Embedding-0.6B-Q8_0",
+    input="Hello, world!"
+)
+
+print(response.data[0].embedding[:5])  # First 5 dimensions
+```
+
+### Audio Transcription (Python)
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:8337/v1", api_key="not-needed")
+
+with open("audio.mp3", "rb") as audio_file:
+    response = client.audio.transcriptions.create(
+        model="ggml-large-v3-turbo",  # Your whisper model
+        file=audio_file
+    )
+
+print(response.text)
+```
+
+### cURL Examples
 
 ```bash
+# Chat completion
 curl http://localhost:8337/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "Llama-3.2-3B-Instruct-Q4_K_M",
+    "model": "Qwen3-4B-Q4_K_M",
     "messages": [{"role": "user", "content": "Hello!"}]
   }'
+
+# Embeddings
+curl http://localhost:8337/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "Qwen3-Embedding-0.6B-Q8_0",
+    "input": "Hello, world!"
+  }'
+
+# Audio transcription
+curl http://localhost:8337/v1/audio/transcriptions \
+  -F "file=@audio.mp3" \
+  -F "model=ggml-large-v3-turbo"
 ```
 
 ## 🐳 Docker Deployment
@@ -176,10 +234,10 @@ docker run -d \
 
 | Device | Memory | Recommended Models |
 |--------|--------|-------------------|
-| Jetson Thor | 128GB+ | GPT-OSS 20B, Nemotron Nano 3 30B |
-| Jetson Orin | 32-64GB | Qwen3 4B, GLM 4.6V Flash, Nemotron Nano 3 |
-| Jetson AGX | 16-32GB | Qwen3 4B, GLM 4.6V Flash |
-| Jetson Nano | 4-8GB | Qwen3 Embedding 0.6B, BGE M3 |
+| Jetson Thor | 128GB+ | GPT-OSS 20B, Nemotron Nano 3 30B, Whisper Large V3 |
+| Jetson Orin | 32-64GB | Qwen3 4B, GLM 4.6V Flash, Whisper Large V3 Turbo |
+| Jetson AGX | 16-32GB | Qwen3 4B, GLM 4.6V Flash, Whisper Medium |
+| Jetson Nano | 4-8GB | Qwen3 Embedding 0.6B, BGE M3, Whisper Small |
 
 ### Build from Source
 
@@ -227,8 +285,11 @@ cyber-inference serve [OPTIONS]
 # Initialize directories and database
 cyber-inference init
 
-# Install/update llama.cpp
+# Install/update llama.cpp server binary
 cyber-inference install-llama
+
+# Install/update whisper.cpp server binary (for transcription)
+cyber-inference install-whisper
 
 # Download a model
 cyber-inference download-model ggml-org/gpt-oss-20b-GGUF
@@ -250,6 +311,8 @@ cyber-inference version
 | POST | `/v1/chat/completions` | Chat completion (streaming supported) |
 | POST | `/v1/completions` | Text completion |
 | POST | `/v1/embeddings` | Generate embeddings |
+| POST | `/v1/audio/transcriptions` | Transcribe audio to text (Whisper) |
+| POST | `/v1/audio/translations` | Translate audio to English (Whisper) |
 
 ### Admin Endpoints
 
@@ -301,19 +364,35 @@ The web interface features a cyberpunk aesthetic with:
 ┌─────────────────────────────────────────────────────────────┐
 │                      Core Services                           │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐    │
-│  │ Process  │  │  Model   │  │ Resource │  │  Config  │    │
-│  │ Manager  │  │ Manager  │  │ Monitor  │  │ Manager  │    │
+│  │ Process  │  │  Model   │  │ Resource │  │  Auto    │    │
+│  │ Manager  │  │ Manager  │  │ Monitor  │  │ Loader   │    │
 │  └──────────┘  └──────────┘  └──────────┘  └──────────┘    │
 └─────────────────────────────────────────────────────────────┘
                               │
 ┌─────────────────────────────────────────────────────────────┐
-│                   llama.cpp Servers                          │
-│     ┌────────────┐  ┌────────────┐  ┌────────────┐          │
-│     │ :8338      │  │ :8339      │  │ :834X      │          │
-│     │ Model A    │  │ Model B    │  │ Model N    │          │
-│     └────────────┘  └────────────┘  └────────────┘          │
+│                   Inference Servers                          │
+│  ┌────────────────────────┐  ┌────────────────────────┐    │
+│  │     llama-server       │  │    whisper-server      │    │
+│  │  (LLM/VLM/Embedding)   │  │   (Transcription)      │    │
+│  │  :8338, :8339, ...     │  │   :834X, ...           │    │
+│  └────────────────────────┘  └────────────────────────┘    │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+## 🎙️ Whisper Transcription
+
+Cyber-Inference supports speech-to-text transcription via whisper.cpp. Download Whisper models from the **ggerganov/whisper.cpp** repository.
+
+**Recommended Whisper Models:**
+
+| Model | Size | Quality | Speed | Use Case |
+|-------|------|---------|-------|----------|
+| `ggml-large-v3-turbo` | 809M | Excellent | Fast | **Recommended** - Best balance |
+| `ggml-large-v3` | 1.5B | Best | Slower | Maximum accuracy |
+| `ggml-medium` | 769M | Good | Fast | General use |
+| `ggml-small` | 244M | Fair | Very Fast | Low resource/real-time |
+
+**Supported Audio Formats:** mp3, mp4, mpeg, mpga, m4a, wav, webm, flac, ogg
 
 ## 🔒 Security
 
