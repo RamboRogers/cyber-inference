@@ -566,8 +566,8 @@
             return;
         }
 
-        // Check if it's a direct file URL
-        if (repoId.endsWith('.gguf')) {
+        // Check if it's a direct file URL (GGUF or whisper bin)
+        if (repoId.endsWith('.gguf') || repoId.endsWith('.bin')) {
             // Direct file URL, skip file selection
             document.getElementById('fileSelectionSection').classList.add('hidden');
             document.getElementById('manualFilenameSection').classList.remove('hidden');
