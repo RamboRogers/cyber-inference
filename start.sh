@@ -62,16 +62,29 @@ echo "  Cyber-Inference Startup"
 echo "═══════════════════════════════════════════════════════════"
 echo ""
 
-# Check for uv
+# Check for uv (install automatically if not found)
 info "Checking for uv..."
 if ! check_command uv; then
-    error "uv is not installed or not in PATH"
-    echo ""
-    echo "Please install uv first:"
-    echo "  macOS/Linux: curl -LsSf https://astral.sh/uv/install.sh | sh"
-    echo "  Or visit: https://github.com/astral-sh/uv"
-    echo ""
-    exit 1
+    warning "uv is not installed. Installing automatically..."
+    if curl -LsSf https://astral.sh/uv/install.sh | sh; then
+        # Add uv to PATH for current session
+        export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+        if ! check_command uv; then
+            error "uv was installed but not found in PATH"
+            echo ""
+            echo "Please add ~/.local/bin or ~/.cargo/bin to your PATH and restart."
+            exit 1
+        fi
+        success "uv installed successfully"
+    else
+        error "Failed to install uv automatically"
+        echo ""
+        echo "Please install uv manually:"
+        echo "  macOS/Linux: curl -LsSf https://astral.sh/uv/install.sh | sh"
+        echo "  Or visit: https://github.com/astral-sh/uv"
+        echo ""
+        exit 1
+    fi
 fi
 
 UV_VERSION=$(get_version uv)

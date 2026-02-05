@@ -838,7 +838,16 @@
                 } catch (e) {
                     errorMsg = `HTTP ${response.status}`;
                 }
-                alert('Failed to load model: ' + errorMsg);
+
+                // Check if this is a whisper-server installation error
+                if (errorMsg.toLowerCase().includes('whisper') &&
+                    (errorMsg.toLowerCase().includes('not installed') ||
+                     errorMsg.toLowerCase().includes('not found') ||
+                     errorMsg.toLowerCase().includes('failed to start'))) {
+                    showWhisperInstallModal(errorMsg);
+                } else {
+                    alert('Failed to load model: ' + errorMsg);
+                }
                 btn.textContent = originalText;
                 btn.disabled = false;
             }
@@ -847,6 +856,98 @@
             alert('Error loading model: ' + error.message);
             btn.textContent = originalText;
             btn.disabled = false;
+        }
+    }
+
+    function showWhisperInstallModal(errorMsg) {
+        // Detect platform
+        const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+        const isLinux = navigator.platform.toUpperCase().indexOf('LINUX') >= 0;
+
+        let installInstructions = '';
+        if (isMac) {
+            installInstructions = `
+                <div class="space-y-3">
+                    <p class="text-gray-300">Install whisper.cpp on macOS:</p>
+                    <div class="bg-cyber-dark rounded-lg p-3 font-mono text-sm">
+                        <code class="text-cyber-neon">brew install whisper-cpp</code>
+                    </div>
+                    <p class="text-gray-400 text-xs">Or build from source:</p>
+                    <div class="bg-cyber-dark rounded-lg p-3 font-mono text-xs text-gray-400">
+                        <code>git clone https://github.com/ggerganov/whisper.cpp<br>
+                        cd whisper.cpp && make server</code>
+                    </div>
+                </div>
+            `;
+        } else if (isLinux) {
+            installInstructions = `
+                <div class="space-y-3">
+                    <p class="text-gray-300">Install whisper.cpp on Linux:</p>
+                    <div class="bg-cyber-dark rounded-lg p-3 font-mono text-sm">
+                        <code class="text-cyber-neon">git clone https://github.com/ggerganov/whisper.cpp<br>
+                        cd whisper.cpp && make server</code>
+                    </div>
+                    <p class="text-gray-400 text-xs">Then add to PATH or copy to ~/.local/bin</p>
+                </div>
+            `;
+        } else {
+            installInstructions = `
+                <div class="space-y-3">
+                    <p class="text-gray-300">Install whisper.cpp:</p>
+                    <div class="bg-cyber-dark rounded-lg p-3 font-mono text-sm">
+                        <code class="text-gray-300">macOS: </code><code class="text-cyber-neon">brew install whisper-cpp</code>
+                    </div>
+                    <div class="bg-cyber-dark rounded-lg p-3 font-mono text-sm mt-2">
+                        <code class="text-gray-300">Linux/Other: </code><code class="text-cyber-neon">git clone https://github.com/ggerganov/whisper.cpp && cd whisper.cpp && make server</code>
+                    </div>
+                </div>
+            `;
+        }
+
+        // Create modal
+        const modal = document.createElement('div');
+        modal.id = 'whisperInstallModal';
+        modal.className = 'fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm';
+        modal.innerHTML = `
+            <div class="cyber-card rounded-xl w-full max-w-lg mx-4 neon-border">
+                <div class="px-6 py-4 border-b border-cyber-red/50 flex items-center justify-between">
+                    <h3 class="font-cyber text-xl text-cyber-red flex items-center space-x-2">
+                        <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                        </svg>
+                        <span>Whisper Server Required</span>
+                    </h3>
+                    <button onclick="closeWhisperInstallModal()" class="text-gray-400 hover:text-white">
+                        <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                    </button>
+                </div>
+                <div class="p-6 space-y-4">
+                    <p class="text-gray-400 text-sm">
+                        Whisper models require <span class="text-white font-mono">whisper-server</span> to be installed.
+                    </p>
+                    ${installInstructions}
+                    <p class="text-gray-500 text-xs mt-4">
+                        After installation, restart Cyber-Inference and try loading the model again.
+                    </p>
+                </div>
+                <div class="px-6 py-4 border-t border-cyber-gray flex justify-end">
+                    <button onclick="closeWhisperInstallModal()"
+                            class="cyber-btn px-6 py-2 rounded-lg font-mono">
+                        Got it
+                    </button>
+                </div>
+            </div>
+        `;
+
+        document.body.appendChild(modal);
+    }
+
+    function closeWhisperInstallModal() {
+        const modal = document.getElementById('whisperInstallModal');
+        if (modal) {
+            modal.remove();
         }
     }
 
