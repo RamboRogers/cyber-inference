@@ -212,6 +212,7 @@ class ModelResponse(BaseModel):
     quantization: Optional[str]
     context_length: int
     model_type: Optional[str]
+    engine_type: Optional[str] = "llama"
     mmproj_path: Optional[str] = None
     is_downloaded: bool
     is_enabled: bool

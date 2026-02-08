@@ -140,33 +140,58 @@ if [ "$CUDA_AVAILABLE" -eq 1 ] && [ "$NO_SGLANG" != "1" ]; then
     fi
 
     if [ "$CUDA_AVAILABLE" -eq 1 ]; then
-        # 6b. Replace PyTorch with proper CUDA wheels
-        #     --reinstall is required because uv sync installs CPU torch with
-        #     the same version number; without it uv thinks it's already satisfied.
-        #     Pin to 2.9.x to match the sgl-kernel ABI (2.10 breaks the ABI).
-        TORCH_INDEX="https://download.pytorch.org/whl/${CUDA_WHL}"
-        info "Installing PyTorch 2.9.x with ${CUDA_WHL} from ${TORCH_INDEX}..."
-        if uv pip install --reinstall "torch>=2.9.0,<2.10" torchvision torchaudio --index-url "$TORCH_INDEX"; then
-            success "PyTorch ${CUDA_WHL} installed"
-        else
-            warning "PyTorch CUDA install failed – SGLang may not work"
-        fi
-
-        # 6c. Install sgl-kernel from CUDA-specific wheel
+        # 6b. Read the versions that sglang's dependency resolver chose
+        TORCH_VER=$(uv pip show torch 2>/dev/null | grep '^Version:' | awk '{print $2}' | sed 's/+.*//')
+        KERNEL_VER=$(uv pip show sgl-kernel 2>/dev/null | grep '^Version:' | awk '{print $2}' | sed 's/+.*//')
         ARCH=$(uname -m)  # aarch64 or x86_64
-        SGL_KERNEL_VER="0.3.21"
-        SGL_WHL="https://github.com/sgl-project/whl/releases/download/v${SGL_KERNEL_VER}/sgl_kernel-${SGL_KERNEL_VER}+${CUDA_WHL}-cp310-abi3-manylinux2014_${ARCH}.whl"
-        info "Installing sgl-kernel ${SGL_KERNEL_VER}+${CUDA_WHL} (${ARCH})..."
-        if uv pip install --reinstall "$SGL_WHL"; then
-            success "sgl-kernel ${CUDA_WHL} installed"
+
+        info "Detected torch ${TORCH_VER}, sgl-kernel ${KERNEL_VER}, arch ${ARCH}"
+
+        # 6c. Replace PyTorch with CUDA wheels (--reinstall needed: CPU has same version number)
+        TORCH_INDEX="https://download.pytorch.org/whl/${CUDA_WHL}"
+        TORCH_CHECK_URL="${TORCH_INDEX}/torch/"
+
+        # Verify the CUDA index has this torch version before pinning
+        if curl -sfL "$TORCH_CHECK_URL" 2>/dev/null | grep -q "torch-${TORCH_VER}"; then
+            info "Verified: PyTorch ${TORCH_VER} exists on ${CUDA_WHL} index"
+            if uv pip install --reinstall "torch==${TORCH_VER}" torchvision torchaudio --index-url "$TORCH_INDEX"; then
+                success "PyTorch ${TORCH_VER}+${CUDA_WHL} installed"
+            else
+                warning "PyTorch CUDA install failed – SGLang may not work"
+            fi
         else
-            warning "Direct wheel failed – trying index fallback..."
-            uv pip install --reinstall sgl-kernel \
-                --extra-index-url "https://docs.sglang.io/whl/${CUDA_WHL}/sgl-kernel/" || \
-                warning "sgl-kernel install failed"
+            warning "PyTorch ${TORCH_VER} not found on ${CUDA_WHL} index – trying latest available"
+            if uv pip install --reinstall torch torchvision torchaudio --index-url "$TORCH_INDEX"; then
+                success "PyTorch (latest)+${CUDA_WHL} installed"
+            else
+                warning "PyTorch CUDA install failed – SGLang may not work"
+            fi
         fi
 
-        # 6d. Quick smoke test
+        # 6d. Install sgl-kernel CUDA wheel (version detected dynamically)
+        if [ -n "$KERNEL_VER" ]; then
+            SGL_WHL_URL="https://github.com/sgl-project/whl/releases/download/v${KERNEL_VER}/sgl_kernel-${KERNEL_VER}+${CUDA_WHL}-cp310-abi3-manylinux2014_${ARCH}.whl"
+
+            # Verify the wheel exists before attempting install
+            if curl -sfIL -o /dev/null "$SGL_WHL_URL" 2>/dev/null; then
+                info "Verified: sgl-kernel ${KERNEL_VER}+${CUDA_WHL} wheel exists"
+                if uv pip install --reinstall "$SGL_WHL_URL"; then
+                    success "sgl-kernel ${KERNEL_VER}+${CUDA_WHL} installed"
+                else
+                    warning "sgl-kernel direct wheel install failed"
+                fi
+            else
+                warning "sgl-kernel ${KERNEL_VER}+${CUDA_WHL} wheel not found at GitHub releases"
+                info "Falling back to sglang CUDA wheel index..."
+                uv pip install --reinstall sgl-kernel \
+                    --extra-index-url "https://docs.sglang.io/whl/${CUDA_WHL}/sgl-kernel/" || \
+                    warning "sgl-kernel CUDA install failed – SGLang may not work with GPU"
+            fi
+        else
+            warning "sgl-kernel not found in environment – skipping CUDA kernel install"
+        fi
+
+        # 6e. Quick smoke test
         if uv run python -c "import sglang; import torch; assert torch.cuda.is_available(); print(f'SGLang {sglang.__version__} + PyTorch {torch.__version__} CUDA OK')" 2>/dev/null; then
             success "SGLang + CUDA verified"
         else
@@ -182,17 +207,34 @@ info "Starting Cyber-Inference server..."
 echo ""
 
 # ──────────────────────────────────────────────────────────────
-# 7. Run with auto-restart
+# 7. Run with auto-restart (exponential backoff, max 10 restarts)
 # ──────────────────────────────────────────────────────────────
 RESTART_DELAY="${CYBER_INFERENCE_RESTART_DELAY:-2}"
+MAX_RESTARTS="${CYBER_INFERENCE_MAX_RESTARTS:-10}"
+RESTART_COUNT=0
 
 while true; do
     exit_code=0
     uv run cyber-inference serve || exit_code=$?
-    if [ "$exit_code" -eq 0 ]; then
-        warning "Server exited cleanly. Restarting in ${RESTART_DELAY}s..."
-    else
-        warning "Server exited with code ${exit_code}. Restarting in ${RESTART_DELAY}s..."
+
+    RESTART_COUNT=$((RESTART_COUNT + 1))
+
+    if [ "$RESTART_COUNT" -ge "$MAX_RESTARTS" ]; then
+        error "Server failed ${MAX_RESTARTS} times in a row. Giving up."
+        exit 1
     fi
-    sleep "$RESTART_DELAY"
+
+    # Exponential backoff: base_delay * restart_count, capped at 30s
+    DELAY=$((RESTART_DELAY * RESTART_COUNT))
+    [ "$DELAY" -gt 30 ] && DELAY=30
+
+    if [ "$exit_code" -eq 0 ]; then
+        warning "Server exited cleanly. Restart ${RESTART_COUNT}/${MAX_RESTARTS} in ${DELAY}s..."
+        # Clean exit resets the counter (likely intentional restart, not a crash loop)
+        RESTART_COUNT=0
+        DELAY="$RESTART_DELAY"
+    else
+        warning "Server exited with code ${exit_code}. Restart ${RESTART_COUNT}/${MAX_RESTARTS} in ${DELAY}s..."
+    fi
+    sleep "$DELAY"
 done
