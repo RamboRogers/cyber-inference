@@ -334,14 +334,15 @@ def install_sglang(
             raise typer.Exit(1)
 
         # Step 2: Install PyTorch with the correct CUDA version
+        #   Pin to 2.9.x – sgl-kernel 0.3.x is built against 2.9 ABI
         pytorch_index = f"https://download.pytorch.org/whl/{cuda_version}"
         if not _run(
             [
                 sys.executable, "-m", "uv", "pip", "install",
-                "--reinstall", "torch", "torchvision", "torchaudio",
+                "--reinstall", "torch>=2.9.0,<2.10", "torchvision", "torchaudio",
                 "--index-url", pytorch_index,
             ],
-            f"Installing PyTorch with {cuda_version}...",
+            f"Installing PyTorch 2.9.x with {cuda_version}...",
         ):
             console.print("[yellow]Warning: PyTorch CUDA install failed, falling back to default[/yellow]")
 
