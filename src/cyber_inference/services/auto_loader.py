@@ -233,6 +233,9 @@ class AutoLoader:
         """
         Load a model and return its server URL.
 
+        Routes to the appropriate engine (llama.cpp, whisper.cpp, or SGLang)
+        based on the model's engine_type.
+
         Args:
             model_name: Name of the model to load
 
@@ -244,7 +247,7 @@ class AutoLoader:
         mm = self._get_model_manager()
         pm = self._get_process_manager()
 
-        # Get model info (includes path, type, and mmproj_path)
+        # Get model info (includes path, type, engine_type, and mmproj_path)
         model_info = await mm.get_model(model_name)
         if not model_info:
             raise ValueError(f"Model not found: {model_name}")
@@ -254,6 +257,9 @@ class AutoLoader:
             raise ValueError(f"Model path not found: {model_name}")
 
         logger.debug(f"Model path: {model_path}")
+
+        # Check engine type
+        engine_type = model_info.get("engine_type", "llama")
 
         # Get mmproj_path if this is a multimodal model
         mmproj_path = None
@@ -280,12 +286,21 @@ class AutoLoader:
             is_transcription = any(pattern in check_string for pattern in transcription_patterns)
 
         if is_embedding:
-            logger.info(f"  Model type: embedding")
+            logger.info("  Model type: embedding")
         elif is_transcription:
-            logger.info(f"  Model type: transcription (whisper)")
+            logger.info("  Model type: transcription (whisper)")
 
-        # Start the appropriate server
-        if is_transcription:
+        logger.info(f"  Engine type: {engine_type}")
+
+        # Start the appropriate server based on engine_type
+        if engine_type == "sglang":
+            # Use SGLang server
+            proc = await pm.start_sglang_server(
+                model_name,
+                model_path,
+                embedding=is_embedding,
+            )
+        elif is_transcription:
             # Use whisper-server for transcription models
             proc = await pm.start_whisper_server(model_name, model_path)
         else:
@@ -304,7 +319,7 @@ class AutoLoader:
         await mm.update_last_used(model_name)
 
         url = f"http://127.0.0.1:{proc.port}"
-        logger.info(f"[success]Model loaded: {model_name} at {url}[/success]")
+        logger.info(f"[success]Model loaded: {model_name} at {url} [{engine_type}][/success]")
 
         return url
 

@@ -58,6 +58,11 @@ class Model(Base):
     # Multimodal support - path to mmproj file for vision models
     mmproj_path: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
 
+    # Engine type: which inference backend to use
+    engine_type: Mapped[Optional[str]] = mapped_column(
+        String(50), nullable=True, default="llama"
+    )  # "llama", "whisper", "sglang"
+
     # Model card info (cached from HuggingFace)
     model_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)  # chat, completion, embedding
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

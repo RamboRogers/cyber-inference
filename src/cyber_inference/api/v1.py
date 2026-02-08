@@ -134,6 +134,17 @@ async def init_auto_loader(auto_loader: AutoLoader) -> None:
     _auto_loader = auto_loader
 
 
+def _get_server_type(model_name: str) -> str:
+    """Get the server type for a loaded model."""
+    try:
+        from cyber_inference.main import get_process_manager
+        pm = get_process_manager()
+        proc = pm.get_process(model_name)
+        return proc.server_type if proc else "llama"
+    except Exception:
+        return "llama"
+
+
 @router.get("/models")
 async def list_models(db: AsyncSession = Depends(get_db)) -> ModelsResponse:
     """
@@ -207,7 +218,10 @@ async def chat_completions(
 
     logger.debug(f"  Server URL: {server_url}")
 
-    # Prepare request for llama-server
+    # Determine server type for engine-specific behavior
+    server_type = _get_server_type(request.model)
+
+    # Prepare request for the inference server
     token_limit = request.max_tokens or 512
     llama_request = {
         "messages": [
@@ -220,10 +234,13 @@ async def chat_completions(
         ],
         "temperature": request.temperature,
         "top_p": request.top_p,
-        "n_predict": token_limit,
         "max_tokens": token_limit,
         "stream": request.stream,
     }
+
+    # n_predict is llama.cpp-specific, not used by SGLang
+    if server_type != "sglang":
+        llama_request["n_predict"] = token_limit
 
     if request.stop:
         llama_request["stop"] = request.stop if isinstance(request.stop, list) else [request.stop]
@@ -372,32 +389,51 @@ async def completions(
         logger.error(f"[error]Failed to load model: {e}[/error]")
         raise HTTPException(status_code=503, detail=f"Failed to load model: {e}")
 
+    # Determine server type for engine-specific behavior
+    server_type = _get_server_type(request.model)
+
     # Prepare request
     prompt = request.prompt if isinstance(request.prompt, str) else request.prompt[0]
+    token_limit = request.max_tokens or 512
 
-    llama_request = {
-        "prompt": prompt,
-        "temperature": request.temperature,
-        "top_p": request.top_p,
-        "n_predict": request.max_tokens or 512,
-        "stream": request.stream,
-    }
+    if server_type == "sglang":
+        # SGLang uses OpenAI-compatible /v1/completions
+        llama_request = {
+            "prompt": prompt,
+            "temperature": request.temperature,
+            "top_p": request.top_p,
+            "max_tokens": token_limit,
+            "stream": request.stream,
+            "model": request.model,
+        }
+    else:
+        # llama.cpp uses its native /completion endpoint
+        llama_request = {
+            "prompt": prompt,
+            "temperature": request.temperature,
+            "top_p": request.top_p,
+            "n_predict": token_limit,
+            "stream": request.stream,
+        }
 
     if request.stop:
         llama_request["stop"] = request.stop if isinstance(request.stop, list) else [request.stop]
 
     if request.stream:
         return EventSourceResponse(
-            _stream_completion(server_url, llama_request, request.model)
+            _stream_completion(server_url, llama_request, request.model, server_type)
         )
 
     # Non-streaming
+    completion_url = (
+        f"{server_url}/v1/completions"
+        if server_type == "sglang"
+        else f"{server_url}/completion"
+    )
+
     try:
         async with httpx.AsyncClient(timeout=300) as client:
-            response = await client.post(
-                f"{server_url}/completion",
-                json=llama_request,
-            )
+            response = await client.post(completion_url, json=llama_request)
             response.raise_for_status()
             result = response.json()
     except httpx.HTTPError as e:
@@ -408,6 +444,28 @@ async def completions(
 
     completion_id = f"cmpl-{uuid.uuid4().hex[:8]}"
 
+    if server_type == "sglang":
+        # SGLang returns OpenAI-compatible format
+        choices = result.get("choices", [{}])
+        choice = choices[0] if choices else {}
+        usage = result.get("usage", {})
+        return CompletionResponse(
+            id=completion_id,
+            created=int(time.time()),
+            model=request.model,
+            choices=[CompletionChoice(
+                text=choice.get("text", ""),
+                index=0,
+                finish_reason=choice.get("finish_reason", "stop"),
+            )],
+            usage=CompletionUsage(
+                prompt_tokens=usage.get("prompt_tokens", 0),
+                completion_tokens=usage.get("completion_tokens", 0),
+                total_tokens=usage.get("total_tokens", 0),
+            ),
+        )
+
+    # llama.cpp native format
     return CompletionResponse(
         id=completion_id,
         created=int(time.time()),
@@ -429,16 +487,23 @@ async def _stream_completion(
     server_url: str,
     request: dict,
     model: str,
+    server_type: str = "llama",
 ) -> AsyncGenerator[dict, None]:
     """Stream completion chunks."""
     completion_id = f"cmpl-{uuid.uuid4().hex[:8]}"
     created = int(time.time())
 
+    completion_url = (
+        f"{server_url}/v1/completions"
+        if server_type == "sglang"
+        else f"{server_url}/completion"
+    )
+
     try:
         async with httpx.AsyncClient(timeout=300) as client:
             async with client.stream(
                 "POST",
-                f"{server_url}/completion",
+                completion_url,
                 json=request,
             ) as response:
                 response.raise_for_status()
@@ -452,19 +517,32 @@ async def _stream_completion(
 
                         try:
                             chunk = json.loads(data)
-                            yield {
-                                "data": json.dumps({
-                                    "id": completion_id,
-                                    "object": "text_completion",
-                                    "created": created,
-                                    "model": model,
-                                    "choices": [{
-                                        "text": chunk.get("content", ""),
-                                        "index": 0,
-                                        "finish_reason": None if not chunk.get("stop") else "stop",
-                                    }],
-                                })
-                            }
+
+                            if server_type == "sglang":
+                                # SGLang returns OpenAI-compatible format
+                                yield {
+                                    "data": json.dumps({
+                                        "id": completion_id,
+                                        "object": "text_completion",
+                                        "created": created,
+                                        "model": model,
+                                        "choices": chunk.get("choices", []),
+                                    })
+                                }
+                            else:
+                                yield {
+                                    "data": json.dumps({
+                                        "id": completion_id,
+                                        "object": "text_completion",
+                                        "created": created,
+                                        "model": model,
+                                        "choices": [{
+                                            "text": chunk.get("content", ""),
+                                            "index": 0,
+                                            "finish_reason": None if not chunk.get("stop") else "stop",
+                                        }],
+                                    })
+                                }
                         except json.JSONDecodeError:
                             continue
 
@@ -496,44 +574,64 @@ async def embeddings(
         logger.error(f"[error]Failed to load model: {e}[/error]")
         raise HTTPException(status_code=503, detail=f"Failed to load model: {e}")
 
+    # Determine server type for engine-specific behavior
+    server_type = _get_server_type(request.model)
+
     # Prepare input - OpenAI API accepts string or array of strings
     inputs = request.input if isinstance(request.input, list) else [request.input]
     logger.info(f"  Inputs: {len(inputs)} text(s)")
+    logger.debug(f"  Server type: {server_type}")
 
     embeddings_data = []
     total_tokens = 0
 
     try:
         async with httpx.AsyncClient(timeout=120) as client:
-            # Process each input (llama.cpp takes one at a time)
-            for idx, text in enumerate(inputs):
+            if server_type == "sglang":
+                # SGLang supports OpenAI-compatible /v1/embeddings (batch)
                 response = await client.post(
-                    f"{server_url}/embedding",
-                    json={"content": text},
+                    f"{server_url}/v1/embeddings",
+                    json={
+                        "input": inputs,
+                        "model": request.model,
+                    },
                 )
                 response.raise_for_status()
                 result = response.json()
 
-                # Parse llama.cpp response format: [{"index": 0, "embedding": [[...]]}]
-                if isinstance(result, list) and len(result) > 0:
-                    item = result[0]
-                    embedding = item.get("embedding", [])
-                    # embedding might be nested [[...]] or flat [...]
-                    if isinstance(embedding, list) and len(embedding) > 0:
-                        if isinstance(embedding[0], list):
-                            embedding = embedding[0]  # Unnest
-                else:
-                    # Fallback for simple format {"embedding": [...]}
-                    embedding = result.get("embedding", [])
+                embeddings_data = result.get("data", [])
+                usage = result.get("usage", {})
+                total_tokens = usage.get("total_tokens", 0)
+            else:
+                # llama.cpp: process each input one at a time
+                for idx, text in enumerate(inputs):
+                    response = await client.post(
+                        f"{server_url}/embedding",
+                        json={"content": text},
+                    )
+                    response.raise_for_status()
+                    result = response.json()
 
-                embeddings_data.append({
-                    "object": "embedding",
-                    "index": idx,
-                    "embedding": embedding,
-                })
+                    # Parse llama.cpp response format: [{"index": 0, "embedding": [[...]]}]
+                    if isinstance(result, list) and len(result) > 0:
+                        item = result[0]
+                        embedding = item.get("embedding", [])
+                        # embedding might be nested [[...]] or flat [...]
+                        if isinstance(embedding, list) and len(embedding) > 0:
+                            if isinstance(embedding[0], list):
+                                embedding = embedding[0]  # Unnest
+                    else:
+                        # Fallback for simple format {"embedding": [...]}
+                        embedding = result.get("embedding", [])
 
-                # Rough token count (approximation)
-                total_tokens += len(text.split())
+                    embeddings_data.append({
+                        "object": "embedding",
+                        "index": idx,
+                        "embedding": embedding,
+                    })
+
+                    # Rough token count (approximation)
+                    total_tokens += len(text.split())
 
     except httpx.HTTPError as e:
         logger.error(f"[error]Embedding request failed: {e}[/error]")

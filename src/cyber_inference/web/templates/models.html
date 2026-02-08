@@ -11,7 +11,7 @@
                 MODEL MANAGEMENT
             </h1>
             <p class="mt-1 text-gray-400 font-mono text-sm">
-                // Download, load, and manage GGUF models
+                // Download, load, and manage inference models (GGUF + SGLang)
             </p>
         </div>
         <div class="mt-4 md:mt-0">
@@ -52,6 +52,19 @@
                                 </h3>
                             </div>
                             <div class="mt-2 flex flex-wrap gap-2">
+                                {% if model.engine_type == 'sglang' %}
+                                <span class="px-2 py-1 text-xs font-mono rounded bg-purple-500/20 text-purple-400 border border-purple-500/30">
+                                    SGLang
+                                </span>
+                                {% elif model.engine_type == 'whisper' %}
+                                <span class="px-2 py-1 text-xs font-mono rounded bg-green-500/20 text-green-400 border border-green-500/30">
+                                    Whisper
+                                </span>
+                                {% else %}
+                                <span class="px-2 py-1 text-xs font-mono rounded bg-cyber-neon/20 text-cyber-neon border border-cyber-neon/30">
+                                    GGUF
+                                </span>
+                                {% endif %}
                                 {% if model.quantization %}
                                 <span class="px-2 py-1 text-xs font-mono rounded bg-cyber-blue/20 text-cyber-blue border border-cyber-blue/30">
                                     {{ model.quantization }}
@@ -302,6 +315,80 @@
             </div>
         </div>
     </div>
+
+    <!-- Popular SGLang Models Section -->
+    <div class="cyber-card rounded-xl overflow-hidden">
+        <div class="px-6 py-4 border-b border-purple-500/20">
+            <h2 class="font-cyber text-xl font-semibold text-purple-400">
+                POPULAR SGLang MODELS
+            </h2>
+            <p class="text-xs text-gray-500 mt-1 font-mono">// Full HuggingFace models for GPU inference via SGLang
+                {% if not sglang_available %}
+                <span class="text-yellow-500">(SGLang not installed)</span>
+                {% endif %}
+            </p>
+        </div>
+        <div class="p-6">
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                <!-- Llama 3.1 8B Instruct -->
+                <div class="bg-cyber-dark/30 rounded-lg p-4 border border-cyber-gray hover:border-purple-500/30 transition-all cursor-pointer group"
+                     onclick="downloadSglangFromRepo('meta-llama/Llama-3.1-8B-Instruct')">
+                    <div class="flex items-center space-x-3 mb-2">
+                        <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-purple-500/20 to-blue-500/20 flex items-center justify-center group-hover:shadow-lg group-hover:shadow-purple-500/20 transition-all">
+                            <span class="text-purple-400 font-bold text-lg">L</span>
+                        </div>
+                        <div>
+                            <div class="font-mono text-white">Llama 3.1 8B Instruct</div>
+                            <div class="text-xs text-gray-500">meta-llama</div>
+                        </div>
+                    </div>
+                    <div class="text-xs text-gray-400">Meta's Llama 3.1 instruction-tuned, great balance</div>
+                    <div class="mt-2 flex gap-2">
+                        <span class="text-[10px] px-2 py-0.5 rounded bg-purple-500/10 text-purple-400">SGLang</span>
+                        <span class="text-[10px] px-2 py-0.5 rounded bg-blue-500/10 text-blue-400">8B</span>
+                    </div>
+                </div>
+
+                <!-- Qwen2.5 7B Instruct -->
+                <div class="bg-cyber-dark/30 rounded-lg p-4 border border-cyber-gray hover:border-purple-500/30 transition-all cursor-pointer group"
+                     onclick="downloadSglangFromRepo('Qwen/Qwen2.5-7B-Instruct')">
+                    <div class="flex items-center space-x-3 mb-2">
+                        <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-purple-500/20 to-pink-500/20 flex items-center justify-center group-hover:shadow-lg group-hover:shadow-purple-500/20 transition-all">
+                            <span class="text-pink-400 font-bold text-lg">Q</span>
+                        </div>
+                        <div>
+                            <div class="font-mono text-white">Qwen2.5 7B Instruct</div>
+                            <div class="text-xs text-gray-500">Qwen</div>
+                        </div>
+                    </div>
+                    <div class="text-xs text-gray-400">Alibaba's latest, excellent multilingual performance</div>
+                    <div class="mt-2 flex gap-2">
+                        <span class="text-[10px] px-2 py-0.5 rounded bg-purple-500/10 text-purple-400">SGLang</span>
+                        <span class="text-[10px] px-2 py-0.5 rounded bg-pink-500/10 text-pink-400">7B</span>
+                    </div>
+                </div>
+
+                <!-- Mistral 7B Instruct -->
+                <div class="bg-cyber-dark/30 rounded-lg p-4 border border-cyber-gray hover:border-purple-500/30 transition-all cursor-pointer group"
+                     onclick="downloadSglangFromRepo('mistralai/Mistral-7B-Instruct-v0.3')">
+                    <div class="flex items-center space-x-3 mb-2">
+                        <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-purple-500/20 to-orange-500/20 flex items-center justify-center group-hover:shadow-lg group-hover:shadow-purple-500/20 transition-all">
+                            <span class="text-orange-400 font-bold text-lg">M</span>
+                        </div>
+                        <div>
+                            <div class="font-mono text-white">Mistral 7B Instruct v0.3</div>
+                            <div class="text-xs text-gray-500">mistralai</div>
+                        </div>
+                    </div>
+                    <div class="text-xs text-gray-400">Mistral's efficient and capable 7B model</div>
+                    <div class="mt-2 flex gap-2">
+                        <span class="text-[10px] px-2 py-0.5 rounded bg-purple-500/10 text-purple-400">SGLang</span>
+                        <span class="text-[10px] px-2 py-0.5 rounded bg-orange-500/10 text-orange-400">7B</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
 </div>
 
 <!-- Download Modal -->
@@ -316,9 +403,43 @@
             </button>
         </div>
         <form id="downloadForm" class="p-6 space-y-4">
-            <!-- Step 1: Enter Repo ID -->
+            <!-- Engine Type Selector -->
             <div>
                 <label class="block text-sm font-mono text-gray-400 mb-2">
+                    Engine Type
+                </label>
+                <div class="flex space-x-3">
+                    <label class="flex items-center space-x-2 cursor-pointer px-4 py-2 rounded-lg border transition-all"
+                           id="engineGgufLabel"
+                           onclick="selectEngine('gguf')">
+                        <input type="radio" name="engine_type" value="gguf" checked
+                               class="hidden" id="engineGguf">
+                        <span class="w-4 h-4 rounded-full border-2 border-cyber-neon flex items-center justify-center" id="engineGgufDot">
+                            <span class="w-2 h-2 rounded-full bg-cyber-neon"></span>
+                        </span>
+                        <span class="font-mono text-sm text-white">GGUF (llama.cpp)</span>
+                    </label>
+                    <label class="flex items-center space-x-2 cursor-pointer px-4 py-2 rounded-lg border transition-all"
+                           id="engineSglangLabel"
+                           onclick="selectEngine('sglang')">
+                        <input type="radio" name="engine_type" value="sglang"
+                               class="hidden" id="engineSglang">
+                        <span class="w-4 h-4 rounded-full border-2 border-gray-500 flex items-center justify-center" id="engineSglangDot">
+                        </span>
+                        <span class="font-mono text-sm text-gray-400">SGLang (GPU)
+                            {% if sglang_available %}
+                            <span class="text-[10px] px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-400 ml-1">Available</span>
+                            {% else %}
+                            <span class="text-[10px] px-1.5 py-0.5 rounded bg-gray-500/20 text-gray-500 ml-1">Not Installed</span>
+                            {% endif %}
+                        </span>
+                    </label>
+                </div>
+            </div>
+
+            <!-- Step 1: Enter Repo ID -->
+            <div>
+                <label class="block text-sm font-mono text-gray-400 mb-2" id="repoIdLabel">
                     HuggingFace Repo ID or Direct .gguf Path
                 </label>
                 <div class="flex space-x-2">
@@ -335,7 +456,7 @@
                         Fetch Files
                     </button>
                 </div>
-                <p class="text-xs text-gray-500 mt-1 font-mono">
+                <p class="text-xs text-gray-500 mt-1 font-mono" id="repoIdHint">
                     Enter a repo ID to see available files, or paste a direct .gguf URL
                 </p>
             </div>
@@ -451,6 +572,61 @@
 
     // Store fetched repo data
     let repoData = null;
+
+    // Current engine selection
+    let selectedEngine = 'gguf';
+
+    function selectEngine(engine) {
+        selectedEngine = engine;
+        const ggufDot = document.getElementById('engineGgufDot');
+        const sglangDot = document.getElementById('engineSglangDot');
+        const ggufLabel = document.getElementById('engineGgufLabel');
+        const sglangLabel = document.getElementById('engineSglangLabel');
+        const fetchBtn = document.getElementById('fetchFilesBtn');
+        const repoIdLabel = document.getElementById('repoIdLabel');
+        const repoIdHint = document.getElementById('repoIdHint');
+        const repoId = document.getElementById('repoId');
+
+        if (engine === 'sglang') {
+            ggufDot.innerHTML = '';
+            ggufDot.className = 'w-4 h-4 rounded-full border-2 border-gray-500 flex items-center justify-center';
+            sglangDot.innerHTML = '<span class="w-2 h-2 rounded-full bg-purple-400"></span>';
+            sglangDot.className = 'w-4 h-4 rounded-full border-2 border-purple-400 flex items-center justify-center';
+            ggufLabel.className = ggufLabel.className.replace('border-cyber-neon/50', 'border-cyber-gray');
+            sglangLabel.className = sglangLabel.className.replace('border-cyber-gray', 'border-purple-500/50');
+
+            repoIdLabel.textContent = 'HuggingFace Repo ID';
+            repoId.placeholder = 'e.g., meta-llama/Llama-3.1-8B-Instruct';
+            repoIdHint.textContent = 'Enter a HuggingFace model repo ID for SGLang (full model, not GGUF)';
+            fetchBtn.classList.add('hidden');
+
+            // Hide GGUF-specific sections
+            document.getElementById('fileSelectionSection').classList.add('hidden');
+            document.getElementById('manualFilenameSection').classList.add('hidden');
+        } else {
+            sglangDot.innerHTML = '';
+            sglangDot.className = 'w-4 h-4 rounded-full border-2 border-gray-500 flex items-center justify-center';
+            ggufDot.innerHTML = '<span class="w-2 h-2 rounded-full bg-cyber-neon"></span>';
+            ggufDot.className = 'w-4 h-4 rounded-full border-2 border-cyber-neon flex items-center justify-center';
+            sglangLabel.className = sglangLabel.className.replace('border-purple-500/50', 'border-cyber-gray');
+            ggufLabel.className = ggufLabel.className.replace('border-cyber-gray', 'border-cyber-neon/50');
+
+            repoIdLabel.textContent = 'HuggingFace Repo ID or Direct .gguf Path';
+            repoId.placeholder = 'e.g., ggml-org/gpt-oss-20b-GGUF';
+            repoIdHint.textContent = 'Enter a repo ID to see available files, or paste a direct .gguf URL';
+            fetchBtn.classList.remove('hidden');
+
+            // Show manual filename section
+            document.getElementById('manualFilenameSection').classList.remove('hidden');
+        }
+    }
+
+    function downloadSglangFromRepo(repoId) {
+        closeDownloadModal();
+        document.getElementById('repoId').value = repoId.trim();
+        openDownloadModal();
+        selectEngine('sglang');
+    }
 
     function connectStatusWebSocket() {
         const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -742,42 +918,53 @@
 
         const repoId = document.getElementById('repoId').value;
 
-        // Get filename from dropdown or manual input
-        let filename = document.getElementById('modelFileSelect').value;
-        if (!filename) {
-            filename = document.getElementById('filename').value;
-        }
-
-        // Get mmproj filename if applicable
-        let mmprojFilename = null;
-        if (repoData && repoData.is_multimodal) {
-            mmprojFilename = document.getElementById('mmprojFileSelect').value || null;
-        }
-
         downloadInProgress = true;
         document.getElementById('downloadProgress').classList.remove('hidden');
         document.getElementById('progressPercent').textContent = '0%';
         document.getElementById('progressBar').style.width = '0%';
 
-        // Update status text
         const statusEl = document.getElementById('downloadStatus');
         if (statusEl) {
             statusEl.textContent = 'Initiating download...';
         }
 
         try {
-            const requestBody = {
-                name: filename ? filename.replace('.gguf', '') : null,
-                hf_repo_id: repoId,
-                hf_filename: filename || null,
-            };
+            let endpoint, requestBody;
 
-            // Include mmproj filename for multimodal models
-            if (mmprojFilename) {
-                requestBody.hf_mmproj_filename = mmprojFilename;
+            if (selectedEngine === 'sglang') {
+                // SGLang download - just needs repo_id
+                endpoint = '/admin/models/download-sglang';
+                requestBody = {
+                    hf_repo_id: repoId,
+                };
+                if (statusEl) {
+                    statusEl.textContent = 'Downloading SGLang model (this may take a while)...';
+                }
+            } else {
+                // GGUF download - needs filename selection
+                let filename = document.getElementById('modelFileSelect').value;
+                if (!filename) {
+                    filename = document.getElementById('filename').value;
+                }
+
+                let mmprojFilename = null;
+                if (repoData && repoData.is_multimodal) {
+                    mmprojFilename = document.getElementById('mmprojFileSelect').value || null;
+                }
+
+                endpoint = '/admin/models/download';
+                requestBody = {
+                    name: filename ? filename.replace('.gguf', '') : null,
+                    hf_repo_id: repoId,
+                    hf_filename: filename || null,
+                };
+
+                if (mmprojFilename) {
+                    requestBody.hf_mmproj_filename = mmprojFilename;
+                }
             }
 
-            const response = await adminFetch('/admin/models/download', {
+            const response = await adminFetch(endpoint, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -786,7 +973,6 @@
             });
 
             if (response.ok) {
-                // Success - WebSocket will update progress to 100%
                 document.getElementById('progressPercent').textContent = '100%';
                 document.getElementById('progressBar').style.width = '100%';
                 if (statusEl) {

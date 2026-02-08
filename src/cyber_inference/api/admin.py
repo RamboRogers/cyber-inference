@@ -409,6 +409,139 @@ async def download_model(
         )
 
 
+@router.post("/models/download-sglang")
+async def download_sglang_model(
+    request: ModelCreate,
+    _: bool = Depends(verify_admin_token),
+) -> ModelResponse:
+    """
+    Download a HuggingFace model for use with the SGLang engine.
+
+    Unlike GGUF downloads, SGLang downloads the full model repository
+    (safetensors, config, tokenizer, etc.) to models/sglang/.
+
+    Progress updates are sent via WebSocket to /ws/status.
+    """
+    if not request.hf_repo_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="hf_repo_id is required for model download",
+        )
+
+    logger.info(f"[highlight]POST /admin/models/download-sglang: {request.hf_repo_id}[/highlight]")
+
+    # Check if SGLang is available
+    from cyber_inference.services.sglang_manager import SGLangManager
+    sglang_mgr = SGLangManager.get_instance()
+    if not sglang_mgr.is_available():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="SGLang is not installed. Enable it with: CYBER_INFERENCE_ENABLE_SGLANG=1 ./start.sh",
+        )
+
+    mm = ModelManager()
+
+    try:
+        path = await mm.download_sglang_model(
+            repo_id=request.hf_repo_id,
+            force=False,
+        )
+
+        model_name = mm._sanitize_repo_name(request.hf_repo_id)
+        model = await mm.get_model(model_name)
+
+        if not model:
+            return ModelResponse(
+                id=0,
+                name=model_name,
+                filename=model_name,
+                file_path=str(path),
+                hf_repo_id=request.hf_repo_id,
+                size_bytes=0,
+                quantization=None,
+                context_length=4096,
+                model_type=None,
+                mmproj_path=None,
+                is_downloaded=True,
+                is_enabled=True,
+                download_progress=100.0,
+                created_at=datetime.now(),
+                last_used_at=None,
+            )
+
+        return ModelResponse(
+            id=model.get("id", 0),
+            name=model["name"],
+            filename=model["filename"],
+            file_path=model["path"],
+            hf_repo_id=model.get("hf_repo_id"),
+            size_bytes=model["size_bytes"],
+            quantization=model.get("quantization"),
+            context_length=model["context_length"],
+            model_type=model.get("model_type"),
+            mmproj_path=model.get("mmproj_path"),
+            is_downloaded=True,
+            is_enabled=True,
+            download_progress=100.0,
+            created_at=datetime.now(),
+            last_used_at=None,
+        )
+
+    except ValueError as e:
+        logger.error(f"[error]SGLang download failed (user error): {e}[/error]")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error(f"[error]SGLang download failed: {e}[/error]")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Download failed: {str(e)}",
+        )
+
+
+@router.get("/sglang/status")
+async def get_sglang_status(
+    _: bool = Depends(verify_admin_token),
+) -> dict:
+    """
+    Get SGLang engine status information.
+
+    Returns availability, version, CUDA info, and installed status.
+    """
+    logger.debug("GET /admin/sglang/status")
+
+    from cyber_inference.services.sglang_manager import SGLangManager
+    sglang_mgr = SGLangManager.get_instance()
+
+    return sglang_mgr.get_status()
+
+
+@router.get("/sglang/repo-info")
+async def get_sglang_repo_info(
+    repo_id: str,
+    _: bool = Depends(verify_admin_token),
+) -> dict:
+    """
+    Get information about a HuggingFace repo for SGLang download.
+
+    Returns file count, total size, and whether it's a valid model.
+    """
+    logger.info(f"[info]GET /admin/sglang/repo-info?repo_id={repo_id}[/info]")
+
+    mm = ModelManager()
+
+    try:
+        return await mm.list_sglang_repo_info(repo_id)
+    except Exception as e:
+        logger.error(f"[error]Failed to get repo info: {e}[/error]")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+
+
 @router.delete("/models/{model_name:path}")
 async def delete_model(
     model_name: str,
@@ -550,6 +683,9 @@ async def get_config(
         "max_memory_percent": settings.max_memory_percent,
         "llama_gpu_layers": settings.llama_gpu_layers,
         "admin_password_set": settings.admin_password is not None,
+        "sglang_enabled": settings.sglang_enabled,
+        "sglang_mem_fraction": settings.sglang_mem_fraction,
+        "sglang_tp_size": settings.sglang_tp_size,
     }
 
 

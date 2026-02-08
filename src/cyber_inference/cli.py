@@ -200,10 +200,14 @@ def install_whisper(
 def download_model(
     model_id: str = typer.Argument(..., help="HuggingFace model ID (e.g., 'TheBloke/Llama-2-7B-GGUF')"),
     filename: Optional[str] = typer.Option(None, "--filename", "-f", help="Specific file to download"),
+    engine: str = typer.Option("auto", "--engine", "-e", help="Engine type: auto, gguf, sglang"),
     models_dir: Optional[Path] = typer.Option(None, "--models-dir", "-m", help="Models directory path"),
 ) -> None:
     """
     Download a model from HuggingFace.
+
+    Use --engine sglang to download a full HuggingFace model for SGLang inference.
+    Use --engine gguf (or auto) to download a GGUF file for llama.cpp inference.
     """
     setup_logging()
     logger.info(f"[highlight]Downloading model: {model_id}[/highlight]")
@@ -215,7 +219,26 @@ def download_model(
 
     async def _download():
         manager = ModelManager(models_dir=models_dir)
-        await manager.download_model(model_id, filename=filename)
+
+        # Auto-detect engine type based on model ID
+        use_sglang = engine == "sglang"
+        if engine == "auto":
+            # If no GGUF filename and doesn't contain GGUF in repo name, try sglang
+            model_lower = model_id.lower()
+            if "gguf" not in model_lower and "whisper" not in model_lower and not filename:
+                # Check if sglang is available
+                from cyber_inference.services.sglang_manager import SGLangManager
+                if SGLangManager.get_instance().is_available():
+                    console.print(
+                        "[yellow]Auto-detected non-GGUF repo. Use --engine gguf to force GGUF download.[/yellow]"
+                    )
+
+        if use_sglang:
+            console.print(f"[bright_blue]Downloading SGLang model: {model_id}[/bright_blue]")
+            path = await manager.download_sglang_model(model_id)
+            console.print(f"[bright_green]SGLang model downloaded to: {path}[/bright_green]")
+        else:
+            await manager.download_model(model_id, filename=filename)
 
     asyncio.run(_download())
 
@@ -245,12 +268,104 @@ def list_models(
         console.print("\n[bold bright_green]Downloaded Models:[/bold bright_green]\n")
         for model in models:
             size_gb = model.get("size_bytes", 0) / (1024 ** 3)
-            console.print(f"  [bright_blue]{model['name']}[/bright_blue]")
+            engine = model.get("engine_type", "llama")
+            engine_badge = {
+                "llama": "[bright_green]GGUF[/bright_green]",
+                "whisper": "[green]Whisper[/green]",
+                "sglang": "[bright_magenta]SGLang[/bright_magenta]",
+            }.get(engine, f"[dim]{engine}[/dim]")
+
+            console.print(f"  [bright_blue]{model['name']}[/bright_blue]  {engine_badge}")
             console.print(f"    Path: {model['path']}")
             console.print(f"    Size: {size_gb:.2f} GB")
+            if model.get("quantization"):
+                console.print(f"    Quantization: {model['quantization']}")
             console.print()
 
     asyncio.run(_list())
+
+
+@app.command()
+def install_sglang(
+    force: bool = typer.Option(False, "--force", "-f", help="Force reinstall even if already installed"),
+) -> None:
+    """
+    Install SGLang for GPU-accelerated inference.
+
+    Installs the sglang[all] package and sgl-kernel from the CUDA 13.0 wheel index.
+    Requires NVIDIA GPU with CUDA support.
+    """
+    import subprocess
+    import sys
+
+    setup_logging()
+    logger.info("[highlight]Installing SGLang[/highlight]")
+
+    # Check if already installed
+    if not force:
+        from cyber_inference.services.sglang_manager import SGLangManager
+        mgr = SGLangManager.get_instance()
+        if mgr.is_available():
+            version = mgr.get_version()
+            console.print(f"[bright_green]SGLang is already installed (v{version})[/bright_green]")
+            console.print("Use --force to reinstall.")
+            return
+
+    console.print("[bright_blue]Installing sglang[all]...[/bright_blue]")
+    console.print("[dim]This may take several minutes (PyTorch + CUDA dependencies)[/dim]\n")
+
+    try:
+        # Install sglang with all extras
+        result = subprocess.run(
+            [
+                sys.executable, "-m", "uv", "pip", "install",
+                "sglang[all]>=0.4.6",
+            ],
+            capture_output=False,
+            text=True,
+        )
+
+        if result.returncode != 0:
+            console.print("[red]Failed to install sglang[all][/red]")
+            raise typer.Exit(1)
+
+        # Install sgl-kernel from custom wheel index
+        console.print("\n[bright_blue]Installing sgl-kernel from CUDA 13.0 wheels...[/bright_blue]")
+        result = subprocess.run(
+            [
+                sys.executable, "-m", "uv", "pip", "install",
+                "sgl-kernel",
+                "--extra-index-url", "https://docs.sglang.io/whl/cu130/sgl-kernel/",
+            ],
+            capture_output=False,
+            text=True,
+        )
+
+        if result.returncode != 0:
+            console.print("[yellow]Warning: sgl-kernel installation failed (may not affect all setups)[/yellow]")
+
+        # Verify installation
+        from cyber_inference.services.sglang_manager import SGLangManager
+        mgr = SGLangManager.get_instance()
+        mgr.reset_cache()
+
+        if mgr.is_available():
+            version = mgr.get_version()
+            console.print(f"\n[bright_green]SGLang installed successfully! (v{version})[/bright_green]")
+
+            cuda_info = mgr.get_cuda_info()
+            if cuda_info["cuda_available"]:
+                console.print(f"  CUDA devices: {cuda_info['device_count']}")
+                for dev in cuda_info["devices"]:
+                    console.print(f"    {dev['name']} ({dev['memory_total_mb']} MB)")
+            else:
+                console.print("[yellow]  Warning: CUDA not available. SGLang requires a CUDA GPU.[/yellow]")
+        else:
+            console.print("[red]SGLang installation could not be verified.[/red]")
+
+    except Exception as e:
+        console.print(f"[red]Installation error: {e}[/red]")
+        raise typer.Exit(1)
 
 
 @app.command()

@@ -160,6 +160,65 @@
                 </div>
             </div>
 
+            <!-- SGLang Settings -->
+            <div class="cyber-card rounded-xl overflow-hidden mt-6">
+                <div class="px-6 py-4 border-b border-purple-500/20">
+                    <h2 class="font-cyber text-xl font-semibold text-purple-400 flex items-center space-x-2">
+                        <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                        </svg>
+                        <span>SGLang ENGINE</span>
+                        {% if sglang_available %}
+                        <span class="text-xs px-2 py-0.5 rounded bg-purple-500/20 text-purple-400">
+                            Available{% if sglang_version %} v{{ sglang_version }}{% endif %}
+                        </span>
+                        {% else %}
+                        <span class="text-xs px-2 py-0.5 rounded bg-gray-500/20 text-gray-500">
+                            Not Installed
+                        </span>
+                        {% endif %}
+                    </h2>
+                </div>
+                <div class="p-6 space-y-4">
+                    {% if sglang_available %}
+                    <div>
+                        <label class="block text-sm font-mono text-gray-400 mb-2">
+                            Memory Fraction (--mem-fraction-static)
+                        </label>
+                        <input type="number" id="sglang_mem_fraction" name="sglang_mem_fraction"
+                               value="{{ settings.sglang_mem_fraction }}"
+                               step="0.05" min="0.1" max="0.95"
+                               class="cyber-input w-full px-4 py-2 rounded-lg font-mono">
+                        <p class="text-xs text-gray-500 mt-1">
+                            Fraction of GPU memory for KV cache pool (0.1 - 0.95)
+                        </p>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-mono text-gray-400 mb-2">
+                            Tensor Parallelism (--tp)
+                        </label>
+                        <input type="number" id="sglang_tp_size" name="sglang_tp_size"
+                               value="{{ settings.sglang_tp_size }}"
+                               min="1" max="8"
+                               class="cyber-input w-full px-4 py-2 rounded-lg font-mono">
+                        <p class="text-xs text-gray-500 mt-1">
+                            Number of GPUs for tensor parallelism (1 = single GPU)
+                        </p>
+                    </div>
+                    {% else %}
+                    <div class="text-center py-6">
+                        <p class="text-gray-400 text-sm mb-3">
+                            SGLang is not installed. Enable it for GPU-accelerated inference.
+                        </p>
+                        <div class="bg-cyber-dark/50 rounded-lg p-4 text-left">
+                            <p class="text-xs text-gray-500 font-mono mb-2">Install via start script:</p>
+                            <code class="text-sm text-purple-400 font-mono">CYBER_INFERENCE_ENABLE_SGLANG=1 ./start.sh</code>
+                        </div>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+
             <!-- Save Button -->
             <div class="flex justify-end mt-6">
                 <button type="submit" id="saveSettingsBtn"
@@ -569,6 +628,16 @@
                 { key: 'max_memory_percent', value: maxMemoryPercent },
                 { key: 'llama_gpu_layers', value: llamaGpuLayers },
             ];
+
+            // SGLang settings (only if available)
+            const sglangMemFraction = document.getElementById('sglang_mem_fraction');
+            const sglangTpSize = document.getElementById('sglang_tp_size');
+            if (sglangMemFraction) {
+                settings.push({ key: 'sglang_mem_fraction', value: parseFloat(sglangMemFraction.value) });
+            }
+            if (sglangTpSize) {
+                settings.push({ key: 'sglang_tp_size', value: parseInt(sglangTpSize.value) });
+            }
 
             // Save each setting
             const results = await Promise.allSettled(

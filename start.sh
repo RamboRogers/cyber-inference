@@ -7,10 +7,12 @@
 #
 # Usage:
 #     ./start.sh
+#     CYBER_INFERENCE_ENABLE_SGLANG=1 ./start.sh   # Enable SGLang engine
 #
 # Requirements:
 #     - uv (https://github.com/astral-sh/uv)
-#     - python3 (3.10 or higher)
+#     - python3 (3.12 or higher)
+#     - NVIDIA GPU + CUDA (optional, for SGLang engine)
 #
 
 set -e
@@ -20,6 +22,7 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
+CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 # Function to print colored messages
@@ -95,9 +98,9 @@ info "Checking for python3..."
 if ! check_command python3; then
     error "python3 is not installed or not in PATH"
     echo ""
-    echo "Please install Python 3.10 or higher:"
+    echo "Please install Python 3.12 or higher:"
     echo "  macOS: brew install python@3.12"
-    echo "  Linux: sudo apt-get install python3 python3-venv"
+    echo "  Linux: sudo apt-get install python3.12 python3.12-venv"
     echo ""
     exit 1
 fi
@@ -105,15 +108,40 @@ fi
 PYTHON_VERSION=$(python3 --version 2>&1)
 success "Found python3: $PYTHON_VERSION"
 
-# Check Python version (3.10+)
+# Check Python version (3.12+)
 PYTHON_MAJOR=$(python3 -c 'import sys; print(sys.version_info.major)')
 PYTHON_MINOR=$(python3 -c 'import sys; print(sys.version_info.minor)')
 
-if [ "$PYTHON_MAJOR" -lt 3 ] || ([ "$PYTHON_MAJOR" -eq 3 ] && [ "$PYTHON_MINOR" -lt 10 ]); then
-    error "Python 3.10 or higher is required (found $PYTHON_VERSION)"
+if [ "$PYTHON_MAJOR" -lt 3 ] || ([ "$PYTHON_MAJOR" -eq 3 ] && [ "$PYTHON_MINOR" -lt 12 ]); then
+    error "Python 3.12 or higher is required (found $PYTHON_VERSION)"
     echo ""
-    echo "Please upgrade Python to version 3.10 or higher."
+    echo "Please upgrade Python to version 3.12 or higher."
+    echo "  macOS: brew install python@3.12"
+    echo "  Linux: sudo apt-get install python3.12 python3.12-venv"
     exit 1
+fi
+
+# Detect CUDA / GPU availability
+CUDA_AVAILABLE=0
+if check_command nvidia-smi; then
+    CUDA_AVAILABLE=1
+    CUDA_INFO=$(nvidia-smi --query-gpu=name,driver_version --format=csv,noheader 2>/dev/null | head -1)
+    success "NVIDIA GPU detected: $CUDA_INFO"
+else
+    info "No NVIDIA GPU detected (SGLang requires CUDA)"
+fi
+
+# Check if SGLang is requested
+ENABLE_SGLANG="${CYBER_INFERENCE_ENABLE_SGLANG:-0}"
+
+if [ "$ENABLE_SGLANG" = "1" ] || [ "$ENABLE_SGLANG" = "true" ] || [ "$ENABLE_SGLANG" = "yes" ]; then
+    if [ "$CUDA_AVAILABLE" -eq 0 ]; then
+        warning "SGLang requested but no NVIDIA GPU detected."
+        warning "SGLang requires CUDA. Proceeding without SGLang support."
+        ENABLE_SGLANG=0
+    else
+        info "SGLang engine enabled"
+    fi
 fi
 
 echo ""
@@ -124,13 +152,26 @@ echo ""
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# Run uv sync
-info "Synchronizing dependencies with uv sync..."
-if ! uv sync; then
-    error "Failed to sync dependencies"
-    exit 1
+# Run uv sync with appropriate extras
+if [ "$ENABLE_SGLANG" = "1" ] || [ "$ENABLE_SGLANG" = "true" ] || [ "$ENABLE_SGLANG" = "yes" ]; then
+    info "Synchronizing dependencies with uv sync (including SGLang)..."
+    if ! uv sync --extra sglang; then
+        error "Failed to sync dependencies with SGLang"
+        warning "Falling back to base dependencies..."
+        if ! uv sync; then
+            error "Failed to sync base dependencies"
+            exit 1
+        fi
+    fi
+    success "Dependencies synchronized (with SGLang)"
+else
+    info "Synchronizing dependencies with uv sync..."
+    if ! uv sync; then
+        error "Failed to sync dependencies"
+        exit 1
+    fi
+    success "Dependencies synchronized"
 fi
-success "Dependencies synchronized"
 
 echo ""
 info "Starting Cyber-Inference server..."

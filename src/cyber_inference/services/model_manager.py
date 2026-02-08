@@ -2,7 +2,7 @@
 Model management for Cyber-Inference.
 
 Handles:
-- HuggingFace model discovery and download
+- HuggingFace model discovery and download (GGUF and SGLang formats)
 - Local model registration and tracking
 - Model metadata extraction
 - Download progress tracking
@@ -11,12 +11,13 @@ Handles:
 import asyncio
 import os
 import re
+import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import AsyncGenerator, Optional
 
 import httpx
-from huggingface_hub import HfApi, hf_hub_download, list_repo_files
+from huggingface_hub import HfApi, hf_hub_download, list_repo_files, snapshot_download
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -887,31 +888,53 @@ class ModelManager:
         filename: str,
         file_path: Path,
         mmproj_path: Optional[Path] = None,
+        engine_type: Optional[str] = None,
+        model_name_override: Optional[str] = None,
     ) -> Model:
-        """Register a model in the database."""
+        """Register a model in the database.
+
+        Args:
+            repo_id: HuggingFace repository ID
+            filename: Model filename
+            file_path: Local file path
+            mmproj_path: Optional mmproj file path for vision models
+            engine_type: Engine type ('llama', 'whisper', 'sglang')
+            model_name_override: Override the auto-generated model name
+        """
         logger.debug(f"Registering model: {filename}")
 
         # Extract quantization from filename using our improved method
         quantization = self._extract_quant_suffix(filename)
 
-        # Get file size
-        size_bytes = file_path.stat().st_size if file_path.exists() else 0
+        # Get file size (for SGLang dirs, sum all files)
+        if file_path.is_dir():
+            size_bytes = sum(
+                f.stat().st_size for f in file_path.rglob("*") if f.is_file()
+            )
+        else:
+            size_bytes = file_path.stat().st_size if file_path.exists() else 0
 
-        # Determine model name (use filename without extension)
-        if filename.endswith(".gguf"):
+        # Determine model name
+        if model_name_override:
+            model_name = model_name_override
+        elif filename.endswith(".gguf"):
             model_name = filename.replace(".gguf", "")
         elif filename.endswith(".bin"):
             model_name = filename.replace(".bin", "")
         else:
             model_name = Path(filename).stem
 
-        # Read context length for GGUF files (not applicable to whisper bin)
+        # Read context length for GGUF files (not applicable to whisper bin or sglang)
         context_length = None
-        if filename.endswith(".gguf"):
+        if filename.endswith(".gguf") and file_path.is_file():
             context_length = self._read_gguf_context_length(file_path)
 
         # Convert mmproj_path to string if provided
         mmproj_path_str = str(mmproj_path) if mmproj_path else None
+
+        # Determine engine_type if not provided
+        if not engine_type:
+            engine_type = "llama"  # default
 
         async with get_db_session() as session:
             # Check if already registered
@@ -926,6 +949,7 @@ class ModelManager:
                 existing.size_bytes = size_bytes
                 existing.is_downloaded = True
                 existing.download_progress = 100.0
+                existing.engine_type = engine_type
                 if context_length:
                     existing.context_length = context_length
 
@@ -982,6 +1006,7 @@ class ModelManager:
                 quantization=quantization,
                 context_length=context_length or 4096,
                 model_type=model_type,
+                engine_type=engine_type,
                 mmproj_path=mmproj_path_str,
                 is_downloaded=True,
                 download_progress=100.0,
@@ -989,10 +1014,13 @@ class ModelManager:
             session.add(model)
             await session.commit()
 
+            engine_label = f" [{engine_type}]" if engine_type != "llama" else ""
             if mmproj_path_str:
-                logger.info(f"[success]Model registered: {model_name} (with mmproj)[/success]")
+                logger.info(
+                    f"[success]Model registered: {model_name}{engine_label} (with mmproj)[/success]"
+                )
             else:
-                logger.info(f"[success]Model registered: {model_name}[/success]")
+                logger.info(f"[success]Model registered: {model_name}{engine_label}[/success]")
             return model
 
     async def list_models(self) -> list[dict]:
@@ -1031,6 +1059,7 @@ class ModelManager:
                     "quantization": model.quantization,
                     "context_length": model.context_length,
                     "model_type": model.model_type,
+                    "engine_type": model.engine_type or "llama",
                     "mmproj_path": model.mmproj_path,
                     "is_downloaded": model.is_downloaded,
                     "is_enabled": model.is_enabled,
@@ -1043,6 +1072,7 @@ class ModelManager:
 
         # Scan for unregistered local files
         registered_files = {m["filename"] for m in models}
+        registered_names = {m["name"] for m in models}
 
         # Scan for both GGUF and whisper.cpp bin files
         for file_path in list(self.models_dir.glob("*.gguf")) + list(self.models_dir.glob("ggml-*.bin")):
@@ -1066,12 +1096,47 @@ class ModelManager:
                     "quantization": None,
                     "context_length": context_length or 4096,
                     "model_type": None,
+                    "engine_type": "llama",
                     "mmproj_path": mmproj_path,
                     "is_downloaded": True,
                     "is_enabled": True,
                     "last_used_at": None,
                     "registered": False,
                 })
+
+        # Scan for unregistered SGLang models (directories in models/sglang/)
+        settings = get_settings()
+        sglang_dir = settings.sglang_models_dir
+        if sglang_dir.exists():
+            for model_dir in sglang_dir.iterdir():
+                if not model_dir.is_dir():
+                    continue
+                # Check for config.json to identify valid HuggingFace model dirs
+                if not (model_dir / "config.json").exists():
+                    continue
+                dir_name = model_dir.name
+                if dir_name not in registered_names:
+                    # Calculate total size
+                    total_size = sum(
+                        f.stat().st_size for f in model_dir.rglob("*") if f.is_file()
+                    )
+                    models.append({
+                        "id": None,
+                        "name": dir_name,
+                        "filename": dir_name,
+                        "path": str(model_dir),
+                        "hf_repo_id": None,
+                        "size_bytes": total_size,
+                        "quantization": None,
+                        "context_length": 4096,
+                        "model_type": None,
+                        "engine_type": "sglang",
+                        "mmproj_path": None,
+                        "is_downloaded": True,
+                        "is_enabled": True,
+                        "last_used_at": None,
+                        "registered": False,
+                    })
 
         logger.debug(f"Found {len(models)} models")
         return models
@@ -1109,7 +1174,9 @@ class ModelManager:
 
     async def delete_model(self, name: str) -> bool:
         """
-        Delete a model (file and database record).
+        Delete a model (file/directory and database record).
+
+        Handles both single GGUF files and SGLang model directories.
 
         Args:
             name: Model name
@@ -1124,12 +1191,17 @@ class ModelManager:
             logger.warning(f"Model not found: {name}")
             return False
 
-        # Delete file (ignore if already gone)
+        # Delete file or directory (ignore if already gone)
         file_path = Path(model["path"])
         try:
             if file_path.exists():
-                file_path.unlink()
-                logger.info(f"  Deleted file: {file_path}")
+                if file_path.is_dir():
+                    # SGLang models are directories
+                    shutil.rmtree(file_path)
+                    logger.info(f"  Deleted directory: {file_path}")
+                else:
+                    file_path.unlink()
+                    logger.info(f"  Deleted file: {file_path}")
             else:
                 logger.info(f"  File already gone: {file_path}")
         except Exception as e:
@@ -1189,3 +1261,152 @@ class ModelManager:
             filename=file_path.name,
             file_path=file_path,
         )
+
+    # ── SGLang Model Management ───────────────────────────────────────
+
+    @staticmethod
+    def _sanitize_repo_name(repo_id: str) -> str:
+        """
+        Convert a HuggingFace repo_id to a safe directory name.
+
+        'meta-llama/Meta-Llama-3-8B-Instruct' -> 'Meta-Llama-3-8B-Instruct'
+        """
+        # Use the model name part (after the slash)
+        parts = repo_id.strip().rstrip("/").split("/")
+        return parts[-1] if len(parts) > 1 else parts[0]
+
+    async def list_sglang_repo_info(self, repo_id: str) -> dict:
+        """
+        Get information about a HuggingFace model repo for SGLang.
+
+        Args:
+            repo_id: HuggingFace repository ID
+
+        Returns:
+            Dict with repo_id, total_size, file_count, model_type hints
+        """
+        logger.info(f"[info]Fetching SGLang repo info: {repo_id}[/info]")
+
+        try:
+            repo_tree = await asyncio.to_thread(
+                self._hf_api.list_repo_tree,
+                repo_id,
+                recursive=True,
+            )
+
+            total_size = 0
+            file_count = 0
+            has_safetensors = False
+            has_config = False
+
+            for item in repo_tree:
+                if hasattr(item, "path") and hasattr(item, "size"):
+                    file_count += 1
+                    total_size += item.size or 0
+                    if item.path.endswith(".safetensors"):
+                        has_safetensors = True
+                    if item.path == "config.json":
+                        has_config = True
+
+            return {
+                "repo_id": repo_id,
+                "total_size_bytes": total_size,
+                "file_count": file_count,
+                "has_safetensors": has_safetensors,
+                "has_config": has_config,
+                "is_valid_model": has_config,
+            }
+
+        except Exception as e:
+            logger.error(f"[error]Failed to fetch repo info: {e}[/error]")
+            raise
+
+    async def download_sglang_model(
+        self,
+        repo_id: str,
+        force: bool = False,
+    ) -> Path:
+        """
+        Download a HuggingFace model for use with SGLang.
+
+        Uses snapshot_download to download the full model repository
+        to models/sglang/{model_name}/.
+
+        Args:
+            repo_id: HuggingFace repository ID (e.g., 'meta-llama/Meta-Llama-3-8B-Instruct')
+            force: Force redownload even if exists
+
+        Returns:
+            Path to the downloaded model directory
+        """
+        repo_id = repo_id.strip()
+        model_name = self._sanitize_repo_name(repo_id)
+
+        settings = get_settings()
+        sglang_dir = settings.sglang_models_dir
+        sglang_dir.mkdir(parents=True, exist_ok=True)
+
+        local_dir = sglang_dir / model_name
+
+        logger.info(f"[highlight]Downloading SGLang model: {repo_id}[/highlight]")
+        logger.info(f"  Target directory: {local_dir}")
+
+        # Notify download starting
+        await self._notify_progress(repo_id, model_name, 0, "starting")
+
+        # Check if already downloaded
+        if local_dir.exists() and (local_dir / "config.json").exists() and not force:
+            logger.info(f"[success]SGLang model already exists: {local_dir}[/success]")
+            await self._register_model(
+                repo_id=repo_id,
+                filename=model_name,
+                file_path=local_dir,
+                engine_type="sglang",
+                model_name_override=model_name,
+            )
+            await self._notify_progress(repo_id, model_name, 100, "complete")
+            return local_dir
+
+        # Download with progress tracking
+        await self._notify_progress(repo_id, model_name, 5, "downloading")
+
+        try:
+            def _do_download() -> str:
+                """Run snapshot_download in a thread."""
+                return snapshot_download(
+                    repo_id=repo_id,
+                    local_dir=str(local_dir),
+                    local_dir_use_symlinks=False,
+                    token=self._hf_token,
+                )
+
+            # Run the download in a thread to avoid blocking
+            await asyncio.to_thread(_do_download)
+
+            logger.info(f"[success]SGLang model download complete: {local_dir}[/success]")
+
+            # Register in database
+            await self._register_model(
+                repo_id=repo_id,
+                filename=model_name,
+                file_path=local_dir,
+                engine_type="sglang",
+                model_name_override=model_name,
+            )
+
+            # Notify complete
+            await self._notify_progress(repo_id, model_name, 100, "complete")
+
+            return local_dir
+
+        except Exception as e:
+            logger.error(f"[error]SGLang model download failed: {e}[/error]")
+            # Clean up partial download
+            if local_dir.exists():
+                try:
+                    shutil.rmtree(local_dir)
+                    logger.info(f"  Cleaned up partial download: {local_dir}")
+                except Exception as cleanup_err:
+                    logger.warning(f"  Could not clean up: {cleanup_err}")
+            await self._notify_progress(repo_id, model_name, 0, "error", str(e))
+            raise

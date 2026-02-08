@@ -1,8 +1,8 @@
 """
-Subprocess manager for llama.cpp server instances.
+Subprocess manager for inference server instances.
 
 Manages:
-- Starting/stopping llama-server processes
+- Starting/stopping llama-server, whisper-server, and SGLang server processes
 - Dynamic port allocation
 - Health checking
 - Resource tracking per process
@@ -31,7 +31,7 @@ logger = get_logger(__name__)
 
 @dataclass
 class LlamaProcess:
-    """Represents a running llama-server or whisper-server process."""
+    """Represents a running inference server process (llama, whisper, or sglang)."""
     model_name: str
     model_path: Path
     port: int
@@ -47,7 +47,7 @@ class LlamaProcess:
     gpu_layers: int = -1
     threads: Optional[int] = None
 
-    # Server type: 'llama' or 'whisper'
+    # Server type: 'llama', 'whisper', or 'sglang'
     server_type: str = "llama"
 
     # Resource tracking
@@ -135,6 +135,16 @@ class ProcessManager:
             version = await self._installer.get_installed_version()
             logger.info(f"[success]llama-server found in {location}: {version}[/success]")
             logger.debug(f"  Binary path: {binary_path}")
+
+        # Check SGLang availability
+        from cyber_inference.services.sglang_manager import SGLangManager
+        sglang_mgr = SGLangManager.get_instance()
+        if sglang_mgr.is_available():
+            sglang_version = sglang_mgr.get_version() or "unknown"
+            logger.info(f"[success]SGLang available: v{sglang_version}[/success]")
+            get_settings().sglang_enabled = True
+        else:
+            logger.info("[info]SGLang not installed (optional)[/info]")
 
         self._initialized = True
         logger.info("[success]ProcessManager initialized successfully[/success]")
@@ -496,6 +506,194 @@ class ProcessManager:
                 logger.debug(f"  Waiting for whisper server... ({elapsed:.1f}s)")
                 await asyncio.sleep(check_interval)
 
+    async def start_sglang_server(
+        self,
+        model_name: str,
+        model_path: Path,
+        tp_size: Optional[int] = None,
+        mem_fraction: Optional[float] = None,
+        embedding: bool = False,
+    ) -> LlamaProcess:
+        """
+        Start a new SGLang server process for a model.
+
+        Args:
+            model_name: Name identifier for the model
+            model_path: Path to the HuggingFace model directory
+            tp_size: Tensor parallelism degree (default from settings)
+            mem_fraction: Memory fraction for KV cache (default from settings)
+            embedding: Enable embedding mode
+
+        Returns:
+            LlamaProcess instance (with server_type='sglang')
+        """
+        logger.info(f"[highlight]Starting SGLang server for model: {model_name}[/highlight]")
+
+        if model_name in self._processes:
+            existing = self._processes[model_name]
+            if existing.status == "running":
+                logger.warning(f"Model {model_name} already running on port {existing.port}")
+                return existing
+
+        # Check if SGLang is available
+        from cyber_inference.services.sglang_manager import SGLangManager
+        sglang_mgr = SGLangManager.get_instance()
+        if not sglang_mgr.is_available():
+            raise RuntimeError(
+                "SGLang is not installed. Install with: "
+                "CYBER_INFERENCE_ENABLE_SGLANG=1 ./start.sh "
+                "or: uv pip install 'sglang[all]'"
+            )
+
+        settings = get_settings()
+
+        # Allocate port from the SGLang port range
+        port = self._find_available_port()
+        logger.info(f"  Allocated port: {port}")
+
+        # Build command
+        python_exe = sglang_mgr.get_python_executable()
+        n_tp = tp_size if tp_size is not None else settings.sglang_tp_size
+        n_mem = mem_fraction if mem_fraction is not None else settings.sglang_mem_fraction
+
+        cmd = [
+            python_exe, "-m", "sglang.launch_server",
+            "--model-path", str(model_path),
+            "--port", str(port),
+            "--host", "127.0.0.1",
+            "--mem-fraction-static", str(n_mem),
+        ]
+
+        if n_tp > 1:
+            cmd.extend(["--tp", str(n_tp)])
+
+        if embedding:
+            cmd.append("--is-embedding")
+            logger.info("  Embedding mode enabled")
+
+        logger.debug(f"  Command: {' '.join(cmd)}")
+
+        # Create process entry
+        sglang_proc = LlamaProcess(
+            model_name=model_name,
+            model_path=model_path,
+            port=port,
+            server_type="sglang",
+        )
+
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+
+            sglang_proc.process = process
+            sglang_proc.pid = process.pid
+            sglang_proc.status = "starting"
+
+            logger.info(f"  Process started with PID: {process.pid}")
+
+            # Store in tracking dict
+            self._processes[model_name] = sglang_proc
+
+            # Start output monitoring
+            asyncio.create_task(self._monitor_output(model_name, process))
+
+            # Wait for SGLang server to be ready (longer timeout - model compilation)
+            await self._wait_for_sglang_ready(model_name, port)
+
+            sglang_proc.status = "running"
+            logger.info(
+                f"[success]SGLang server ready for {model_name} on port {port}[/success]"
+            )
+
+            return sglang_proc
+
+        except Exception as e:
+            logger.error(f"[error]Failed to start SGLang server: {e}[/error]")
+            sglang_proc.status = "error"
+            sglang_proc.error_message = str(e)
+            self._release_port(port)
+            raise
+
+    async def _wait_for_sglang_ready(
+        self,
+        model_name: str,
+        port: int,
+        timeout: float = 300.0,
+        check_interval: float = 2.0,
+    ) -> None:
+        """
+        Wait for the SGLang server to be ready.
+
+        SGLang takes longer than llama.cpp to start because it compiles
+        CUDA kernels and loads model weights on first launch.
+
+        Args:
+            model_name: Model name for logging
+            port: Server port
+            timeout: Maximum wait time in seconds (default 300s for SGLang)
+            check_interval: Time between health checks
+        """
+        logger.info(f"  Waiting for SGLang server to be ready (timeout: {timeout}s)...")
+
+        health_url = f"http://127.0.0.1:{port}/health"
+        models_url = f"http://127.0.0.1:{port}/v1/models"
+        start_time = asyncio.get_event_loop().time()
+
+        health_ok = False
+        models_ok = False
+
+        async with httpx.AsyncClient() as client:
+            while True:
+                elapsed = asyncio.get_event_loop().time() - start_time
+
+                if elapsed > timeout:
+                    raise TimeoutError(
+                        f"SGLang server failed to start within {timeout}s"
+                    )
+
+                try:
+                    # Check health endpoint
+                    if not health_ok:
+                        response = await client.get(health_url, timeout=3.0)
+                        if response.status_code == 200:
+                            health_ok = True
+                            logger.debug(f"  SGLang health check passed after {elapsed:.1f}s")
+
+                    # Then check /v1/models to confirm model is loaded
+                    if health_ok and not models_ok:
+                        response = await client.get(models_url, timeout=3.0)
+                        if response.status_code == 200:
+                            data = response.json()
+                            if data.get("data") and len(data["data"]) > 0:
+                                models_ok = True
+                                logger.debug(
+                                    f"  SGLang model loaded after {elapsed:.1f}s"
+                                )
+
+                    # Both checks passed
+                    if health_ok and models_ok:
+                        await asyncio.sleep(0.5)
+                        logger.info(
+                            f"  SGLang server fully ready after {elapsed:.1f}s"
+                        )
+                        return
+
+                except Exception as e:
+                    logger.debug(f"  SGLang readiness check failed: {e}")
+
+                # Check if process died
+                proc = self._processes.get(model_name)
+                if proc and proc.process and proc.process.returncode is not None:
+                    raise RuntimeError(
+                        f"SGLang server exited with code {proc.process.returncode}"
+                    )
+
+                logger.debug(f"  Waiting for SGLang server... ({elapsed:.1f}s)")
+                await asyncio.sleep(check_interval)
+
     async def _monitor_output(
         self,
         model_name: str,
@@ -648,7 +846,7 @@ class ProcessManager:
 
     async def shutdown(self) -> None:
         """Shutdown all running servers."""
-        logger.info("[warning]Shutting down all llama-server instances...[/warning]")
+        logger.info("[warning]Shutting down all inference server instances...[/warning]")
 
         self._shutdown_event.set()
 

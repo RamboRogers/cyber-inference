@@ -106,6 +106,12 @@ async def dashboard(request: Request) -> HTMLResponse:
             status_code=200,
         )
 
+    # Get SGLang status
+    from cyber_inference.services.sglang_manager import SGLangManager
+    sglang_mgr = SGLangManager.get_instance()
+    sglang_available = sglang_mgr.is_available()
+    sglang_version = sglang_mgr.get_version() if sglang_available else None
+
     # Get data for dashboard
     try:
         from cyber_inference.main import get_process_manager, get_resource_monitor
@@ -115,6 +121,15 @@ async def dashboard(request: Request) -> HTMLResponse:
 
         resources = await rm.get_resources()
         running_models = pm.get_running_models()
+
+        # Build model info with server type for the dashboard
+        running_models_info = []
+        for model_name in running_models:
+            proc = pm.get_process(model_name)
+            running_models_info.append({
+                "name": model_name,
+                "server_type": proc.server_type if proc else "llama",
+            })
 
         gpu_info = resources.gpu.name if resources.gpu else None
         gpu_memory_total = None
@@ -138,8 +153,10 @@ async def dashboard(request: Request) -> HTMLResponse:
                 "gpu_memory_used": gpu_memory_used,
                 "gpu_memory_note": gpu_memory_note,
             },
-            running_models=running_models,
+            running_models=running_models_info,
             model_count=len(running_models),
+            sglang_available=sglang_available,
+            sglang_version=sglang_version,
         )
     except Exception as e:
         logger.warning(f"Could not get dashboard data: {e}")
@@ -149,6 +166,8 @@ async def dashboard(request: Request) -> HTMLResponse:
             resources=None,
             running_models=[],
             model_count=0,
+            sglang_available=sglang_available,
+            sglang_version=sglang_version,
         )
 
     return templates.TemplateResponse("dashboard.html", context)
@@ -173,6 +192,9 @@ async def models_page(request: Request) -> HTMLResponse:
     if not templates:
         return HTMLResponse(content="Templates not found", status_code=500)
 
+    from cyber_inference.services.sglang_manager import SGLangManager
+    sglang_available = SGLangManager.get_instance().is_available()
+
     try:
         from cyber_inference.services.model_manager import ModelManager
         from cyber_inference.api.v1 import get_auto_loader
@@ -192,6 +214,7 @@ async def models_page(request: Request) -> HTMLResponse:
             page="models",
             models=models,
             loaded_models=loaded,
+            sglang_available=sglang_available,
         )
     except Exception as e:
         logger.warning(f"Could not get models data: {e}")
@@ -200,6 +223,7 @@ async def models_page(request: Request) -> HTMLResponse:
             page="models",
             models=[],
             loaded_models=[],
+            sglang_available=sglang_available,
         )
 
     return templates.TemplateResponse("models.html", context)
@@ -226,6 +250,11 @@ async def settings_page(request: Request) -> HTMLResponse:
 
     settings = get_settings()
     overrides = await load_db_config_overrides()
+
+    from cyber_inference.services.sglang_manager import SGLangManager
+    sglang_mgr = SGLangManager.get_instance()
+    sglang_available = sglang_mgr.is_available()
+    sglang_version = sglang_mgr.get_version() if sglang_available else None
 
     runtime_settings = {
         "default_context_size": settings.default_context_size,
@@ -287,8 +316,12 @@ async def settings_page(request: Request) -> HTMLResponse:
             "max_loaded_models": saved_settings["max_loaded_models"],
             "max_memory_percent": saved_settings["max_memory_percent"],
             "llama_gpu_layers": saved_settings["llama_gpu_layers"],
+            "sglang_mem_fraction": settings.sglang_mem_fraction,
+            "sglang_tp_size": settings.sglang_tp_size,
         },
         pending_restart_items=pending_restart_items,
+        sglang_available=sglang_available,
+        sglang_version=sglang_version,
     )
 
     return templates.TemplateResponse("settings.html", context)

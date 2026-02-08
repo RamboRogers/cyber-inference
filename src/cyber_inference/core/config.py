@@ -31,6 +31,8 @@ CONFIG_DB_CASTS = {
     "max_memory_percent": float,
     "llama_gpu_layers": int,
     "admin_password": str,
+    "sglang_mem_fraction": float,
+    "sglang_tp_size": int,
 }
 
 
@@ -87,6 +89,24 @@ class Settings(BaseSettings):
     # HuggingFace
     hf_token: Optional[str] = Field(default=None, description="HuggingFace API token")
 
+    # SGLang settings
+    sglang_enabled: bool = Field(
+        default=False,
+        description="Whether SGLang engine is available (auto-detected at startup)",
+    )
+    sglang_mem_fraction: float = Field(
+        default=0.85,
+        description="SGLang --mem-fraction-static for KV cache pool memory",
+    )
+    sglang_tp_size: int = Field(
+        default=1,
+        description="SGLang tensor parallelism degree (number of GPUs)",
+    )
+    sglang_base_port: int = Field(
+        default=8350,
+        description="Base port for SGLang servers (separate range from llama.cpp)",
+    )
+
     @property
     def database_path(self) -> Path:
         """Full path to the database file."""
@@ -96,6 +116,11 @@ class Settings(BaseSettings):
     def log_dir(self) -> Path:
         """Path to the log directory."""
         return self.data_dir / "logs"
+
+    @property
+    def sglang_models_dir(self) -> Path:
+        """Path to the SGLang models directory."""
+        return self.models_dir / "sglang"
 
     @property
     def log_level_int(self) -> int:
@@ -116,6 +141,7 @@ class Settings(BaseSettings):
             self.models_dir,
             self.bin_dir,
             self.log_dir,
+            self.sglang_models_dir,
         ]
         for directory in directories:
             directory.mkdir(parents=True, exist_ok=True)
