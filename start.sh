@@ -127,6 +127,23 @@ if check_command nvidia-smi; then
     CUDA_AVAILABLE=1
     CUDA_INFO=$(nvidia-smi --query-gpu=name,driver_version --format=csv,noheader 2>/dev/null | head -1)
     success "NVIDIA GPU detected: $CUDA_INFO"
+
+    # Set CUDA_HOME for Triton/SGLang JIT compilation (ptxas, etc.)
+    if [ -z "$CUDA_HOME" ]; then
+        for cuda_dir in /usr/local/cuda /usr/local/cuda-13.0 /usr/local/cuda-12.8; do
+            if [ -d "$cuda_dir" ]; then
+                export CUDA_HOME="$cuda_dir"
+                break
+            fi
+        done
+    fi
+    if [ -n "$CUDA_HOME" ]; then
+        success "CUDA_HOME: $CUDA_HOME"
+        # Ensure Triton uses the system ptxas (supports newest GPU architectures)
+        if [ -f "$CUDA_HOME/bin/ptxas" ]; then
+            export TRITON_PTXAS_PATH="$CUDA_HOME/bin/ptxas"
+        fi
+    fi
 else
     info "No NVIDIA GPU detected (SGLang requires CUDA)"
 fi

@@ -10,6 +10,7 @@ Manages:
 """
 
 import asyncio
+import os
 import re
 import signal
 import socket
@@ -582,10 +583,28 @@ class ProcessManager:
         )
 
         try:
+            # SGLang/Triton needs access to the system CUDA toolkit (ptxas, etc.)
+            # for JIT compiling kernels for the specific GPU architecture.
+            env = os.environ.copy()
+            cuda_home = env.get("CUDA_HOME", "")
+            if not cuda_home:
+                # Auto-detect CUDA home from common locations
+                for candidate in ["/usr/local/cuda", "/usr/local/cuda-13.0"]:
+                    if os.path.isdir(candidate):
+                        cuda_home = candidate
+                        break
+            if cuda_home:
+                env["CUDA_HOME"] = cuda_home
+                ptxas_path = os.path.join(cuda_home, "bin", "ptxas")
+                if os.path.isfile(ptxas_path):
+                    env["TRITON_PTXAS_PATH"] = ptxas_path
+                    logger.info(f"  Using system ptxas: {ptxas_path}")
+
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
+                env=env,
             )
 
             sglang_proc.process = process

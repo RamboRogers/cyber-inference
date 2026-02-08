@@ -288,13 +288,15 @@ def list_models(
 @app.command()
 def install_sglang(
     force: bool = typer.Option(False, "--force", "-f", help="Force reinstall even if already installed"),
+    cuda_version: str = typer.Option("cu130", "--cuda", help="CUDA version for PyTorch wheels (e.g. cu130, cu128)"),
 ) -> None:
     """
     Install SGLang for GPU-accelerated inference.
 
-    Installs the sglang[all] package and sgl-kernel from the CUDA 13.0 wheel index.
-    Requires NVIDIA GPU with CUDA support.
+    Installs sglang[all], PyTorch with CUDA support, and sgl-kernel
+    from the appropriate wheel indices. Requires NVIDIA GPU with CUDA.
     """
+    import platform
     import subprocess
     import sys
 
@@ -311,38 +313,61 @@ def install_sglang(
             console.print("Use --force to reinstall.")
             return
 
-    console.print("[bright_blue]Installing sglang[all]...[/bright_blue]")
+    console.print("[bright_blue]Installing SGLang with CUDA support...[/bright_blue]")
+    console.print(f"[dim]CUDA wheel variant: {cuda_version}[/dim]")
     console.print("[dim]This may take several minutes (PyTorch + CUDA dependencies)[/dim]\n")
 
-    try:
-        # Install sglang with all extras
-        result = subprocess.run(
-            [
-                sys.executable, "-m", "uv", "pip", "install",
-                "sglang[all]>=0.4.6",
-            ],
-            capture_output=False,
-            text=True,
-        )
-
+    def _run(cmd: list[str], label: str) -> bool:
+        console.print(f"[bright_blue]{label}[/bright_blue]")
+        result = subprocess.run(cmd, capture_output=False, text=True)
         if result.returncode != 0:
-            console.print("[red]Failed to install sglang[all][/red]")
+            console.print(f"[red]Failed: {label}[/red]")
+            return False
+        return True
+
+    try:
+        # Step 1: Install sglang with all extras
+        if not _run(
+            [sys.executable, "-m", "uv", "pip", "install", "sglang[all]>=0.4.6"],
+            "Installing sglang[all]...",
+        ):
             raise typer.Exit(1)
 
-        # Install sgl-kernel from custom wheel index
-        console.print("\n[bright_blue]Installing sgl-kernel from CUDA 13.0 wheels...[/bright_blue]")
-        result = subprocess.run(
+        # Step 2: Install PyTorch with the correct CUDA version
+        pytorch_index = f"https://download.pytorch.org/whl/{cuda_version}"
+        if not _run(
             [
                 sys.executable, "-m", "uv", "pip", "install",
-                "sgl-kernel",
-                "--extra-index-url", "https://docs.sglang.io/whl/cu130/sgl-kernel/",
+                "--reinstall", "torch", "torchvision", "torchaudio",
+                "--index-url", pytorch_index,
             ],
-            capture_output=False,
-            text=True,
-        )
+            f"Installing PyTorch with {cuda_version}...",
+        ):
+            console.print("[yellow]Warning: PyTorch CUDA install failed, falling back to default[/yellow]")
 
-        if result.returncode != 0:
-            console.print("[yellow]Warning: sgl-kernel installation failed (may not affect all setups)[/yellow]")
+        # Step 3: Install sgl-kernel from the CUDA-specific wheel index
+        # Determine platform arch for direct wheel URL
+        arch = platform.machine()  # aarch64 or x86_64
+        sgl_kernel_whl = (
+            f"https://github.com/sgl-project/whl/releases/download/"
+            f"v0.3.21/sgl_kernel-0.3.21+{cuda_version}-cp310-abi3-manylinux2014_{arch}.whl"
+        )
+        console.print(f"\n[bright_blue]Installing sgl-kernel ({cuda_version}, {arch})...[/bright_blue]")
+        if not _run(
+            [sys.executable, "-m", "uv", "pip", "install", "--reinstall", sgl_kernel_whl],
+            f"Installing sgl-kernel from {cuda_version} wheel...",
+        ):
+            # Fallback to the extra-index-url approach
+            console.print("[yellow]Direct wheel failed, trying index...[/yellow]")
+            _run(
+                [
+                    sys.executable, "-m", "uv", "pip", "install",
+                    "--reinstall", "sgl-kernel",
+                    "--extra-index-url",
+                    f"https://docs.sglang.io/whl/{cuda_version}/sgl-kernel/",
+                ],
+                "Installing sgl-kernel from index...",
+            )
 
         # Verify installation
         from cyber_inference.services.sglang_manager import SGLangManager
