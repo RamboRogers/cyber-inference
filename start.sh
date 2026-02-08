@@ -5,14 +5,16 @@
 # This script verifies prerequisites and starts the Cyber-Inference server.
 # It will auto-restart the server if it exits (use Ctrl+C to stop).
 #
+# When NVIDIA hardware is detected, SGLang + PyTorch CUDA wheels are
+# installed automatically. No manual flags needed.
+#
 # Usage:
 #     ./start.sh
-#     CYBER_INFERENCE_ENABLE_SGLANG=1 ./start.sh   # Enable SGLang engine
+#     CYBER_INFERENCE_NO_SGLANG=1 ./start.sh   # Force disable SGLang
 #
 # Requirements:
 #     - uv (https://github.com/astral-sh/uv)
 #     - python3 (3.12 or higher)
-#     - NVIDIA GPU + CUDA (optional, for SGLang engine)
 #
 
 set -e
@@ -22,179 +24,165 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
-# Function to print colored messages
-error() {
-    echo -e "${RED}❌ Error: $1${NC}" >&2
-}
+error()   { echo -e "${RED}❌ Error: $1${NC}" >&2; }
+success() { echo -e "${GREEN}✅ $1${NC}"; }
+info()    { echo -e "${BLUE}ℹ️  $1${NC}"; }
+warning() { echo -e "${YELLOW}⚠️  $1${NC}"; }
 
-success() {
-    echo -e "${GREEN}✅ $1${NC}"
-}
-
-info() {
-    echo -e "${BLUE}ℹ️  $1${NC}"
-}
-
-warning() {
-    echo -e "${YELLOW}⚠️  $1${NC}"
-}
-
-# Function to check if a command exists
-check_command() {
-    if command -v "$1" >/dev/null 2>&1; then
-        return 0
-    else
-        return 1
-    fi
-}
-
-# Function to get command version
-get_version() {
-    if command -v "$1" >/dev/null 2>&1; then
-        "$1" --version 2>&1 | head -n 1
-    else
-        echo "not found"
-    fi
-}
+check_command() { command -v "$1" >/dev/null 2>&1; }
 
 echo "═══════════════════════════════════════════════════════════"
 echo "  Cyber-Inference Startup"
 echo "═══════════════════════════════════════════════════════════"
 echo ""
 
-# Check for uv (install automatically if not found)
+# ──────────────────────────────────────────────────────────────
+# 1. uv
+# ──────────────────────────────────────────────────────────────
 info "Checking for uv..."
 if ! check_command uv; then
-    warning "uv is not installed. Installing automatically..."
+    warning "uv not found – installing..."
     if curl -LsSf https://astral.sh/uv/install.sh | sh; then
-        # Add uv to PATH for current session
         export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
-        if ! check_command uv; then
-            error "uv was installed but not found in PATH"
-            echo ""
-            echo "Please add ~/.local/bin or ~/.cargo/bin to your PATH and restart."
-            exit 1
-        fi
-        success "uv installed successfully"
+        check_command uv || { error "uv installed but not in PATH"; exit 1; }
+        success "uv installed"
     else
-        error "Failed to install uv automatically"
-        echo ""
-        echo "Please install uv manually:"
-        echo "  macOS/Linux: curl -LsSf https://astral.sh/uv/install.sh | sh"
-        echo "  Or visit: https://github.com/astral-sh/uv"
-        echo ""
+        error "Failed to install uv – see https://github.com/astral-sh/uv"
         exit 1
     fi
 fi
+success "Found uv: $(uv --version 2>&1 | head -1)"
 
-UV_VERSION=$(get_version uv)
-success "Found uv: $UV_VERSION"
-
-# Check for python3
+# ──────────────────────────────────────────────────────────────
+# 2. Python 3.12+
+# ──────────────────────────────────────────────────────────────
 info "Checking for python3..."
-if ! check_command python3; then
-    error "python3 is not installed or not in PATH"
-    echo ""
-    echo "Please install Python 3.12 or higher:"
-    echo "  macOS: brew install python@3.12"
-    echo "  Linux: sudo apt-get install python3.12 python3.12-venv"
-    echo ""
-    exit 1
-fi
+check_command python3 || { error "python3 not found"; exit 1; }
 
 PYTHON_VERSION=$(python3 --version 2>&1)
-success "Found python3: $PYTHON_VERSION"
-
-# Check Python version (3.12+)
 PYTHON_MAJOR=$(python3 -c 'import sys; print(sys.version_info.major)')
 PYTHON_MINOR=$(python3 -c 'import sys; print(sys.version_info.minor)')
 
 if [ "$PYTHON_MAJOR" -lt 3 ] || ([ "$PYTHON_MAJOR" -eq 3 ] && [ "$PYTHON_MINOR" -lt 12 ]); then
-    error "Python 3.12 or higher is required (found $PYTHON_VERSION)"
-    echo ""
-    echo "Please upgrade Python to version 3.12 or higher."
-    echo "  macOS: brew install python@3.12"
-    echo "  Linux: sudo apt-get install python3.12 python3.12-venv"
+    error "Python 3.12+ required (found $PYTHON_VERSION)"
     exit 1
 fi
+success "Found $PYTHON_VERSION"
 
-# Detect CUDA / GPU availability
+# ──────────────────────────────────────────────────────────────
+# 3. NVIDIA GPU / CUDA detection
+# ──────────────────────────────────────────────────────────────
 CUDA_AVAILABLE=0
+CUDA_VER_TAG=""   # e.g. cu130
+
 if check_command nvidia-smi; then
     CUDA_AVAILABLE=1
     CUDA_INFO=$(nvidia-smi --query-gpu=name,driver_version --format=csv,noheader 2>/dev/null | head -1)
-    success "NVIDIA GPU detected: $CUDA_INFO"
+    success "NVIDIA GPU: $CUDA_INFO"
 
-    # Set CUDA_HOME for Triton/SGLang JIT compilation (ptxas, etc.)
+    # Detect CUDA toolkit version from nvidia-smi
+    CUDA_FULL=$(nvidia-smi 2>/dev/null | grep -oP 'CUDA Version: \K[0-9]+\.[0-9]+' | head -1)
+    if [ -n "$CUDA_FULL" ]; then
+        CUDA_MAJOR=$(echo "$CUDA_FULL" | cut -d. -f1)
+        CUDA_MINOR=$(echo "$CUDA_FULL" | cut -d. -f2)
+        CUDA_VER_TAG="cu${CUDA_MAJOR}${CUDA_MINOR}"
+        success "CUDA version: $CUDA_FULL ($CUDA_VER_TAG)"
+    fi
+
+    # Set CUDA_HOME for Triton/SGLang JIT (ptxas etc.)
     if [ -z "$CUDA_HOME" ]; then
-        for cuda_dir in /usr/local/cuda /usr/local/cuda-13.0 /usr/local/cuda-12.8; do
-            if [ -d "$cuda_dir" ]; then
-                export CUDA_HOME="$cuda_dir"
-                break
-            fi
+        for d in /usr/local/cuda /usr/local/cuda-${CUDA_FULL} /usr/local/cuda-${CUDA_MAJOR}; do
+            [ -d "$d" ] && { export CUDA_HOME="$d"; break; }
         done
     fi
     if [ -n "$CUDA_HOME" ]; then
         success "CUDA_HOME: $CUDA_HOME"
-        # Ensure Triton uses the system ptxas (supports newest GPU architectures)
-        if [ -f "$CUDA_HOME/bin/ptxas" ]; then
-            export TRITON_PTXAS_PATH="$CUDA_HOME/bin/ptxas"
-        fi
+        [ -f "$CUDA_HOME/bin/ptxas" ] && export TRITON_PTXAS_PATH="$CUDA_HOME/bin/ptxas"
     fi
 else
-    info "No NVIDIA GPU detected (SGLang requires CUDA)"
+    info "No NVIDIA GPU detected"
 fi
 
-# Check if SGLang is requested
-ENABLE_SGLANG="${CYBER_INFERENCE_ENABLE_SGLANG:-0}"
-
-if [ "$ENABLE_SGLANG" = "1" ] || [ "$ENABLE_SGLANG" = "true" ] || [ "$ENABLE_SGLANG" = "yes" ]; then
-    if [ "$CUDA_AVAILABLE" -eq 0 ]; then
-        warning "SGLang requested but no NVIDIA GPU detected."
-        warning "SGLang requires CUDA. Proceeding without SGLang support."
-        ENABLE_SGLANG=0
-    else
-        info "SGLang engine enabled"
-    fi
-fi
-
-echo ""
-info "All prerequisites met!"
-echo ""
-
-# Get the script directory and project root
+# ──────────────────────────────────────────────────────────────
+# 4. Project root
+# ──────────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# Run uv sync with appropriate extras
-if [ "$ENABLE_SGLANG" = "1" ] || [ "$ENABLE_SGLANG" = "true" ] || [ "$ENABLE_SGLANG" = "yes" ]; then
-    info "Synchronizing dependencies with uv sync (including SGLang)..."
-    if ! uv sync --extra sglang; then
-        error "Failed to sync dependencies with SGLang"
-        warning "Falling back to base dependencies..."
-        if ! uv sync; then
-            error "Failed to sync base dependencies"
-            exit 1
+# ──────────────────────────────────────────────────────────────
+# 5. Sync base dependencies
+# ──────────────────────────────────────────────────────────────
+info "Syncing base dependencies..."
+uv sync || { error "uv sync failed"; exit 1; }
+success "Base dependencies OK"
+
+# ──────────────────────────────────────────────────────────────
+# 6. NVIDIA detected → install SGLang + CUDA PyTorch automatically
+# ──────────────────────────────────────────────────────────────
+NO_SGLANG="${CYBER_INFERENCE_NO_SGLANG:-0}"
+
+if [ "$CUDA_AVAILABLE" -eq 1 ] && [ "$NO_SGLANG" != "1" ]; then
+    echo ""
+    info "NVIDIA GPU found – setting up SGLang engine..."
+
+    # Determine CUDA wheel tag (default cu130)
+    CUDA_WHL="${CUDA_VER_TAG:-cu130}"
+
+    # 6a. Install sglang[all] via uv extras
+    info "Installing sglang[all]..."
+    if uv sync --extra sglang; then
+        success "sglang[all] installed"
+    else
+        warning "sglang[all] sync failed – continuing without SGLang"
+        CUDA_AVAILABLE=0
+    fi
+
+    if [ "$CUDA_AVAILABLE" -eq 1 ]; then
+        # 6b. Replace PyTorch with proper CUDA wheels
+        TORCH_INDEX="https://download.pytorch.org/whl/${CUDA_WHL}"
+        info "Installing PyTorch with ${CUDA_WHL} from ${TORCH_INDEX}..."
+        if uv pip install torch torchvision torchaudio --index-url "$TORCH_INDEX"; then
+            success "PyTorch ${CUDA_WHL} installed"
+        else
+            warning "PyTorch ${CUDA_WHL} install failed – trying reinstall..."
+            uv pip install --reinstall torch torchvision torchaudio --index-url "$TORCH_INDEX" || \
+                warning "PyTorch CUDA install failed"
+        fi
+
+        # 6c. Install sgl-kernel from CUDA-specific wheel
+        ARCH=$(uname -m)  # aarch64 or x86_64
+        SGL_KERNEL_VER="0.3.21"
+        SGL_WHL="https://github.com/sgl-project/whl/releases/download/v${SGL_KERNEL_VER}/sgl_kernel-${SGL_KERNEL_VER}+${CUDA_WHL}-cp310-abi3-manylinux2014_${ARCH}.whl"
+        info "Installing sgl-kernel ${SGL_KERNEL_VER}+${CUDA_WHL} (${ARCH})..."
+        if uv pip install --reinstall "$SGL_WHL"; then
+            success "sgl-kernel ${CUDA_WHL} installed"
+        else
+            warning "Direct wheel failed – trying index fallback..."
+            uv pip install --reinstall sgl-kernel \
+                --extra-index-url "https://docs.sglang.io/whl/${CUDA_WHL}/sgl-kernel/" || \
+                warning "sgl-kernel install failed"
+        fi
+
+        # 6d. Quick smoke test
+        if uv run python -c "import sglang; import torch; assert torch.cuda.is_available(); print(f'SGLang {sglang.__version__} + PyTorch {torch.__version__} CUDA OK')" 2>/dev/null; then
+            success "SGLang + CUDA verified"
+        else
+            warning "SGLang smoke test failed – server will still start (SGLang features may be unavailable)"
         fi
     fi
-    success "Dependencies synchronized (with SGLang)"
-else
-    info "Synchronizing dependencies with uv sync..."
-    if ! uv sync; then
-        error "Failed to sync dependencies"
-        exit 1
-    fi
-    success "Dependencies synchronized"
+elif [ "$NO_SGLANG" = "1" ]; then
+    info "SGLang disabled by CYBER_INFERENCE_NO_SGLANG=1"
 fi
 
 echo ""
 info "Starting Cyber-Inference server..."
 echo ""
 
-# Auto-restart loop
+# ──────────────────────────────────────────────────────────────
+# 7. Run with auto-restart
+# ──────────────────────────────────────────────────────────────
 RESTART_DELAY="${CYBER_INFERENCE_RESTART_DELAY:-2}"
 
 while true; do
