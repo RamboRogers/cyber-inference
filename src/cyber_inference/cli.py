@@ -325,6 +325,31 @@ def install_sglang(
             return False
         return True
 
+    def _get_installed_version(package: str) -> str | None:
+        """Read the installed version of a package, stripping any +cpu/+cu suffix."""
+        result = subprocess.run(
+            [sys.executable, "-m", "uv", "pip", "show", package],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            return None
+        for line in result.stdout.splitlines():
+            if line.startswith("Version:"):
+                ver = line.split(":", 1)[1].strip()
+                # Strip local version suffix (+cpu, +cu130, etc.)
+                return ver.split("+")[0]
+        return None
+
+    def _url_exists(url: str) -> bool:
+        """Check if a URL exists by doing a HEAD request (follows redirects)."""
+        import urllib.request
+        req = urllib.request.Request(url, method="HEAD")
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                return resp.status < 400
+        except Exception:
+            return False
+
     try:
         # Step 1: Install sglang with all extras
         if not _run(
@@ -333,42 +358,67 @@ def install_sglang(
         ):
             raise typer.Exit(1)
 
-        # Step 2: Install PyTorch with the correct CUDA version
-        #   Pin to 2.9.x – sgl-kernel 0.3.x is built against 2.9 ABI
-        pytorch_index = f"https://download.pytorch.org/whl/{cuda_version}"
-        if not _run(
-            [
-                sys.executable, "-m", "uv", "pip", "install",
-                "--reinstall", "torch>=2.9.0,<2.10", "torchvision", "torchaudio",
-                "--index-url", pytorch_index,
-            ],
-            f"Installing PyTorch 2.9.x with {cuda_version}...",
-        ):
-            console.print("[yellow]Warning: PyTorch CUDA install failed, falling back to default[/yellow]")
-
-        # Step 3: Install sgl-kernel from the CUDA-specific wheel index
-        # Determine platform arch for direct wheel URL
+        # Step 2: Detect versions that sglang's resolver chose
+        torch_ver = _get_installed_version("torch")
+        kernel_ver = _get_installed_version("sgl-kernel")
         arch = platform.machine()  # aarch64 or x86_64
-        sgl_kernel_whl = (
-            f"https://github.com/sgl-project/whl/releases/download/"
-            f"v0.3.21/sgl_kernel-0.3.21+{cuda_version}-cp310-abi3-manylinux2014_{arch}.whl"
-        )
-        console.print(f"\n[bright_blue]Installing sgl-kernel ({cuda_version}, {arch})...[/bright_blue]")
-        if not _run(
-            [sys.executable, "-m", "uv", "pip", "install", "--reinstall", sgl_kernel_whl],
-            f"Installing sgl-kernel from {cuda_version} wheel...",
-        ):
-            # Fallback to the extra-index-url approach
-            console.print("[yellow]Direct wheel failed, trying index...[/yellow]")
-            _run(
+        console.print(f"[dim]Detected: torch={torch_ver}, sgl-kernel={kernel_ver}, arch={arch}[/dim]")
+
+        # Step 3: Replace PyTorch with CUDA wheels (exact version sglang resolved)
+        pytorch_index = f"https://download.pytorch.org/whl/{cuda_version}"
+        if torch_ver:
+            console.print(f"\n[bright_blue]Installing PyTorch {torch_ver} with {cuda_version}...[/bright_blue]")
+            if not _run(
                 [
                     sys.executable, "-m", "uv", "pip", "install",
-                    "--reinstall", "sgl-kernel",
-                    "--extra-index-url",
-                    f"https://docs.sglang.io/whl/{cuda_version}/sgl-kernel/",
+                    "--reinstall", f"torch=={torch_ver}", "torchvision", "torchaudio",
+                    "--index-url", pytorch_index,
                 ],
-                "Installing sgl-kernel from index...",
+                f"Installing PyTorch {torch_ver} with {cuda_version}...",
+            ):
+                # Fallback: install latest available CUDA torch (no version pin)
+                console.print("[yellow]Exact version failed, trying latest from CUDA index...[/yellow]")
+                _run(
+                    [
+                        sys.executable, "-m", "uv", "pip", "install",
+                        "--reinstall", "torch", "torchvision", "torchaudio",
+                        "--index-url", pytorch_index,
+                    ],
+                    f"Installing latest PyTorch with {cuda_version}...",
+                )
+        else:
+            console.print("[yellow]Warning: torch not found after sglang install[/yellow]")
+
+        # Step 4: Install sgl-kernel CUDA wheel (version detected dynamically)
+        if kernel_ver:
+            sgl_kernel_whl = (
+                f"https://github.com/sgl-project/whl/releases/download/"
+                f"v{kernel_ver}/sgl_kernel-{kernel_ver}+{cuda_version}"
+                f"-cp310-abi3-manylinux2014_{arch}.whl"
             )
+            console.print(f"\n[bright_blue]Installing sgl-kernel {kernel_ver} ({cuda_version}, {arch})...[/bright_blue]")
+
+            # Verify the wheel exists before attempting download
+            if _url_exists(sgl_kernel_whl):
+                console.print(f"[dim]Verified: wheel exists at GitHub releases[/dim]")
+                if not _run(
+                    [sys.executable, "-m", "uv", "pip", "install", "--reinstall", sgl_kernel_whl],
+                    f"Installing sgl-kernel {kernel_ver}+{cuda_version}...",
+                ):
+                    console.print("[yellow]Direct wheel install failed[/yellow]")
+            else:
+                console.print(f"[yellow]Wheel not found at GitHub releases, using index fallback...[/yellow]")
+                _run(
+                    [
+                        sys.executable, "-m", "uv", "pip", "install",
+                        "--reinstall", "sgl-kernel",
+                        "--extra-index-url",
+                        f"https://docs.sglang.io/whl/{cuda_version}/sgl-kernel/",
+                    ],
+                    "Installing sgl-kernel from index...",
+                )
+        else:
+            console.print("[yellow]Warning: sgl-kernel not found after sglang install[/yellow]")
 
         # Verify installation
         from cyber_inference.services.sglang_manager import SGLangManager
