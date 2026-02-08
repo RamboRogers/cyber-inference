@@ -141,14 +141,14 @@ if [ "$CUDA_AVAILABLE" -eq 1 ] && [ "$NO_SGLANG" != "1" ]; then
 
     if [ "$CUDA_AVAILABLE" -eq 1 ]; then
         # 6b. Replace PyTorch with proper CUDA wheels
+        #     --reinstall is required because uv sync installs CPU torch with
+        #     the same version number; without it uv thinks it's already satisfied.
         TORCH_INDEX="https://download.pytorch.org/whl/${CUDA_WHL}"
         info "Installing PyTorch with ${CUDA_WHL} from ${TORCH_INDEX}..."
-        if uv pip install torch torchvision torchaudio --index-url "$TORCH_INDEX"; then
+        if uv pip install --reinstall torch torchvision torchaudio --index-url "$TORCH_INDEX"; then
             success "PyTorch ${CUDA_WHL} installed"
         else
-            warning "PyTorch ${CUDA_WHL} install failed – trying reinstall..."
-            uv pip install --reinstall torch torchvision torchaudio --index-url "$TORCH_INDEX" || \
-                warning "PyTorch CUDA install failed"
+            warning "PyTorch CUDA install failed – SGLang may not work"
         fi
 
         # 6c. Install sgl-kernel from CUDA-specific wheel
