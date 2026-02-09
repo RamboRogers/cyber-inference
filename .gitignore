@@ -51,6 +51,8 @@ env/
 .idea/
 .vscode/
 .cursor/
+!.cursor/skills/
+!.cursor/skills/**
 *.swp
 *.swo
 *~
