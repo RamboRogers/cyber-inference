@@ -4,7 +4,7 @@ Lightweight HuggingFace Transformers inference server.
 A minimal OpenAI-compatible API server that loads models directly
 with transformers AutoModelForCausalLM + model.generate().
 
-Designed for edge/SoC hardware where SGLang is too heavy.
+Designed for edge/SoC hardware with a lightweight native transformers path.
 Launched as a subprocess by ProcessManager.
 
 Usage:

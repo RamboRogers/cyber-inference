@@ -2,7 +2,7 @@
 Subprocess manager for inference server instances.
 
 Manages:
-- Starting/stopping llama-server, whisper-server, SGLang, and transformers server processes
+- Starting/stopping llama-server, whisper-server, and transformers server processes
 - Dynamic port allocation
 - Health checking
 - Resource tracking per process
@@ -10,7 +10,6 @@ Manages:
 """
 
 import asyncio
-import os
 import re
 import signal
 import socket
@@ -32,7 +31,7 @@ logger = get_logger(__name__)
 
 @dataclass
 class LlamaProcess:
-    """Represents a running inference server process (llama, whisper, sglang, or transformers)."""
+    """Represents a running inference server process (llama, whisper, or transformers)."""
     model_name: str
     model_path: Path
     port: int
@@ -48,7 +47,7 @@ class LlamaProcess:
     gpu_layers: int = -1
     threads: Optional[int] = None
 
-    # Server type: 'llama', 'whisper', or 'sglang'
+    # Server type: 'llama', 'whisper', or 'transformers'
     server_type: str = "llama"
 
     # Resource tracking
@@ -136,16 +135,6 @@ class ProcessManager:
             version = await self._installer.get_installed_version()
             logger.info(f"[success]llama-server binary: {version} ({location})[/success]")
             logger.debug(f"  Binary path: {binary_path}")
-
-        # Check SGLang availability
-        from cyber_inference.services.sglang_manager import SGLangManager
-        sglang_mgr = SGLangManager.get_instance()
-        if sglang_mgr.is_available():
-            sglang_version = sglang_mgr.get_version() or "unknown"
-            logger.info(f"[success]SGLang available: v{sglang_version}[/success]")
-            get_settings().sglang_enabled = True
-        else:
-            logger.info("[info]SGLang not installed (optional)[/info]")
 
         self._initialized = True
         logger.info("[success]ProcessManager initialized successfully[/success]")
@@ -507,175 +496,6 @@ class ProcessManager:
                 logger.debug(f"  Waiting for whisper server... ({elapsed:.1f}s)")
                 await asyncio.sleep(check_interval)
 
-    async def start_sglang_server(
-        self,
-        model_name: str,
-        model_path: Path,
-        tp_size: Optional[int] = None,
-        mem_fraction: Optional[float] = None,
-        embedding: bool = False,
-    ) -> LlamaProcess:
-        """
-        Start a new SGLang server process for a model.
-
-        Args:
-            model_name: Name identifier for the model
-            model_path: Path to the HuggingFace model directory
-            tp_size: Tensor parallelism degree (default from settings)
-            mem_fraction: Memory fraction for KV cache (default from settings)
-            embedding: Enable embedding mode
-
-        Returns:
-            LlamaProcess instance (with server_type='sglang')
-        """
-        logger.info(f"[highlight]Starting SGLang server for model: {model_name}[/highlight]")
-
-        if model_name in self._processes:
-            existing = self._processes[model_name]
-            if existing.status == "running":
-                logger.warning(f"Model {model_name} already running on port {existing.port}")
-                return existing
-
-        # Check if SGLang is available
-        from cyber_inference.services.sglang_manager import SGLangManager
-        sglang_mgr = SGLangManager.get_instance()
-        if not sglang_mgr.is_available():
-            raise RuntimeError(
-                "SGLang is not installed. Install with: "
-                "CYBER_INFERENCE_ENABLE_SGLANG=1 ./start.sh "
-                "or: uv pip install 'sglang[all]'"
-            )
-
-        settings = get_settings()
-
-        # Allocate port from the SGLang port range
-        port = self._find_available_port()
-        logger.info(f"  Allocated port: {port}")
-
-        # Build command
-        python_exe = sglang_mgr.get_python_executable()
-        n_tp = tp_size if tp_size is not None else settings.sglang_tp_size
-        n_mem = mem_fraction if mem_fraction is not None else settings.sglang_mem_fraction
-
-        # On unified memory systems (e.g. NVIDIA Thor SoC), torch reports total
-        # system RAM as GPU memory.  Disable KV cache pool since these servers
-        # are short-lived and don't need large context pools.
-        is_unified_memory = False
-        try:
-            sys_mem_gb = psutil.virtual_memory().total / (1024 ** 3)
-            cuda_info = sglang_mgr.get_cuda_info()
-            if cuda_info["cuda_available"] and cuda_info["devices"]:
-                gpu_mem_gb = cuda_info["devices"][0]["memory_total_mb"] / 1024
-                if gpu_mem_gb > sys_mem_gb * 0.8:
-                    is_unified_memory = True
-                    logger.info(
-                        f"  Unified memory detected ({gpu_mem_gb:.0f}GB GPU "
-                        f"≈ {sys_mem_gb:.0f}GB system)"
-                    )
-        except Exception as e:
-            logger.debug(f"  Could not check unified memory: {e}")
-
-        cmd = [
-            python_exe, "-m", "sglang.launch_server",
-            "--model-path", str(model_path),
-            "--port", str(port),
-            "--host", "127.0.0.1",
-            "--trust-remote-code",
-        ]
-
-        if is_unified_memory:
-            # Unified memory (e.g. Thor SoC): GPU mem == system RAM.
-            # SGLang formula: rest = avail_gpu - total_gpu * (1 - fraction)
-            # With fraction=0.15 on 122GB total, rest goes negative (-21GB).
-            # Need fraction > ~0.33 just to break even, 0.50 for headroom.
-            # Also disable CUDA graphs (huge memory for Mamba/MoE hybrids)
-            # and limit Mamba state caches + token count.
-            cmd.extend([
-                "--disable-radix-cache",
-                "--disable-cuda-graph",
-                "--mem-fraction-static", "0.50",
-                "--max-total-tokens", "4096",
-                "--max-running-requests", "4",
-                "--max-mamba-cache-size", "4",
-            ])
-            logger.info("  Unified memory: constrained mode (0.50 frac, 4096 tokens, no CUDA graphs)")
-        else:
-            cmd.extend(["--mem-fraction-static", str(n_mem)])
-
-        if n_tp > 1:
-            cmd.extend(["--tp", str(n_tp)])
-
-        if embedding:
-            cmd.append("--is-embedding")
-            logger.info("  Embedding mode enabled")
-
-        logger.debug(f"  Command: {' '.join(cmd)}")
-
-        # Create process entry
-        sglang_proc = LlamaProcess(
-            model_name=model_name,
-            model_path=model_path,
-            port=port,
-            server_type="sglang",
-        )
-
-        try:
-            # SGLang/Triton needs access to the system CUDA toolkit (ptxas, etc.)
-            # for JIT compiling kernels for the specific GPU architecture.
-            env = os.environ.copy()
-            # Safety net: skip CuDNN version check (start.sh upgrades CuDNN,
-            # but in case it's still old, let SGLang proceed anyway)
-            env.setdefault("SGLANG_DISABLE_CUDNN_CHECK", "1")
-            cuda_home = env.get("CUDA_HOME", "")
-            if not cuda_home:
-                # Auto-detect CUDA home from common locations
-                for candidate in ["/usr/local/cuda", "/usr/local/cuda-13.0"]:
-                    if os.path.isdir(candidate):
-                        cuda_home = candidate
-                        break
-            if cuda_home:
-                env["CUDA_HOME"] = cuda_home
-                ptxas_path = os.path.join(cuda_home, "bin", "ptxas")
-                if os.path.isfile(ptxas_path):
-                    env["TRITON_PTXAS_PATH"] = ptxas_path
-                    logger.info(f"  Using system ptxas: {ptxas_path}")
-
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-                env=env,
-            )
-
-            sglang_proc.process = process
-            sglang_proc.pid = process.pid
-            sglang_proc.status = "starting"
-
-            logger.info(f"  Process started with PID: {process.pid}")
-
-            # Store in tracking dict
-            self._processes[model_name] = sglang_proc
-
-            # Start output monitoring
-            asyncio.create_task(self._monitor_output(model_name, process))
-
-            # Wait for SGLang server to be ready (longer timeout - model compilation)
-            await self._wait_for_server_ready(model_name, port, server_label="SGLang")
-
-            sglang_proc.status = "running"
-            logger.info(
-                f"[success]SGLang server ready for {model_name} on port {port}[/success]"
-            )
-
-            return sglang_proc
-
-        except Exception as e:
-            logger.error(f"[error]Failed to start SGLang server: {e}[/error]")
-            sglang_proc.status = "error"
-            sglang_proc.error_message = str(e)
-            self._release_port(port)
-            raise
-
     async def start_transformers_server(
         self,
         model_name: str,
@@ -686,8 +506,7 @@ class ProcessManager:
         Start a new transformers inference server process for a model.
 
         Uses HuggingFace transformers AutoModelForCausalLM + model.generate()
-        via a lightweight subprocess server. Designed for edge/SoC hardware
-        where SGLang is too heavy.
+        via a lightweight subprocess server suitable for edge/SoC hardware.
 
         Args:
             model_name: Name identifier for the model
@@ -775,7 +594,7 @@ class ProcessManager:
         server_label: str = "Server",
     ) -> None:
         """
-        Wait for a subprocess server (SGLang/transformers) to be ready.
+        Wait for a subprocess server (transformers) to be ready.
 
         Polls /health and /v1/models until both succeed or timeout.
 
@@ -784,7 +603,7 @@ class ProcessManager:
             port: Server port
             timeout: Maximum wait time in seconds
             check_interval: Time between health checks
-            server_label: Label for log messages (e.g. "SGLang", "Transformers")
+            server_label: Label for log messages (e.g. "Transformers")
         """
         logger.info(f"  Waiting for {server_label} server to be ready (timeout: {timeout}s)...")
 

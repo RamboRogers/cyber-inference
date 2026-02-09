@@ -61,7 +61,7 @@ class Model(Base):
     # Engine type: which inference backend to use
     engine_type: Mapped[Optional[str]] = mapped_column(
         String(50), nullable=True, default="llama"
-    )  # "llama", "whisper", "sglang"
+    )  # "llama", "whisper", "transformers"
 
     # Model card info (cached from HuggingFace)
     model_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)  # chat, completion, embedding
@@ -235,4 +235,3 @@ class UsageLog(Base):
 
     def __repr__(self) -> str:
         return f"<UsageLog(endpoint={self.endpoint}, model={self.model_name}, status={self.status_code})>"
-

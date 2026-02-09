@@ -168,7 +168,7 @@ class AutoLoader:
             processes = pm.get_all_processes()
 
             if processes:
-                # Skip models that are still starting up (e.g. SGLang loading weights)
+                # Skip models that are still starting up (e.g. loading large weights)
                 candidates = [p for p in processes if p.status == "running"]
                 if not candidates:
                     logger.debug("No running models to unload (all still starting)")
@@ -239,7 +239,7 @@ class AutoLoader:
         """
         Load a model and return its server URL.
 
-        Routes to the appropriate engine (llama.cpp, whisper.cpp, or SGLang)
+        Routes to the appropriate engine (llama.cpp, whisper.cpp, or transformers)
         based on the model's engine_type.
 
         Args:
@@ -299,14 +299,7 @@ class AutoLoader:
         logger.info(f"  Engine type: {engine_type}")
 
         # Start the appropriate server based on engine_type
-        if engine_type == "sglang":
-            # Use SGLang server
-            proc = await pm.start_sglang_server(
-                model_name,
-                model_path,
-                embedding=is_embedding,
-            )
-        elif engine_type == "transformers":
+        if engine_type == "transformers":
             # Use lightweight transformers server
             proc = await pm.start_transformers_server(
                 model_name,
@@ -397,4 +390,3 @@ class AutoLoader:
             "request_count": proc.request_count if proc else 0,
             "last_request_at": proc.last_request_at.isoformat() if proc and proc.last_request_at else None,
         }
-
