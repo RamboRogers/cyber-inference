@@ -39,6 +39,8 @@ dependencies = [
     "sse-starlette>=2.1.0",
     "transformers>=4.45.0",
     "accelerate>=1.0.0",
+    "torch>=2.4.0",
+    "torchvision>=0.19.0",
 ]
 
 [project.optional-dependencies]
@@ -81,4 +83,15 @@ pythonpath = ["src"]
 python_version = "3.12"
 warn_return_any = true
 warn_unused_ignores = true
+
+# PyTorch CUDA index for Linux (Thor GPU server).
+# On macOS/other platforms, torch is installed from PyPI (CPU-only).
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu130", marker = "sys_platform == 'linux'" }]
+torchvision = [{ index = "pytorch-cu130", marker = "sys_platform == 'linux'" }]
 
