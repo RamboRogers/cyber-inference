@@ -584,13 +584,21 @@ class ProcessManager:
         ]
 
         if is_unified_memory:
-            # Minimal KV cache: small fraction + limited token count
+            # Unified memory (e.g. Thor SoC): GPU mem == system RAM.
+            # SGLang formula: rest = avail_gpu - total_gpu * (1 - fraction)
+            # With fraction=0.15 on 122GB total, rest goes negative (-21GB).
+            # Need fraction > ~0.33 just to break even, 0.50 for headroom.
+            # Also disable CUDA graphs (huge memory for Mamba/MoE hybrids)
+            # and limit Mamba state caches + token count.
             cmd.extend([
                 "--disable-radix-cache",
-                "--mem-fraction-static", "0.15",
+                "--disable-cuda-graph",
+                "--mem-fraction-static", "0.50",
                 "--max-total-tokens", "4096",
+                "--max-running-requests", "4",
+                "--max-mamba-cache-size", "4",
             ])
-            logger.info("  Unified memory: minimal KV cache (4096 tokens)")
+            logger.info("  Unified memory: constrained mode (0.50 frac, 4096 tokens, no CUDA graphs)")
         else:
             cmd.extend(["--mem-fraction-static", str(n_mem)])
 
