@@ -11,10 +11,12 @@ Proxies requests to the appropriate llama-server instance,
 handling automatic model loading and streaming responses.
 """
 
+import asyncio
 import json
 import tempfile
 import time
 import uuid
+from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
 from typing import AsyncGenerator, Optional
@@ -314,11 +316,17 @@ async def _stream_chat_completion(
     """Stream chat completion chunks from llama-server."""
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
     created = int(time.time())
+    auto_loader = get_auto_loader()
+    # Mark model active immediately to prevent idle unload during long stream startup.
+    await auto_loader.touch_request(model)
+    keepalive_task = asyncio.create_task(_stream_activity_keepalive(model))
 
     logger.debug(f"Starting streaming response for {model}")
 
     try:
-        async with httpx.AsyncClient(timeout=300) as client:
+        # Streaming can legitimately exceed several minutes for large models.
+        stream_timeout = httpx.Timeout(connect=30.0, read=None, write=30.0, pool=None)
+        async with httpx.AsyncClient(timeout=stream_timeout) as client:
             async with client.stream(
                 "POST",
                 f"{server_url}/v1/chat/completions",
@@ -334,6 +342,8 @@ async def _stream_chat_completion(
                     response.raise_for_status()
 
                 async for line in response.aiter_lines():
+                    # Keep model activity fresh while stream is in progress.
+                    await auto_loader.touch_request(model)
                     if line.startswith("data: "):
                         data = line[6:]
                         if data == "[DONE]":
@@ -356,13 +366,18 @@ async def _stream_chat_completion(
                             continue
 
     except Exception as e:
-        logger.error(f"[error]Streaming error: {e}[/error]")
+        logger.error(
+            f"[error]Streaming error ({type(e).__name__}): {e}[/error]"
+        )
         yield {"data": json.dumps({"error": str(e)})}
+    finally:
+        keepalive_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await keepalive_task
 
     logger.debug(f"Streaming complete for {model}")
 
-    # Update stats
-    auto_loader = get_auto_loader()
+    # Count the completed streamed request once.
     await auto_loader.record_request(model)
 
 
@@ -492,6 +507,9 @@ async def _stream_completion(
     """Stream completion chunks."""
     completion_id = f"cmpl-{uuid.uuid4().hex[:8]}"
     created = int(time.time())
+    auto_loader = get_auto_loader()
+    await auto_loader.touch_request(model)
+    keepalive_task = asyncio.create_task(_stream_activity_keepalive(model))
 
     completion_url = (
         f"{server_url}/v1/completions"
@@ -500,7 +518,8 @@ async def _stream_completion(
     )
 
     try:
-        async with httpx.AsyncClient(timeout=300) as client:
+        stream_timeout = httpx.Timeout(connect=30.0, read=None, write=30.0, pool=None)
+        async with httpx.AsyncClient(timeout=stream_timeout) as client:
             async with client.stream(
                 "POST",
                 completion_url,
@@ -509,6 +528,7 @@ async def _stream_completion(
                 response.raise_for_status()
 
                 async for line in response.aiter_lines():
+                    await auto_loader.touch_request(model)
                     if line.startswith("data: "):
                         data = line[6:]
                         if data == "[DONE]":
@@ -547,11 +567,25 @@ async def _stream_completion(
                             continue
 
     except Exception as e:
-        logger.error(f"[error]Streaming error: {e}[/error]")
+        logger.error(
+            f"[error]Streaming error ({type(e).__name__}): {e}[/error]"
+        )
         yield {"data": json.dumps({"error": str(e)})}
+    finally:
+        keepalive_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await keepalive_task
 
-    auto_loader = get_auto_loader()
+    # Count the completed streamed request once.
     await auto_loader.record_request(model)
+
+
+async def _stream_activity_keepalive(model: str, interval_seconds: float = 15.0) -> None:
+    """Keep last-request activity fresh while a stream is open."""
+    auto_loader = get_auto_loader()
+    while True:
+        await auto_loader.touch_request(model)
+        await asyncio.sleep(interval_seconds)
 
 
 @router.post("/embeddings")

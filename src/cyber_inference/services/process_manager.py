@@ -855,12 +855,18 @@ class ProcessManager:
             return f"http://127.0.0.1:{proc.port}"
         return None
 
-    async def update_request_stats(self, model_name: str, tokens: int = 0) -> None:
-        """Update request statistics for a model."""
+    async def update_request_stats(
+        self,
+        model_name: str,
+        tokens: int = 0,
+        increment_count: bool = True,
+    ) -> None:
+        """Update request activity/statistics for a model."""
         if model_name in self._processes:
             proc = self._processes[model_name]
             proc.last_request_at = datetime.now()
-            proc.request_count += 1
+            if increment_count:
+                proc.request_count += 1
 
             # Update memory usage
             if proc.pid:

@@ -348,6 +348,11 @@ class AutoLoader:
         pm = self._get_process_manager()
         await pm.update_request_stats(model_name)
 
+    async def touch_request(self, model_name: str) -> None:
+        """Update request activity timestamp without incrementing request count."""
+        pm = self._get_process_manager()
+        await pm.update_request_stats(model_name, increment_count=False)
+
     async def list_available_models(self) -> list[dict]:
         """List all available models (downloaded and enabled)."""
         mm = self._get_model_manager()
