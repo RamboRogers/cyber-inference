@@ -191,7 +191,14 @@ if [ "$CUDA_AVAILABLE" -eq 1 ] && [ "$NO_SGLANG" != "1" ]; then
             warning "sgl-kernel not found in environment – skipping CUDA kernel install"
         fi
 
-        # 6e. Quick smoke test
+        # 6e. Ensure CuDNN is new enough (PyTorch 2.9.x + CuDNN <9.15 has a known bug)
+        CUDNN_VER=$(uv run python -c "import torch; print(torch.backends.cudnn.version())" 2>/dev/null)
+        if [ -n "$CUDNN_VER" ] && [ "$CUDNN_VER" -lt 91500 ] 2>/dev/null; then
+            info "CuDNN ${CUDNN_VER} < 9.15 detected – upgrading for PyTorch compatibility..."
+            uv pip install "nvidia-cudnn-cu12>=9.15" || warning "CuDNN upgrade failed"
+        fi
+
+        # 6f. Quick smoke test
         if uv run python -c "import sglang; import torch; assert torch.cuda.is_available(); print(f'SGLang {sglang.__version__} + PyTorch {torch.__version__} CUDA OK')" 2>/dev/null; then
             success "SGLang + CUDA verified"
         else
