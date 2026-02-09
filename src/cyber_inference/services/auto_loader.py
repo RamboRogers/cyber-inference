@@ -306,6 +306,13 @@ class AutoLoader:
                 model_path,
                 embedding=is_embedding,
             )
+        elif engine_type == "transformers":
+            # Use lightweight transformers server
+            proc = await pm.start_transformers_server(
+                model_name,
+                model_path,
+                embedding=is_embedding,
+            )
         elif is_transcription:
             # Use whisper-server for transcription models
             proc = await pm.start_whisper_server(model_name, model_path)

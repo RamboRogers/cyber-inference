@@ -1410,3 +1410,93 @@ class ModelManager:
                     logger.warning(f"  Could not clean up: {cleanup_err}")
             await self._notify_progress(repo_id, model_name, 0, "error", str(e))
             raise
+
+    async def download_transformers_model(
+        self,
+        repo_id: str,
+        force: bool = False,
+    ) -> Path:
+        """
+        Download a HuggingFace model for use with the transformers engine.
+
+        Uses snapshot_download to download the full model repository
+        to models/transformers/{model_name}/.
+
+        Args:
+            repo_id: HuggingFace repository ID (e.g., 'nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8')
+            force: Force redownload even if exists
+
+        Returns:
+            Path to the downloaded model directory
+        """
+        repo_id = repo_id.strip()
+        model_name = self._sanitize_repo_name(repo_id)
+
+        settings = get_settings()
+        tf_dir = settings.transformers_models_dir
+        tf_dir.mkdir(parents=True, exist_ok=True)
+
+        local_dir = tf_dir / model_name
+
+        logger.info(f"[highlight]Downloading transformers model: {repo_id}[/highlight]")
+        logger.info(f"  Target directory: {local_dir}")
+
+        # Notify download starting
+        await self._notify_progress(repo_id, model_name, 0, "starting")
+
+        # Check if already downloaded
+        if local_dir.exists() and (local_dir / "config.json").exists() and not force:
+            logger.info(f"[success]Transformers model already exists: {local_dir}[/success]")
+            await self._register_model(
+                repo_id=repo_id,
+                filename=model_name,
+                file_path=local_dir,
+                engine_type="transformers",
+                model_name_override=model_name,
+            )
+            await self._notify_progress(repo_id, model_name, 100, "complete")
+            return local_dir
+
+        # Download with progress tracking
+        await self._notify_progress(repo_id, model_name, 5, "downloading")
+
+        try:
+            def _do_download() -> str:
+                """Run snapshot_download in a thread."""
+                return snapshot_download(
+                    repo_id=repo_id,
+                    local_dir=str(local_dir),
+                    local_dir_use_symlinks=False,
+                    token=self._hf_token,
+                )
+
+            # Run the download in a thread to avoid blocking
+            await asyncio.to_thread(_do_download)
+
+            logger.info(f"[success]Transformers model download complete: {local_dir}[/success]")
+
+            # Register in database
+            await self._register_model(
+                repo_id=repo_id,
+                filename=model_name,
+                file_path=local_dir,
+                engine_type="transformers",
+                model_name_override=model_name,
+            )
+
+            # Notify complete
+            await self._notify_progress(repo_id, model_name, 100, "complete")
+
+            return local_dir
+
+        except Exception as e:
+            logger.error(f"[error]Transformers model download failed: {e}[/error]")
+            # Clean up partial download
+            if local_dir.exists():
+                try:
+                    shutil.rmtree(local_dir)
+                    logger.info(f"  Cleaned up partial download: {local_dir}")
+                except Exception as cleanup_err:
+                    logger.warning(f"  Could not clean up: {cleanup_err}")
+            await self._notify_progress(repo_id, model_name, 0, "error", str(e))
+            raise

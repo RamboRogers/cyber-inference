@@ -502,6 +502,89 @@ async def download_sglang_model(
         )
 
 
+@router.post("/models/download-transformers")
+async def download_transformers_model(
+    request: ModelCreate,
+    _: bool = Depends(verify_admin_token),
+) -> ModelResponse:
+    """
+    Download a HuggingFace model for use with the transformers engine.
+
+    Downloads the full model repository (safetensors, config, tokenizer, etc.)
+    to models/transformers/. Uses AutoModelForCausalLM + model.generate().
+
+    Progress updates are sent via WebSocket to /ws/status.
+    """
+    if not request.hf_repo_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="hf_repo_id is required for model download",
+        )
+
+    logger.info(f"[highlight]POST /admin/models/download-transformers: {request.hf_repo_id}[/highlight]")
+
+    mm = ModelManager()
+
+    try:
+        path = await mm.download_transformers_model(
+            repo_id=request.hf_repo_id,
+            force=False,
+        )
+
+        model_name = mm._sanitize_repo_name(request.hf_repo_id)
+        model = await mm.get_model(model_name)
+
+        if not model:
+            return ModelResponse(
+                id=0,
+                name=model_name,
+                filename=model_name,
+                file_path=str(path),
+                hf_repo_id=request.hf_repo_id,
+                size_bytes=0,
+                quantization=None,
+                context_length=4096,
+                model_type=None,
+                mmproj_path=None,
+                is_downloaded=True,
+                is_enabled=True,
+                download_progress=100.0,
+                created_at=datetime.now(),
+                last_used_at=None,
+            )
+
+        return ModelResponse(
+            id=model.get("id", 0),
+            name=model["name"],
+            filename=model["filename"],
+            file_path=model["path"],
+            hf_repo_id=model.get("hf_repo_id"),
+            size_bytes=model["size_bytes"],
+            quantization=model.get("quantization"),
+            context_length=model["context_length"],
+            model_type=model.get("model_type"),
+            mmproj_path=model.get("mmproj_path"),
+            is_downloaded=True,
+            is_enabled=True,
+            download_progress=100.0,
+            created_at=datetime.now(),
+            last_used_at=None,
+        )
+
+    except ValueError as e:
+        logger.error(f"[error]Transformers download failed (user error): {e}[/error]")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except Exception as e:
+        logger.error(f"[error]Transformers download failed: {e}[/error]")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Download failed: {str(e)}",
+        )
+
+
 @router.get("/sglang/status")
 async def get_sglang_status(
     _: bool = Depends(verify_admin_token),

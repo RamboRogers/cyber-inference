@@ -2,7 +2,7 @@
 Subprocess manager for inference server instances.
 
 Manages:
-- Starting/stopping llama-server, whisper-server, and SGLang server processes
+- Starting/stopping llama-server, whisper-server, SGLang, and transformers server processes
 - Dynamic port allocation
 - Health checking
 - Resource tracking per process
@@ -32,7 +32,7 @@ logger = get_logger(__name__)
 
 @dataclass
 class LlamaProcess:
-    """Represents a running inference server process (llama, whisper, or sglang)."""
+    """Represents a running inference server process (llama, whisper, sglang, or transformers)."""
     model_name: str
     model_path: Path
     port: int
@@ -673,6 +673,96 @@ class ProcessManager:
             logger.error(f"[error]Failed to start SGLang server: {e}[/error]")
             sglang_proc.status = "error"
             sglang_proc.error_message = str(e)
+            self._release_port(port)
+            raise
+
+    async def start_transformers_server(
+        self,
+        model_name: str,
+        model_path: Path,
+        embedding: bool = False,
+    ) -> LlamaProcess:
+        """
+        Start a new transformers inference server process for a model.
+
+        Uses HuggingFace transformers AutoModelForCausalLM + model.generate()
+        via a lightweight subprocess server. Designed for edge/SoC hardware
+        where SGLang is too heavy.
+
+        Args:
+            model_name: Name identifier for the model
+            model_path: Path to the HuggingFace model directory
+            embedding: Enable embedding mode
+
+        Returns:
+            LlamaProcess instance (with server_type='transformers')
+        """
+        logger.info(f"[highlight]Starting transformers server for model: {model_name}[/highlight]")
+
+        if model_name in self._processes:
+            existing = self._processes[model_name]
+            if existing.status == "running":
+                logger.warning(f"Model {model_name} already running on port {existing.port}")
+                return existing
+
+        # Allocate port
+        port = self._find_available_port()
+        logger.info(f"  Allocated port: {port}")
+
+        # Build command
+        import sys
+        python_exe = sys.executable
+
+        cmd = [
+            python_exe, "-m", "cyber_inference.services.transformers_server",
+            "--model-path", str(model_path),
+            "--port", str(port),
+            "--host", "127.0.0.1",
+        ]
+
+        logger.debug(f"  Command: {' '.join(cmd)}")
+
+        # Create process entry
+        tf_proc = LlamaProcess(
+            model_name=model_name,
+            model_path=model_path,
+            port=port,
+            server_type="transformers",
+        )
+
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+
+            tf_proc.process = process
+            tf_proc.pid = process.pid
+            tf_proc.status = "starting"
+
+            logger.info(f"  Process started with PID: {process.pid}")
+
+            # Store in tracking dict
+            self._processes[model_name] = tf_proc
+
+            # Start output monitoring
+            asyncio.create_task(self._monitor_output(model_name, process))
+
+            # Wait for server to be ready (uses same /health + /v1/models check)
+            await self._wait_for_sglang_ready(model_name, port, timeout=300.0)
+
+            tf_proc.status = "running"
+            logger.info(
+                f"[success]Transformers server ready for {model_name} on port {port}[/success]"
+            )
+
+            return tf_proc
+
+        except Exception as e:
+            logger.error(f"[error]Failed to start transformers server: {e}[/error]")
+            tf_proc.status = "error"
+            tf_proc.error_message = str(e)
             self._release_port(port)
             raise
 

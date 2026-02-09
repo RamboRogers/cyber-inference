@@ -123,6 +123,11 @@ class Settings(BaseSettings):
         return self.models_dir / "sglang"
 
     @property
+    def transformers_models_dir(self) -> Path:
+        """Path to the transformers models directory."""
+        return self.models_dir / "transformers"
+
+    @property
     def log_level_int(self) -> int:
         """Log level as logging constant."""
         levels = {
@@ -142,6 +147,7 @@ class Settings(BaseSettings):
             self.bin_dir,
             self.log_dir,
             self.sglang_models_dir,
+            self.transformers_models_dir,
         ]
         for directory in directories:
             directory.mkdir(parents=True, exist_ok=True)

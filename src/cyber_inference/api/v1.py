@@ -238,8 +238,8 @@ async def chat_completions(
         "stream": request.stream,
     }
 
-    # n_predict is llama.cpp-specific, not used by SGLang
-    if server_type != "sglang":
+    # n_predict is llama.cpp-specific, not used by SGLang/transformers
+    if server_type not in ("sglang", "transformers"):
         llama_request["n_predict"] = token_limit
 
     if request.stop:
@@ -396,8 +396,8 @@ async def completions(
     prompt = request.prompt if isinstance(request.prompt, str) else request.prompt[0]
     token_limit = request.max_tokens or 512
 
-    if server_type == "sglang":
-        # SGLang uses OpenAI-compatible /v1/completions
+    if server_type in ("sglang", "transformers"):
+        # SGLang/transformers use OpenAI-compatible /v1/completions
         llama_request = {
             "prompt": prompt,
             "temperature": request.temperature,
@@ -427,7 +427,7 @@ async def completions(
     # Non-streaming
     completion_url = (
         f"{server_url}/v1/completions"
-        if server_type == "sglang"
+        if server_type in ("sglang", "transformers")
         else f"{server_url}/completion"
     )
 
@@ -444,8 +444,8 @@ async def completions(
 
     completion_id = f"cmpl-{uuid.uuid4().hex[:8]}"
 
-    if server_type == "sglang":
-        # SGLang returns OpenAI-compatible format
+    if server_type in ("sglang", "transformers"):
+        # SGLang/transformers return OpenAI-compatible format
         choices = result.get("choices", [{}])
         choice = choices[0] if choices else {}
         usage = result.get("usage", {})
@@ -495,7 +495,7 @@ async def _stream_completion(
 
     completion_url = (
         f"{server_url}/v1/completions"
-        if server_type == "sglang"
+        if server_type in ("sglang", "transformers")
         else f"{server_url}/completion"
     )
 
@@ -518,8 +518,8 @@ async def _stream_completion(
                         try:
                             chunk = json.loads(data)
 
-                            if server_type == "sglang":
-                                # SGLang returns OpenAI-compatible format
+                            if server_type in ("sglang", "transformers"):
+                                # SGLang/transformers return OpenAI-compatible format
                                 yield {
                                     "data": json.dumps({
                                         "id": completion_id,
@@ -587,8 +587,8 @@ async def embeddings(
 
     try:
         async with httpx.AsyncClient(timeout=120) as client:
-            if server_type == "sglang":
-                # SGLang supports OpenAI-compatible /v1/embeddings (batch)
+            if server_type in ("sglang", "transformers"):
+                # SGLang/transformers support OpenAI-compatible /v1/embeddings
                 response = await client.post(
                     f"{server_url}/v1/embeddings",
                     json={

@@ -200,13 +200,14 @@ def install_whisper(
 def download_model(
     model_id: str = typer.Argument(..., help="HuggingFace model ID (e.g., 'TheBloke/Llama-2-7B-GGUF')"),
     filename: Optional[str] = typer.Option(None, "--filename", "-f", help="Specific file to download"),
-    engine: str = typer.Option("auto", "--engine", "-e", help="Engine type: auto, gguf, sglang"),
+    engine: str = typer.Option("auto", "--engine", "-e", help="Engine type: auto, gguf, sglang, transformers"),
     models_dir: Optional[Path] = typer.Option(None, "--models-dir", "-m", help="Models directory path"),
 ) -> None:
     """
     Download a model from HuggingFace.
 
     Use --engine sglang to download a full HuggingFace model for SGLang inference.
+    Use --engine transformers to download a full HuggingFace model for transformers inference.
     Use --engine gguf (or auto) to download a GGUF file for llama.cpp inference.
     """
     setup_logging()
@@ -220,25 +221,36 @@ def download_model(
     async def _download():
         manager = ModelManager(models_dir=models_dir)
 
-        # Auto-detect engine type based on model ID
-        use_sglang = engine == "sglang"
+        # Determine engine type
+        use_engine = engine
         if engine == "auto":
-            # If no GGUF filename and doesn't contain GGUF in repo name, try sglang
             model_lower = model_id.lower()
             if "gguf" not in model_lower and "whisper" not in model_lower and not filename:
-                # Check if sglang is available
+                # Non-GGUF model: prefer transformers, fallback to sglang
                 from cyber_inference.services.sglang_manager import SGLangManager
                 if SGLangManager.get_instance().is_available():
-                    use_sglang = True
+                    use_engine = "sglang"
                     console.print(
                         "[yellow]Auto-detected non-GGUF repo, using SGLang. "
+                        "Use --engine gguf or --engine transformers to override.[/yellow]"
+                    )
+                else:
+                    use_engine = "transformers"
+                    console.print(
+                        "[yellow]Auto-detected non-GGUF repo, using transformers. "
                         "Use --engine gguf to force GGUF download.[/yellow]"
                     )
+            else:
+                use_engine = "gguf"
 
-        if use_sglang:
+        if use_engine == "sglang":
             console.print(f"[bright_blue]Downloading SGLang model: {model_id}[/bright_blue]")
             path = await manager.download_sglang_model(model_id)
             console.print(f"[bright_green]SGLang model downloaded to: {path}[/bright_green]")
+        elif use_engine == "transformers":
+            console.print(f"[bright_yellow]Downloading transformers model: {model_id}[/bright_yellow]")
+            path = await manager.download_transformers_model(model_id)
+            console.print(f"[bright_green]Transformers model downloaded to: {path}[/bright_green]")
         else:
             await manager.download_model(model_id, filename=filename)
 
@@ -275,6 +287,7 @@ def list_models(
                 "llama": "[bright_green]GGUF[/bright_green]",
                 "whisper": "[green]Whisper[/green]",
                 "sglang": "[bright_magenta]SGLang[/bright_magenta]",
+                "transformers": "[bright_yellow]Transformers[/bright_yellow]",
             }.get(engine, f"[dim]{engine}[/dim]")
 
             console.print(f"  [bright_blue]{model['name']}[/bright_blue]  {engine_badge}")

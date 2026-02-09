@@ -56,6 +56,10 @@
                                 <span class="px-2 py-1 text-xs font-mono rounded bg-purple-500/20 text-purple-400 border border-purple-500/30">
                                     SGLang
                                 </span>
+                                {% elif model.engine_type == 'transformers' %}
+                                <span class="px-2 py-1 text-xs font-mono rounded bg-amber-500/20 text-amber-400 border border-amber-500/30">
+                                    Transformers
+                                </span>
                                 {% elif model.engine_type == 'whisper' %}
                                 <span class="px-2 py-1 text-xs font-mono rounded bg-green-500/20 text-green-400 border border-green-500/30">
                                     Whisper
@@ -389,6 +393,76 @@
             </div>
         </div>
     </div>
+
+    <!-- Popular Transformers Models Section -->
+    <div class="cyber-card rounded-xl overflow-hidden">
+        <div class="px-6 py-4 border-b border-amber-500/20">
+            <h2 class="font-cyber text-xl font-semibold text-amber-400">
+                POPULAR TRANSFORMERS MODELS
+            </h2>
+            <p class="text-xs text-gray-500 mt-1 font-mono">// Lightweight HuggingFace models via transformers (ideal for edge/SoC)</p>
+        </div>
+        <div class="p-6">
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                <!-- Nemotron Nano 30B FP8 -->
+                <div class="bg-cyber-dark/30 rounded-lg p-4 border border-cyber-gray hover:border-amber-500/30 transition-all cursor-pointer group"
+                     onclick="downloadTransformersFromRepo('nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8')">
+                    <div class="flex items-center space-x-3 mb-2">
+                        <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-amber-500/20 to-green-500/20 flex items-center justify-center group-hover:shadow-lg group-hover:shadow-amber-500/20 transition-all">
+                            <span class="text-green-400 font-bold text-lg">N</span>
+                        </div>
+                        <div>
+                            <div class="font-mono text-white">Nemotron Nano 30B FP8</div>
+                            <div class="text-xs text-gray-500">nvidia</div>
+                        </div>
+                    </div>
+                    <div class="text-xs text-gray-400">NVIDIA's efficient MoE hybrid, great for edge GPUs</div>
+                    <div class="mt-2 flex gap-2">
+                        <span class="text-[10px] px-2 py-0.5 rounded bg-amber-500/10 text-amber-400">Transformers</span>
+                        <span class="text-[10px] px-2 py-0.5 rounded bg-green-500/10 text-green-400">30B MoE</span>
+                    </div>
+                </div>
+
+                <!-- Llama 3.1 8B Instruct -->
+                <div class="bg-cyber-dark/30 rounded-lg p-4 border border-cyber-gray hover:border-amber-500/30 transition-all cursor-pointer group"
+                     onclick="downloadTransformersFromRepo('meta-llama/Llama-3.1-8B-Instruct')">
+                    <div class="flex items-center space-x-3 mb-2">
+                        <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-amber-500/20 to-blue-500/20 flex items-center justify-center group-hover:shadow-lg group-hover:shadow-amber-500/20 transition-all">
+                            <span class="text-blue-400 font-bold text-lg">L</span>
+                        </div>
+                        <div>
+                            <div class="font-mono text-white">Llama 3.1 8B Instruct</div>
+                            <div class="text-xs text-gray-500">meta-llama</div>
+                        </div>
+                    </div>
+                    <div class="text-xs text-gray-400">Meta's Llama 3.1 instruction-tuned, great balance</div>
+                    <div class="mt-2 flex gap-2">
+                        <span class="text-[10px] px-2 py-0.5 rounded bg-amber-500/10 text-amber-400">Transformers</span>
+                        <span class="text-[10px] px-2 py-0.5 rounded bg-blue-500/10 text-blue-400">8B</span>
+                    </div>
+                </div>
+
+                <!-- Qwen2.5 7B Instruct -->
+                <div class="bg-cyber-dark/30 rounded-lg p-4 border border-cyber-gray hover:border-amber-500/30 transition-all cursor-pointer group"
+                     onclick="downloadTransformersFromRepo('Qwen/Qwen2.5-7B-Instruct')">
+                    <div class="flex items-center space-x-3 mb-2">
+                        <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-amber-500/20 to-pink-500/20 flex items-center justify-center group-hover:shadow-lg group-hover:shadow-amber-500/20 transition-all">
+                            <span class="text-pink-400 font-bold text-lg">Q</span>
+                        </div>
+                        <div>
+                            <div class="font-mono text-white">Qwen2.5 7B Instruct</div>
+                            <div class="text-xs text-gray-500">Qwen</div>
+                        </div>
+                    </div>
+                    <div class="text-xs text-gray-400">Alibaba's latest, excellent multilingual performance</div>
+                    <div class="mt-2 flex gap-2">
+                        <span class="text-[10px] px-2 py-0.5 rounded bg-amber-500/10 text-amber-400">Transformers</span>
+                        <span class="text-[10px] px-2 py-0.5 rounded bg-pink-500/10 text-pink-400">7B</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
 </div>
 
 <!-- Download Modal -->
@@ -432,6 +506,17 @@
                             {% else %}
                             <span class="text-[10px] px-1.5 py-0.5 rounded bg-gray-500/20 text-gray-500 ml-1">Not Installed</span>
                             {% endif %}
+                        </span>
+                    </label>
+                    <label class="flex items-center space-x-2 cursor-pointer px-4 py-2 rounded-lg border transition-all"
+                           id="engineTransformersLabel"
+                           onclick="selectEngine('transformers')">
+                        <input type="radio" name="engine_type" value="transformers"
+                               class="hidden" id="engineTransformers">
+                        <span class="w-4 h-4 rounded-full border-2 border-gray-500 flex items-center justify-center" id="engineTransformersDot">
+                        </span>
+                        <span class="font-mono text-sm text-gray-400">Transformers
+                            <span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 ml-1">Lightweight</span>
                         </span>
                     </label>
                 </div>
@@ -580,43 +665,57 @@
         selectedEngine = engine;
         const ggufDot = document.getElementById('engineGgufDot');
         const sglangDot = document.getElementById('engineSglangDot');
+        const transformersDot = document.getElementById('engineTransformersDot');
         const ggufLabel = document.getElementById('engineGgufLabel');
         const sglangLabel = document.getElementById('engineSglangLabel');
+        const transformersLabel = document.getElementById('engineTransformersLabel');
         const fetchBtn = document.getElementById('fetchFilesBtn');
         const repoIdLabel = document.getElementById('repoIdLabel');
         const repoIdHint = document.getElementById('repoIdHint');
         const repoId = document.getElementById('repoId');
 
+        // Reset all dots and labels
+        ggufDot.innerHTML = '';
+        ggufDot.className = 'w-4 h-4 rounded-full border-2 border-gray-500 flex items-center justify-center';
+        sglangDot.innerHTML = '';
+        sglangDot.className = 'w-4 h-4 rounded-full border-2 border-gray-500 flex items-center justify-center';
+        transformersDot.innerHTML = '';
+        transformersDot.className = 'w-4 h-4 rounded-full border-2 border-gray-500 flex items-center justify-center';
+        ggufLabel.className = ggufLabel.className.replace('border-cyber-neon/50', 'border-cyber-gray');
+        sglangLabel.className = sglangLabel.className.replace('border-purple-500/50', 'border-cyber-gray');
+        transformersLabel.className = transformersLabel.className.replace('border-amber-500/50', 'border-cyber-gray');
+
         if (engine === 'sglang') {
-            ggufDot.innerHTML = '';
-            ggufDot.className = 'w-4 h-4 rounded-full border-2 border-gray-500 flex items-center justify-center';
             sglangDot.innerHTML = '<span class="w-2 h-2 rounded-full bg-purple-400"></span>';
             sglangDot.className = 'w-4 h-4 rounded-full border-2 border-purple-400 flex items-center justify-center';
-            ggufLabel.className = ggufLabel.className.replace('border-cyber-neon/50', 'border-cyber-gray');
             sglangLabel.className = sglangLabel.className.replace('border-cyber-gray', 'border-purple-500/50');
 
             repoIdLabel.textContent = 'HuggingFace Repo ID';
             repoId.placeholder = 'e.g., meta-llama/Llama-3.1-8B-Instruct';
             repoIdHint.textContent = 'Enter a HuggingFace model repo ID for SGLang (full model, not GGUF)';
             fetchBtn.classList.add('hidden');
+            document.getElementById('fileSelectionSection').classList.add('hidden');
+            document.getElementById('manualFilenameSection').classList.add('hidden');
+        } else if (engine === 'transformers') {
+            transformersDot.innerHTML = '<span class="w-2 h-2 rounded-full bg-amber-400"></span>';
+            transformersDot.className = 'w-4 h-4 rounded-full border-2 border-amber-400 flex items-center justify-center';
+            transformersLabel.className = transformersLabel.className.replace('border-cyber-gray', 'border-amber-500/50');
 
-            // Hide GGUF-specific sections
+            repoIdLabel.textContent = 'HuggingFace Repo ID';
+            repoId.placeholder = 'e.g., nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8';
+            repoIdHint.textContent = 'Enter a HuggingFace model repo ID for transformers (lightweight, ideal for edge/SoC)';
+            fetchBtn.classList.add('hidden');
             document.getElementById('fileSelectionSection').classList.add('hidden');
             document.getElementById('manualFilenameSection').classList.add('hidden');
         } else {
-            sglangDot.innerHTML = '';
-            sglangDot.className = 'w-4 h-4 rounded-full border-2 border-gray-500 flex items-center justify-center';
             ggufDot.innerHTML = '<span class="w-2 h-2 rounded-full bg-cyber-neon"></span>';
             ggufDot.className = 'w-4 h-4 rounded-full border-2 border-cyber-neon flex items-center justify-center';
-            sglangLabel.className = sglangLabel.className.replace('border-purple-500/50', 'border-cyber-gray');
             ggufLabel.className = ggufLabel.className.replace('border-cyber-gray', 'border-cyber-neon/50');
 
             repoIdLabel.textContent = 'HuggingFace Repo ID or Direct .gguf Path';
             repoId.placeholder = 'e.g., ggml-org/gpt-oss-20b-GGUF';
             repoIdHint.textContent = 'Enter a repo ID to see available files, or paste a direct .gguf URL';
             fetchBtn.classList.remove('hidden');
-
-            // Show manual filename section
             document.getElementById('manualFilenameSection').classList.remove('hidden');
         }
     }
@@ -626,6 +725,13 @@
         document.getElementById('repoId').value = repoId.trim();
         openDownloadModal();
         selectEngine('sglang');
+    }
+
+    function downloadTransformersFromRepo(repoId) {
+        closeDownloadModal();
+        document.getElementById('repoId').value = repoId.trim();
+        openDownloadModal();
+        selectEngine('transformers');
     }
 
     function connectStatusWebSocket() {
@@ -939,6 +1045,15 @@
                 };
                 if (statusEl) {
                     statusEl.textContent = 'Downloading SGLang model (this may take a while)...';
+                }
+            } else if (selectedEngine === 'transformers') {
+                // Transformers download - just needs repo_id
+                endpoint = '/admin/models/download-transformers';
+                requestBody = {
+                    hf_repo_id: repoId,
+                };
+                if (statusEl) {
+                    statusEl.textContent = 'Downloading transformers model (this may take a while)...';
                 }
             } else {
                 // GGUF download - needs filename selection

@@ -157,6 +157,7 @@ async def dashboard(request: Request) -> HTMLResponse:
             model_count=len(running_models),
             sglang_available=sglang_available,
             sglang_version=sglang_version,
+            transformers_available=True,
         )
     except Exception as e:
         logger.warning(f"Could not get dashboard data: {e}")
@@ -168,6 +169,7 @@ async def dashboard(request: Request) -> HTMLResponse:
             model_count=0,
             sglang_available=sglang_available,
             sglang_version=sglang_version,
+            transformers_available=True,
         )
 
     return templates.TemplateResponse("dashboard.html", context)
@@ -215,6 +217,7 @@ async def models_page(request: Request) -> HTMLResponse:
             models=models,
             loaded_models=loaded,
             sglang_available=sglang_available,
+            transformers_available=True,
         )
     except Exception as e:
         logger.warning(f"Could not get models data: {e}")
@@ -224,6 +227,7 @@ async def models_page(request: Request) -> HTMLResponse:
             models=[],
             loaded_models=[],
             sglang_available=sglang_available,
+            transformers_available=True,
         )
 
     return templates.TemplateResponse("models.html", context)

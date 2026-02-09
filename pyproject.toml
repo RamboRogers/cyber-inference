@@ -37,6 +37,8 @@ dependencies = [
     "bcrypt>=4.2.0",
     "python-jose[cryptography]>=3.3.0",
     "sse-starlette>=2.1.0",
+    "transformers>=4.45.0",
+    "accelerate>=1.0.0",
 ]
 
 [project.optional-dependencies]
