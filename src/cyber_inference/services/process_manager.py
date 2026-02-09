@@ -660,7 +660,7 @@ class ProcessManager:
             asyncio.create_task(self._monitor_output(model_name, process))
 
             # Wait for SGLang server to be ready (longer timeout - model compilation)
-            await self._wait_for_sglang_ready(model_name, port)
+            await self._wait_for_server_ready(model_name, port, server_label="SGLang")
 
             sglang_proc.status = "running"
             logger.info(
@@ -750,7 +750,7 @@ class ProcessManager:
             asyncio.create_task(self._monitor_output(model_name, process))
 
             # Wait for server to be ready (uses same /health + /v1/models check)
-            await self._wait_for_sglang_ready(model_name, port, timeout=300.0)
+            await self._wait_for_server_ready(model_name, port, timeout=300.0, server_label="Transformers")
 
             tf_proc.status = "running"
             logger.info(
@@ -766,26 +766,27 @@ class ProcessManager:
             self._release_port(port)
             raise
 
-    async def _wait_for_sglang_ready(
+    async def _wait_for_server_ready(
         self,
         model_name: str,
         port: int,
         timeout: float = 600.0,
         check_interval: float = 2.0,
+        server_label: str = "Server",
     ) -> None:
         """
-        Wait for the SGLang server to be ready.
+        Wait for a subprocess server (SGLang/transformers) to be ready.
 
-        SGLang takes longer than llama.cpp to start because it compiles
-        CUDA kernels and loads model weights on first launch.
+        Polls /health and /v1/models until both succeed or timeout.
 
         Args:
             model_name: Model name for logging
             port: Server port
-            timeout: Maximum wait time in seconds (default 300s for SGLang)
+            timeout: Maximum wait time in seconds
             check_interval: Time between health checks
+            server_label: Label for log messages (e.g. "SGLang", "Transformers")
         """
-        logger.info(f"  Waiting for SGLang server to be ready (timeout: {timeout}s)...")
+        logger.info(f"  Waiting for {server_label} server to be ready (timeout: {timeout}s)...")
 
         health_url = f"http://127.0.0.1:{port}/health"
         models_url = f"http://127.0.0.1:{port}/v1/models"
@@ -800,7 +801,7 @@ class ProcessManager:
 
                 if elapsed > timeout:
                     raise TimeoutError(
-                        f"SGLang server failed to start within {timeout}s"
+                        f"{server_label} server failed to start within {timeout}s"
                     )
 
                 try:
@@ -809,7 +810,7 @@ class ProcessManager:
                         response = await client.get(health_url, timeout=3.0)
                         if response.status_code == 200:
                             health_ok = True
-                            logger.debug(f"  SGLang health check passed after {elapsed:.1f}s")
+                            logger.debug(f"  {server_label} health check passed after {elapsed:.1f}s")
 
                     # Then check /v1/models to confirm model is loaded
                     if health_ok and not models_ok:
@@ -819,28 +820,28 @@ class ProcessManager:
                             if data.get("data") and len(data["data"]) > 0:
                                 models_ok = True
                                 logger.debug(
-                                    f"  SGLang model loaded after {elapsed:.1f}s"
+                                    f"  {server_label} model loaded after {elapsed:.1f}s"
                                 )
 
                     # Both checks passed
                     if health_ok and models_ok:
                         await asyncio.sleep(0.5)
                         logger.info(
-                            f"  SGLang server fully ready after {elapsed:.1f}s"
+                            f"  {server_label} server fully ready after {elapsed:.1f}s"
                         )
                         return
 
                 except Exception as e:
-                    logger.debug(f"  SGLang readiness check failed: {e}")
+                    logger.debug(f"  {server_label} readiness check failed: {e}")
 
                 # Check if process died
                 proc = self._processes.get(model_name)
                 if proc and proc.process and proc.process.returncode is not None:
                     raise RuntimeError(
-                        f"SGLang server exited with code {proc.process.returncode}"
+                        f"{server_label} server exited with code {proc.process.returncode}"
                     )
 
-                logger.debug(f"  Waiting for SGLang server... ({elapsed:.1f}s)")
+                logger.debug(f"  Waiting for {server_label} server... ({elapsed:.1f}s)")
                 await asyncio.sleep(check_interval)
 
     async def _monitor_output(
@@ -853,7 +854,12 @@ class ProcessManager:
             async for line in process.stdout:
                 decoded = line.decode().strip()
                 if decoded:
-                    logger.debug(f"[{model_name}] {decoded}")
+                    # Log errors/tracebacks at INFO level so they're visible
+                    lower = decoded.lower()
+                    if any(kw in lower for kw in ("error", "traceback", "exception", "failed")):
+                        logger.info(f"[{model_name}] {decoded}")
+                    else:
+                        logger.debug(f"[{model_name}] {decoded}")
         except Exception as e:
             logger.debug(f"Output monitoring ended for {model_name}: {e}")
 
