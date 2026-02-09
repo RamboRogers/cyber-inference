@@ -584,9 +584,13 @@ class ProcessManager:
         ]
 
         if is_unified_memory:
-            # Disable KV cache pool - use only what's needed per request
-            cmd.extend(["--disable-radix-cache", "--mem-fraction-static", "0.01"])
-            logger.info("  KV cache disabled (unified memory)")
+            # Minimal KV cache: small fraction + limited token count
+            cmd.extend([
+                "--disable-radix-cache",
+                "--mem-fraction-static", "0.15",
+                "--max-total-tokens", "4096",
+            ])
+            logger.info("  Unified memory: minimal KV cache (4096 tokens)")
         else:
             cmd.extend(["--mem-fraction-static", str(n_mem)])
 
