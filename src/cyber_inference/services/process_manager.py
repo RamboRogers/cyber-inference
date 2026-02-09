@@ -558,22 +558,20 @@ class ProcessManager:
         n_mem = mem_fraction if mem_fraction is not None else settings.sglang_mem_fraction
 
         # On unified memory systems (e.g. NVIDIA Thor SoC), torch reports total
-        # system RAM as GPU memory.  Use minimal KV cache since these servers
+        # system RAM as GPU memory.  Disable KV cache pool since these servers
         # are short-lived and don't need large context pools.
+        is_unified_memory = False
         try:
             sys_mem_gb = psutil.virtual_memory().total / (1024 ** 3)
             cuda_info = sglang_mgr.get_cuda_info()
             if cuda_info["cuda_available"] and cuda_info["devices"]:
                 gpu_mem_gb = cuda_info["devices"][0]["memory_total_mb"] / 1024
-                # If GPU memory is within 20% of system RAM, it's unified memory
                 if gpu_mem_gb > sys_mem_gb * 0.8:
-                    safe_fraction = 0.10
+                    is_unified_memory = True
                     logger.info(
                         f"  Unified memory detected ({gpu_mem_gb:.0f}GB GPU "
-                        f"≈ {sys_mem_gb:.0f}GB system), using minimal "
-                        f"KV cache: mem_fraction {n_mem} -> {safe_fraction}"
+                        f"≈ {sys_mem_gb:.0f}GB system)"
                     )
-                    n_mem = safe_fraction
         except Exception as e:
             logger.debug(f"  Could not check unified memory: {e}")
 
@@ -582,9 +580,15 @@ class ProcessManager:
             "--model-path", str(model_path),
             "--port", str(port),
             "--host", "127.0.0.1",
-            "--mem-fraction-static", str(n_mem),
             "--trust-remote-code",
         ]
+
+        if is_unified_memory:
+            # Disable KV cache pool - use only what's needed per request
+            cmd.extend(["--disable-radix-cache", "--mem-fraction-static", "0.01"])
+            logger.info("  KV cache disabled (unified memory)")
+        else:
+            cmd.extend(["--mem-fraction-static", str(n_mem)])
 
         if n_tp > 1:
             cmd.extend(["--tp", str(n_tp)])
