@@ -1,7 +1,7 @@
 # Cyber-Inference Docker Compose - NVIDIA GPU Configuration
 #
-# SGLang + CUDA PyTorch are installed automatically by start.sh at first run.
-# llama.cpp is also available as a fallback engine.
+# CUDA PyTorch is verified automatically by start.sh at first run.
+# transformers and llama.cpp engines are both available.
 #
 # Usage:
 #   docker-compose -f docker-compose.nvidia.yml up -d
@@ -45,11 +45,6 @@ services:
       - CYBER_INFERENCE_MAX_LOADED_MODELS=1
       - CYBER_INFERENCE_MAX_MEMORY_PERCENT=90
 
-      # SGLang settings (uncomment to customize)
-      # - CYBER_INFERENCE_SGLANG_MEM_FRACTION=0.85
-      # - CYBER_INFERENCE_SGLANG_TP_SIZE=1
-      # - CYBER_INFERENCE_NO_SGLANG=0
-
       # Security (uncomment to enable)
       # - CYBER_INFERENCE_ADMIN_PASSWORD=your-secure-password
 
@@ -71,7 +66,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 180s  # SGLang install on first run needs time
+      start_period: 180s  # Initial CUDA/engine setup may need extra time
 
     logging:
       driver: "json-file"

@@ -8,7 +8,7 @@ requires-python = ">=3.12"
 authors = [
     { name = "Matthew Rogers", email = "matt@matthewrogers.org" }
 ]
-keywords = ["llama.cpp", "inference", "llm", "api", "openai", "edge", "sglang"]
+keywords = ["llama.cpp", "inference", "llm", "api", "openai", "edge", "transformers"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -52,9 +52,6 @@ dev = [
     "ruff>=0.8.0",
     "mypy>=1.13.0",
 ]
-sglang = [
-    "sglang[all]>=0.4.6",
-]
 
 [project.scripts]
 cyber-inference = "cyber_inference.cli:app"
@@ -94,4 +91,3 @@ explicit = true
 [tool.uv.sources]
 torch = [{ index = "pytorch-cu130", marker = "sys_platform == 'linux'" }]
 torchvision = [{ index = "pytorch-cu130", marker = "sys_platform == 'linux'" }]
-

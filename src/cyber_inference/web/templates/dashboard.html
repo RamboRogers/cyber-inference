@@ -146,15 +146,9 @@
             <span class="text-xs text-green-400 font-mono ml-auto">Active</span>
         </div>
         <div class="cyber-card rounded-lg p-4 flex items-center space-x-3">
-            {% if sglang_available %}
-            <span class="w-3 h-3 rounded-full bg-purple-400"></span>
-            <span class="font-mono text-sm text-gray-300">SGLang</span>
-            <span class="text-xs text-purple-400 font-mono ml-auto">Available{% if sglang_version %} v{{ sglang_version }}{% endif %}</span>
-            {% else %}
-            <span class="w-3 h-3 rounded-full bg-gray-600"></span>
-            <span class="font-mono text-sm text-gray-500">SGLang</span>
-            <span class="text-xs text-gray-500 font-mono ml-auto">Not Installed</span>
-            {% endif %}
+            <span class="w-3 h-3 rounded-full bg-amber-400"></span>
+            <span class="font-mono text-sm text-gray-300">transformers</span>
+            <span class="text-xs text-amber-400 font-mono ml-auto">Active</span>
         </div>
     </div>
 
@@ -189,10 +183,12 @@
                     <div class="mt-2 flex items-center space-x-3 text-xs font-mono">
                         <span class="text-gray-500">Status: <span class="text-cyber-neon">Running</span></span>
                         {% set m_type = model.server_type if model is mapping else '' %}
-                        {% if m_type == 'sglang' %}
-                        <span class="px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-400">SGLang</span>
+                        {% if m_type == 'transformers' %}
+                        <span class="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400">Transformers</span>
                         {% elif m_type == 'whisper' %}
                         <span class="px-1.5 py-0.5 rounded bg-green-500/20 text-green-400">Whisper</span>
+                        {% else %}
+                        <span class="px-1.5 py-0.5 rounded bg-cyber-neon/20 text-cyber-neon">llama.cpp</span>
                         {% endif %}
                     </div>
                 </div>

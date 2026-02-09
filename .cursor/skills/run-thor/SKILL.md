@@ -45,11 +45,7 @@ ssh -t matt@thor.lab "cd /home/matt/Local/cyber-inference && ./start.sh"
 ssh matt@thor.lab "cd /home/matt/Local/cyber-inference && nohup ./start.sh > /tmp/cyber-inference.log 2>&1 &"
 ```
 
-SGLang + CUDA PyTorch wheels are installed automatically when NVIDIA hardware is detected.
-To force disable SGLang:
-```bash
-ssh -t matt@thor.lab "cd /home/matt/Local/cyber-inference && CYBER_INFERENCE_NO_SGLANG=1 ./start.sh"
-```
+CUDA PyTorch wheels are verified automatically when NVIDIA hardware is detected.
 
 ### 4. Verify the Server
 
@@ -63,8 +59,6 @@ curl -s http://thor.lab:8337/v1/models | python3 -m json.tool
 # System status
 curl -s http://thor.lab:8337/admin/status | python3 -m json.tool
 
-# SGLang status (if enabled)
-curl -s http://thor.lab:8337/admin/sglang/status | python3 -m json.tool
 ```
 
 The web GUI is available at: `http://thor.lab:8337`

@@ -5,12 +5,11 @@
 # This script verifies prerequisites and starts the Cyber-Inference server.
 # It will auto-restart the server if it exits (use Ctrl+C to stop).
 #
-# When NVIDIA hardware is detected, SGLang + PyTorch CUDA wheels are
-# installed automatically. No manual flags needed.
+# When NVIDIA hardware is detected, CUDA PyTorch wheels are installed
+# automatically for GPU-accelerated transformers inference.
 #
 # Usage:
 #     ./start.sh
-#     CYBER_INFERENCE_NO_SGLANG=1 ./start.sh   # Force disable SGLang
 #
 # Requirements:
 #     - uv (https://github.com/astral-sh/uv)
@@ -91,7 +90,7 @@ if check_command nvidia-smi; then
         success "CUDA version: $CUDA_FULL ($CUDA_VER_TAG)"
     fi
 
-    # Set CUDA_HOME for Triton/SGLang JIT (ptxas etc.)
+    # Set CUDA_HOME for JIT compilation (ptxas etc.)
     if [ -z "$CUDA_HOME" ]; then
         for d in /usr/local/cuda /usr/local/cuda-${CUDA_FULL} /usr/local/cuda-${CUDA_MAJOR}; do
             [ -d "$d" ] && { export CUDA_HOME="$d"; break; }
@@ -99,10 +98,9 @@ if check_command nvidia-smi; then
     fi
     if [ -n "$CUDA_HOME" ]; then
         success "CUDA_HOME: $CUDA_HOME"
-        [ -f "$CUDA_HOME/bin/ptxas" ] && export TRITON_PTXAS_PATH="$CUDA_HOME/bin/ptxas"
     fi
 else
-    info "No NVIDIA GPU detected"
+    info "No NVIDIA GPU detected (using CPU/MPS)"
 fi
 
 # ──────────────────────────────────────────────────────────────
@@ -114,109 +112,40 @@ cd "$SCRIPT_DIR"
 # ──────────────────────────────────────────────────────────────
 # 5. Sync base dependencies
 # ──────────────────────────────────────────────────────────────
-info "Syncing base dependencies..."
+info "Syncing dependencies..."
 uv sync || { error "uv sync failed"; exit 1; }
-success "Base dependencies OK"
+success "Dependencies OK"
 
 # ──────────────────────────────────────────────────────────────
-# 6. NVIDIA detected → install SGLang + CUDA PyTorch automatically
+# 6. NVIDIA detected → verify CUDA PyTorch is installed
 # ──────────────────────────────────────────────────────────────
-NO_SGLANG="${CYBER_INFERENCE_NO_SGLANG:-0}"
-
-if [ "$CUDA_AVAILABLE" -eq 1 ] && [ "$NO_SGLANG" != "1" ]; then
+if [ "$CUDA_AVAILABLE" -eq 1 ]; then
     echo ""
-    info "NVIDIA GPU found – setting up SGLang engine..."
+    info "NVIDIA GPU found – verifying CUDA PyTorch..."
 
-    # Determine CUDA wheel tag (default cu130)
-    CUDA_WHL="${CUDA_VER_TAG:-cu130}"
-
-    # 6a. Install sglang[all] via uv extras
-    info "Installing sglang[all]..."
-    if uv sync --extra sglang; then
-        success "sglang[all] installed"
+    # Check if torch has CUDA support
+    TORCH_CUDA=$(uv run python -c "import torch; print(torch.cuda.is_available())" 2>/dev/null)
+    if [ "$TORCH_CUDA" = "True" ]; then
+        TORCH_VER=$(uv run python -c "import torch; print(torch.__version__)" 2>/dev/null)
+        success "PyTorch ${TORCH_VER} with CUDA support"
     else
-        warning "sglang[all] sync failed – continuing without SGLang"
-        CUDA_AVAILABLE=0
-    fi
-
-    if [ "$CUDA_AVAILABLE" -eq 1 ]; then
-        # 6b. Read the versions that sglang's dependency resolver chose
-        TORCH_VER=$(uv pip show torch 2>/dev/null | grep '^Version:' | awk '{print $2}' | sed 's/+.*//')
-        KERNEL_VER=$(uv pip show sgl-kernel 2>/dev/null | grep '^Version:' | awk '{print $2}' | sed 's/+.*//')
-        ARCH=$(uname -m)  # aarch64 or x86_64
-
-        info "Detected torch ${TORCH_VER}, sgl-kernel ${KERNEL_VER}, arch ${ARCH}"
-
-        # 6c. Replace PyTorch with CUDA wheels (--reinstall needed: CPU has same version number)
+        warning "PyTorch doesn't have CUDA support – attempting CUDA wheel install..."
+        CUDA_WHL="${CUDA_VER_TAG:-cu130}"
         TORCH_INDEX="https://download.pytorch.org/whl/${CUDA_WHL}"
-        TORCH_CHECK_URL="${TORCH_INDEX}/torch/"
 
-        # Verify the CUDA index has this torch version before pinning
-        if curl -sfL "$TORCH_CHECK_URL" 2>/dev/null | grep -q "torch-${TORCH_VER}"; then
-            info "Verified: PyTorch ${TORCH_VER} exists on ${CUDA_WHL} index"
-            if uv pip install --reinstall "torch==${TORCH_VER}" torchvision torchaudio --index-url "$TORCH_INDEX"; then
-                success "PyTorch ${TORCH_VER}+${CUDA_WHL} installed"
-            else
-                warning "PyTorch CUDA install failed – SGLang may not work"
-            fi
+        if uv pip install --reinstall torch torchvision --index-url "$TORCH_INDEX"; then
+            success "PyTorch CUDA wheels installed from ${CUDA_WHL} index"
         else
-            warning "PyTorch ${TORCH_VER} not found on ${CUDA_WHL} index – trying latest available"
-            if uv pip install --reinstall torch torchvision torchaudio --index-url "$TORCH_INDEX"; then
-                success "PyTorch (latest)+${CUDA_WHL} installed"
-            else
-                warning "PyTorch CUDA install failed – SGLang may not work"
-            fi
-        fi
-
-        # 6d. Install sgl-kernel CUDA wheel (version detected dynamically)
-        if [ -n "$KERNEL_VER" ]; then
-            SGL_WHL_URL="https://github.com/sgl-project/whl/releases/download/v${KERNEL_VER}/sgl_kernel-${KERNEL_VER}+${CUDA_WHL}-cp310-abi3-manylinux2014_${ARCH}.whl"
-
-            # Verify the wheel exists before attempting install
-            if curl -sfIL -o /dev/null "$SGL_WHL_URL" 2>/dev/null; then
-                info "Verified: sgl-kernel ${KERNEL_VER}+${CUDA_WHL} wheel exists"
-                if uv pip install --reinstall "$SGL_WHL_URL"; then
-                    success "sgl-kernel ${KERNEL_VER}+${CUDA_WHL} installed"
-                else
-                    warning "sgl-kernel direct wheel install failed"
-                fi
-            else
-                warning "sgl-kernel ${KERNEL_VER}+${CUDA_WHL} wheel not found at GitHub releases"
-                info "Falling back to sglang CUDA wheel index..."
-                uv pip install --reinstall sgl-kernel \
-                    --extra-index-url "https://docs.sglang.io/whl/${CUDA_WHL}/sgl-kernel/" || \
-                    warning "sgl-kernel CUDA install failed – SGLang may not work with GPU"
-            fi
-        else
-            warning "sgl-kernel not found in environment – skipping CUDA kernel install"
-        fi
-
-        # 6e. Ensure CuDNN is new enough (PyTorch 2.9.x + CuDNN <9.15 has a known bug)
-        CUDNN_VER=$(uv run python -c "import torch; print(torch.backends.cudnn.version())" 2>/dev/null)
-        if [ -n "$CUDNN_VER" ] && [ "$CUDNN_VER" -lt 91500 ] 2>/dev/null; then
-            info "CuDNN ${CUDNN_VER} < 9.15 detected – upgrading for PyTorch compatibility..."
-            uv pip install "nvidia-cudnn-cu12>=9.15" || warning "CuDNN upgrade failed"
-        fi
-
-        # 6f. Patch SGLang Blackwell detection to include cc 11.x (NVIDIA Thor)
-        #     SGLang checks device_capability_majors=[10, 12] but Thor is cc 11.0
-        SGLANG_COMMON=$(uv run python -c "import sglang.srt.utils.common as m; print(m.__file__)" 2>/dev/null)
-        if [ -n "$SGLANG_COMMON" ] && [ -f "$SGLANG_COMMON" ]; then
-            if grep -q 'device_capability_majors=\[10, 12\]' "$SGLANG_COMMON"; then
-                sed -i 's/device_capability_majors=\[10, 12\]/device_capability_majors=[10, 11, 12]/' "$SGLANG_COMMON"
-                success "Patched SGLang Blackwell check to include cc 11.x (Thor)"
-            fi
-        fi
-
-        # 6g. Quick smoke test
-        if uv run python -c "import sglang; import torch; assert torch.cuda.is_available(); print(f'SGLang {sglang.__version__} + PyTorch {torch.__version__} CUDA OK')" 2>/dev/null; then
-            success "SGLang + CUDA verified"
-        else
-            warning "SGLang smoke test failed – server will still start (SGLang features may be unavailable)"
+            warning "PyTorch CUDA install failed – transformers will run on CPU"
         fi
     fi
-elif [ "$NO_SGLANG" = "1" ]; then
-    info "SGLang disabled by CYBER_INFERENCE_NO_SGLANG=1"
+
+    # Quick smoke test
+    if uv run python -c "import torch; assert torch.cuda.is_available(); print(f'PyTorch {torch.__version__} CUDA OK – {torch.cuda.get_device_name(0)}')" 2>/dev/null; then
+        success "CUDA verified"
+    else
+        warning "CUDA smoke test failed – transformers engine will run on CPU"
+    fi
 fi
 
 echo ""

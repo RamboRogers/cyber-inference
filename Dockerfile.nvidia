@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1
 # Cyber-Inference Dockerfile - NVIDIA GPU Support
 #
-# Uses start.sh to handle SGLang + CUDA PyTorch installation automatically.
-# llama.cpp is also available as a fallback engine (auto-installed by app).
+# Uses start.sh to handle CUDA PyTorch verification for transformers inference.
+# llama.cpp remains available as a fallback engine (auto-installed by app).
 #
 # Build:
 #   docker build -f Dockerfile.nvidia -t cyber-inference:nvidia .
@@ -57,7 +57,7 @@ COPY src/ ./src/
 # Make start.sh executable
 RUN chmod +x start.sh
 
-# Pre-sync base dependencies during build (SGLang + CUDA wheels installed at runtime by start.sh)
+# Pre-sync base dependencies during build (CUDA wheel verification happens at runtime in start.sh)
 RUN uv sync
 
 # Create data directories
@@ -72,8 +72,7 @@ VOLUME ["/app/data", "/app/models"]
 
 # start.sh handles:
 #   1. NVIDIA GPU detection
-#   2. SGLang + CUDA PyTorch wheel installation (dynamic versions)
-#   3. sgl-kernel CUDA wheel verification and install
-#   4. Smoke test
-#   5. Server launch with auto-restart
+#   2. CUDA PyTorch wheel verification/install
+#   3. Smoke test
+#   4. Server launch with auto-restart
 CMD ["./start.sh"]
