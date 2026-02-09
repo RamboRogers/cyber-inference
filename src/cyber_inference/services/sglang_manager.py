@@ -112,12 +112,23 @@ class SGLangManager:
             if info["cuda_available"]:
                 info["device_count"] = torch.cuda.device_count()
                 for i in range(info["device_count"]):
+                    # Get memory via properties or mem_get_info fallback
+                    mem_mb = 0
+                    try:
+                        props = torch.cuda.get_device_properties(i)
+                        mem_mb = round(props.total_mem / (1024**2))
+                    except (AttributeError, RuntimeError):
+                        pass
+                    if mem_mb == 0:
+                        try:
+                            _, total = torch.cuda.mem_get_info(i)
+                            mem_mb = round(total / (1024**2))
+                        except Exception:
+                            pass
                     info["devices"].append({
                         "index": i,
                         "name": torch.cuda.get_device_name(i),
-                        "memory_total_mb": round(
-                            torch.cuda.get_device_properties(i).total_mem / (1024**2)
-                        ),
+                        "memory_total_mb": mem_mb,
                     })
         except ImportError:
             pass
