@@ -563,6 +563,7 @@ class ProcessManager:
             "--port", str(port),
             "--host", "127.0.0.1",
             "--mem-fraction-static", str(n_mem),
+            "--trust-remote-code",
         ]
 
         if n_tp > 1:
