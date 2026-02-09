@@ -643,7 +643,7 @@ class ProcessManager:
         self,
         model_name: str,
         port: int,
-        timeout: float = 300.0,
+        timeout: float = 600.0,
         check_interval: float = 2.0,
     ) -> None:
         """
