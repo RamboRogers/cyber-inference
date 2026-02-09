@@ -557,6 +557,28 @@ class ProcessManager:
         n_tp = tp_size if tp_size is not None else settings.sglang_tp_size
         n_mem = mem_fraction if mem_fraction is not None else settings.sglang_mem_fraction
 
+        # On unified memory systems (e.g. NVIDIA Thor SoC), torch reports total
+        # system RAM as GPU memory.  Reserve enough for the OS, model weights,
+        # and the cyber-inference host process by capping mem_fraction.
+        try:
+            sys_mem_gb = psutil.virtual_memory().total / (1024 ** 3)
+            cuda_info = sglang_mgr.get_cuda_info()
+            if cuda_info["cuda_available"] and cuda_info["devices"]:
+                gpu_mem_gb = cuda_info["devices"][0]["memory_total_mb"] / 1024
+                # If GPU memory is within 20% of system RAM, it's unified memory
+                if gpu_mem_gb > sys_mem_gb * 0.8:
+                    # Leave at least 20GB headroom for OS + model weights + host
+                    safe_fraction = max(0.40, (sys_mem_gb - 20) / gpu_mem_gb)
+                    if n_mem > safe_fraction:
+                        logger.info(
+                            f"  Unified memory detected ({gpu_mem_gb:.0f}GB GPU "
+                            f"≈ {sys_mem_gb:.0f}GB system), capping "
+                            f"mem_fraction {n_mem} -> {safe_fraction:.2f}"
+                        )
+                        n_mem = round(safe_fraction, 2)
+        except Exception as e:
+            logger.debug(f"  Could not check unified memory: {e}")
+
         cmd = [
             python_exe, "-m", "sglang.launch_server",
             "--model-path", str(model_path),
