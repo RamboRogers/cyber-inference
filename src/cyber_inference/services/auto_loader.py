@@ -168,12 +168,18 @@ class AutoLoader:
             processes = pm.get_all_processes()
 
             if processes:
+                # Skip models that are still starting up (e.g. SGLang loading weights)
+                candidates = [p for p in processes if p.status == "running"]
+                if not candidates:
+                    logger.debug("No running models to unload (all still starting)")
+                    return
+
                 # Sort by last request time (oldest first)
-                processes.sort(
+                candidates.sort(
                     key=lambda p: p.last_request_at or p.started_at
                 )
 
-                oldest = processes[0]
+                oldest = candidates[0]
                 logger.info(f"[warning]Unloading LRU model: {oldest.model_name}[/warning]")
                 await self.unload_model(oldest.model_name)
 
