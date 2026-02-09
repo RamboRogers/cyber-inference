@@ -219,6 +219,7 @@ async def list_models(
                 quantization=m.quantization,
                 context_length=m.context_length,
                 model_type=m.model_type,
+                engine_type=m.engine_type,
                 mmproj_path=m.mmproj_path,
                 is_downloaded=m.is_downloaded,
                 is_enabled=m.is_enabled,

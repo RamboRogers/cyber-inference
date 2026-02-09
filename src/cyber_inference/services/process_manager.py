@@ -586,6 +586,9 @@ class ProcessManager:
             # SGLang/Triton needs access to the system CUDA toolkit (ptxas, etc.)
             # for JIT compiling kernels for the specific GPU architecture.
             env = os.environ.copy()
+            # Safety net: skip CuDNN version check (start.sh upgrades CuDNN,
+            # but in case it's still old, let SGLang proceed anyway)
+            env.setdefault("SGLANG_DISABLE_CUDNN_CHECK", "1")
             cuda_home = env.get("CUDA_HOME", "")
             if not cuda_home:
                 # Auto-detect CUDA home from common locations
