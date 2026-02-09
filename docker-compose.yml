@@ -1,11 +1,9 @@
-# Cyber-Inference Docker Compose Configuration
+# Cyber-Inference Docker Compose Configuration (CPU)
 #
 # Usage:
 #   docker-compose up -d          # Start in background
 #   docker-compose logs -f        # View logs
 #   docker-compose down           # Stop and remove containers
-
-version: '3.8'
 
 services:
   cyber-inference:
@@ -19,10 +17,9 @@ services:
       - "8337:8337"
 
     volumes:
-      # Persist data across container restarts
+      # Persist data and models across container restarts
       - cyber-data:/app/data
       - cyber-models:/app/models
-      - cyber-bin:/app/bin
 
     environment:
       # Server configuration
@@ -38,7 +35,6 @@ services:
 
       # Resource limits
       - CYBER_INFERENCE_MAX_MEMORY_PERCENT=80
-      - CYBER_INFERENCE_LLAMA_GPU_LAYERS=-1
 
       # Security (uncomment to enable)
       # - CYBER_INFERENCE_ADMIN_PASSWORD=your-secure-password
@@ -69,28 +65,8 @@ services:
         max-size: "100m"
         max-file: "3"
 
-# NVIDIA GPU Configuration (uncomment for GPU support)
-#   cyber-inference-gpu:
-#     extends:
-#       service: cyber-inference
-#     container_name: cyber-inference-gpu
-#     runtime: nvidia
-#     environment:
-#       - NVIDIA_VISIBLE_DEVICES=all
-#       - CYBER_INFERENCE_LLAMA_GPU_LAYERS=-1
-#     deploy:
-#       resources:
-#         reservations:
-#           devices:
-#             - driver: nvidia
-#               count: 1
-#               capabilities: [gpu]
-
 volumes:
   cyber-data:
     name: cyber-inference-data
   cyber-models:
     name: cyber-inference-models
-  cyber-bin:
-    name: cyber-inference-bin
-
