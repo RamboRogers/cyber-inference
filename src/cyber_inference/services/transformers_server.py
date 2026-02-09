@@ -38,10 +38,14 @@ _device = None
 
 _CHANNEL_MARKERS = {
     "<|start|>assistant<|channel|>analysis<|message|>": "<think>",
+    "assistant<|channel|>analysis<|message|>": "<think>",
+    "<|channel|>analysis<|message|>": "<think>",
     "<|start|>assistant<|channel|>final<|message|>": "</think>",
+    "assistant<|channel|>final<|message|>": "</think>",
+    "<|channel|>final<|message|>": "</think>",
 }
 _SPECIAL_TOKEN_RE = re.compile(r"<\|[^>]+\|>")
-_STREAM_CARRY_SIZE = max(len(marker) for marker in _CHANNEL_MARKERS) - 1
+_STREAM_CARRY_SIZE = 512
 
 
 # ── Request / Response schemas ──────────────────────────────────
@@ -104,7 +108,7 @@ async def list_models():
 
 def _normalize_generated_text(text: str) -> str:
     """Normalize model-specific control tokens into readable text."""
-    for marker, replacement in _CHANNEL_MARKERS.items():
+    for marker, replacement in sorted(_CHANNEL_MARKERS.items(), key=lambda item: len(item[0]), reverse=True):
         text = text.replace(marker, replacement)
     text = text.replace("<|return|>", "\n")
     return _SPECIAL_TOKEN_RE.sub("", text)
