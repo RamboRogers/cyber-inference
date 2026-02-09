@@ -134,7 +134,7 @@ class ProcessManager:
                     location = "system PATH"
 
             version = await self._installer.get_installed_version()
-            logger.info(f"[success]llama-server found in {location}: {version}[/success]")
+            logger.info(f"[success]llama-server binary: {version} ({location})[/success]")
             logger.debug(f"  Binary path: {binary_path}")
 
         # Check SGLang availability

@@ -420,7 +420,13 @@ class LlamaInstaller:
                 text=True,
                 timeout=5,
             )
-            return result.stdout.strip() or result.stderr.strip()
+            raw = result.stdout.strip() or result.stderr.strip()
+            # Extract just the "version: NNNN (hash)" line from noisy output
+            # llama-server --version also prints CUDA device info
+            for line in raw.splitlines():
+                if line.strip().startswith("version:"):
+                    return line.strip()
+            return raw.splitlines()[-1].strip() if raw else "unknown"
         except Exception:
             return "unknown"
 

@@ -229,8 +229,10 @@ def download_model(
                 # Check if sglang is available
                 from cyber_inference.services.sglang_manager import SGLangManager
                 if SGLangManager.get_instance().is_available():
+                    use_sglang = True
                     console.print(
-                        "[yellow]Auto-detected non-GGUF repo. Use --engine gguf to force GGUF download.[/yellow]"
+                        "[yellow]Auto-detected non-GGUF repo, using SGLang. "
+                        "Use --engine gguf to force GGUF download.[/yellow]"
                     )
 
         if use_sglang:

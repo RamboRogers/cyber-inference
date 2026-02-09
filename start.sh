@@ -198,7 +198,17 @@ if [ "$CUDA_AVAILABLE" -eq 1 ] && [ "$NO_SGLANG" != "1" ]; then
             uv pip install "nvidia-cudnn-cu12>=9.15" || warning "CuDNN upgrade failed"
         fi
 
-        # 6f. Quick smoke test
+        # 6f. Patch SGLang Blackwell detection to include cc 11.x (NVIDIA Thor)
+        #     SGLang checks device_capability_majors=[10, 12] but Thor is cc 11.0
+        SGLANG_COMMON=$(uv run python -c "import sglang.srt.utils.common as m; print(m.__file__)" 2>/dev/null)
+        if [ -n "$SGLANG_COMMON" ] && [ -f "$SGLANG_COMMON" ]; then
+            if grep -q 'device_capability_majors=\[10, 12\]' "$SGLANG_COMMON"; then
+                sed -i 's/device_capability_majors=\[10, 12\]/device_capability_majors=[10, 11, 12]/' "$SGLANG_COMMON"
+                success "Patched SGLang Blackwell check to include cc 11.x (Thor)"
+            fi
+        fi
+
+        # 6g. Quick smoke test
         if uv run python -c "import sglang; import torch; assert torch.cuda.is_available(); print(f'SGLang {sglang.__version__} + PyTorch {torch.__version__} CUDA OK')" 2>/dev/null; then
             success "SGLang + CUDA verified"
         else
