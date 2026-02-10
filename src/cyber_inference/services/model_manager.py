@@ -266,6 +266,31 @@ class ModelManager:
         return None
 
     @staticmethod
+    def _read_transformers_context_length(model_dir: Path) -> Optional[int]:
+        """Read context length from a HuggingFace transformers model's config.json."""
+        config_path = model_dir / "config.json"
+        if not config_path.exists():
+            return None
+        try:
+            import json
+            config = json.loads(config_path.read_text())
+            # Priority order of config keys that indicate context length
+            for key in (
+                "max_position_embeddings",
+                "n_positions",
+                "max_sequence_length",
+                "seq_length",
+                "sliding_window",
+            ):
+                value = config.get(key)
+                if isinstance(value, int) and value > 0:
+                    logger.debug(f"Transformers context length from {key}: {value}")
+                    return value
+        except Exception as e:
+            logger.debug(f"Failed to read config.json from {model_dir}: {e}")
+        return None
+
+    @staticmethod
     def _is_mmproj_file(filename: str) -> bool:
         name = filename.lower()
         return name.endswith(".gguf") and "mmproj" in name
@@ -924,10 +949,12 @@ class ModelManager:
         else:
             model_name = Path(filename).stem
 
-        # Read context length for GGUF files (not applicable to whisper bin or directory models)
+        # Read context length from model metadata
         context_length = None
         if filename.endswith(".gguf") and file_path.is_file():
             context_length = self._read_gguf_context_length(file_path)
+        elif file_path.is_dir():
+            context_length = self._read_transformers_context_length(file_path)
 
         # Convert mmproj_path to string if provided
         mmproj_path_str = str(mmproj_path) if mmproj_path else None
@@ -1041,13 +1068,17 @@ class ModelManager:
 
             updated = False
             for model in db_models:
+                # Backfill context_length for models that still have the 4096 default
                 if model.file_path and (model.context_length is None or model.context_length == 4096):
                     file_path = Path(model.file_path)
+                    context_length = None
                     if file_path.exists() and file_path.suffix == ".gguf":
                         context_length = self._read_gguf_context_length(file_path)
-                        if context_length and context_length != model.context_length:
-                            model.context_length = context_length
-                            updated = True
+                    elif file_path.is_dir():
+                        context_length = self._read_transformers_context_length(file_path)
+                    if context_length and context_length != model.context_length:
+                        model.context_length = context_length
+                        updated = True
 
                 models.append({
                     "id": model.id,
@@ -1065,6 +1096,12 @@ class ModelManager:
                     "is_enabled": model.is_enabled,
                     "last_used_at": model.last_used_at,
                     "registered": True,
+                    "default_context_size": model.default_context_size,
+                    "default_temperature": model.default_temperature,
+                    "default_top_p": model.default_top_p,
+                    "default_top_k": model.default_top_k,
+                    "default_max_tokens": model.default_max_tokens,
+                    "default_repeat_penalty": model.default_repeat_penalty,
                 })
 
             if updated:
@@ -1102,6 +1139,12 @@ class ModelManager:
                     "is_enabled": True,
                     "last_used_at": None,
                     "registered": False,
+                    "default_context_size": None,
+                    "default_temperature": None,
+                    "default_top_p": None,
+                    "default_top_k": None,
+                    "default_max_tokens": None,
+                    "default_repeat_penalty": None,
                 })
 
         # Scan for unregistered transformers models (directories in models/transformers/)
@@ -1120,6 +1163,7 @@ class ModelManager:
                     total_size = sum(
                         f.stat().st_size for f in model_dir.rglob("*") if f.is_file()
                     )
+                    ctx_len = self._read_transformers_context_length(model_dir) or 4096
                     models.append({
                         "id": None,
                         "name": dir_name,
@@ -1128,7 +1172,7 @@ class ModelManager:
                         "hf_repo_id": None,
                         "size_bytes": total_size,
                         "quantization": None,
-                        "context_length": 4096,
+                        "context_length": ctx_len,
                         "model_type": None,
                         "engine_type": "transformers",
                         "mmproj_path": None,
@@ -1136,6 +1180,12 @@ class ModelManager:
                         "is_enabled": True,
                         "last_used_at": None,
                         "registered": False,
+                        "default_context_size": None,
+                        "default_temperature": None,
+                        "default_top_p": None,
+                        "default_top_k": None,
+                        "default_max_tokens": None,
+                        "default_repeat_penalty": None,
                     })
 
         logger.debug(f"Found {len(models)} models")

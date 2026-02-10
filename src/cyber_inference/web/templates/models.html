@@ -100,6 +100,14 @@
                             Load
                         </button>
                         {% endif %}
+                        <button onclick="openSettingsModal('{{ model.name }}', {{ model.context_length or 'null' }})"
+                                class="p-2 text-gray-500 hover:text-cyber-blue transition-colors"
+                                title="Model settings">
+                            <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                            </svg>
+                        </button>
                         <button onclick="deleteModel('{{ model.name }}')"
                                 class="p-2 text-gray-500 hover:text-cyber-red transition-colors"
                                 title="Delete model">
@@ -382,6 +390,97 @@
                         <span class="text-[10px] px-2 py-0.5 rounded bg-pink-500/10 text-pink-400">7B</span>
                     </div>
                 </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Model Settings Modal -->
+<div id="settingsModal" class="fixed inset-0 z-50 hidden items-center justify-center bg-black/80 backdrop-blur-sm">
+    <div class="cyber-card rounded-xl w-full max-w-lg mx-4 neon-border">
+        <div class="px-6 py-4 border-b border-cyber-blue/30 flex items-center justify-between">
+            <h3 class="font-cyber text-xl text-cyber-blue">MODEL SETTINGS</h3>
+            <button onclick="closeSettingsModal()" class="text-gray-400 hover:text-white">
+                <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+            </button>
+        </div>
+        <div class="p-6 space-y-5">
+            <div class="text-sm font-mono text-gray-400 mb-2">
+                <span class="text-white" id="settingsModelName">-</span>
+                <span class="text-gray-600 ml-2" id="settingsContextHint"></span>
+            </div>
+
+            <!-- Context Size -->
+            <div>
+                <label class="block text-sm font-mono text-gray-400 mb-1">Context Size</label>
+                <input type="number" id="settingsContextSize" min="256" step="256"
+                       class="cyber-input w-full px-4 py-2 rounded-lg font-mono"
+                       placeholder="Global default">
+                <p class="text-xs text-gray-600 mt-1 font-mono">Tokens of context window (blank = global default)</p>
+            </div>
+
+            <!-- Temperature -->
+            <div>
+                <label class="block text-sm font-mono text-gray-400 mb-1">Temperature</label>
+                <input type="number" id="settingsTemperature" min="0" max="2" step="0.05"
+                       class="cyber-input w-full px-4 py-2 rounded-lg font-mono"
+                       placeholder="0.7">
+                <p class="text-xs text-gray-600 mt-1 font-mono">Sampling temperature 0.0-2.0 (blank = request default)</p>
+            </div>
+
+            <!-- Top P -->
+            <div>
+                <label class="block text-sm font-mono text-gray-400 mb-1">Top P</label>
+                <input type="number" id="settingsTopP" min="0" max="1" step="0.05"
+                       class="cyber-input w-full px-4 py-2 rounded-lg font-mono"
+                       placeholder="1.0">
+                <p class="text-xs text-gray-600 mt-1 font-mono">Nucleus sampling 0.0-1.0 (blank = request default)</p>
+            </div>
+
+            <!-- Top K -->
+            <div>
+                <label class="block text-sm font-mono text-gray-400 mb-1">Top K</label>
+                <input type="number" id="settingsTopK" min="0" max="200" step="1"
+                       class="cyber-input w-full px-4 py-2 rounded-lg font-mono"
+                       placeholder="40">
+                <p class="text-xs text-gray-600 mt-1 font-mono">Top-K sampling 0-200 (blank = request default)</p>
+            </div>
+
+            <!-- Max Tokens -->
+            <div>
+                <label class="block text-sm font-mono text-gray-400 mb-1">Max Tokens</label>
+                <input type="number" id="settingsMaxTokens" min="1" step="64"
+                       class="cyber-input w-full px-4 py-2 rounded-lg font-mono"
+                       placeholder="Auto">
+                <p class="text-xs text-gray-600 mt-1 font-mono">Max output tokens per response (blank = request default)</p>
+            </div>
+
+            <!-- Repeat Penalty -->
+            <div>
+                <label class="block text-sm font-mono text-gray-400 mb-1">Repeat Penalty</label>
+                <input type="number" id="settingsRepeatPenalty" min="0" max="2" step="0.05"
+                       class="cyber-input w-full px-4 py-2 rounded-lg font-mono"
+                       placeholder="1.0">
+                <p class="text-xs text-gray-600 mt-1 font-mono">Repetition penalty 0.0-2.0 (blank = request default)</p>
+            </div>
+        </div>
+        <div class="px-6 py-4 border-t border-cyber-gray flex justify-between">
+            <button onclick="resetSettings()"
+                    class="px-4 py-2 rounded-lg font-mono text-sm text-gray-500 hover:text-gray-300 transition-colors">
+                Reset All
+            </button>
+            <div class="flex space-x-3">
+                <button onclick="closeSettingsModal()"
+                        class="px-6 py-2 rounded-lg font-mono text-gray-400 hover:text-white transition-colors">
+                    Cancel
+                </button>
+                <button onclick="saveSettings()"
+                        id="saveSettingsBtn"
+                        class="cyber-btn px-6 py-2 rounded-lg font-mono">
+                    Save
+                </button>
             </div>
         </div>
     </div>
@@ -1143,6 +1242,108 @@
         } catch (error) {
             console.error('Error:', error);
             alert('Error unloading model');
+        }
+    }
+
+    // ── Model Settings Modal ──────────────────────────────
+
+    let settingsModelName = null;
+
+    async function openSettingsModal(modelName, nativeContextLength) {
+        settingsModelName = modelName;
+        document.getElementById('settingsModelName').textContent = modelName;
+
+        // Show native context length hint
+        const hint = document.getElementById('settingsContextHint');
+        if (nativeContextLength) {
+            hint.textContent = `(native: ${nativeContextLength.toLocaleString()})`;
+        } else {
+            hint.textContent = '';
+        }
+
+        // Fetch current config
+        try {
+            const response = await adminFetch(`/admin/models/${encodeURIComponent(modelName)}/config`);
+            if (response.ok) {
+                const data = await response.json();
+                document.getElementById('settingsContextSize').value = data.default_context_size ?? '';
+                document.getElementById('settingsTemperature').value = data.default_temperature ?? '';
+                document.getElementById('settingsTopP').value = data.default_top_p ?? '';
+                document.getElementById('settingsTopK').value = data.default_top_k ?? '';
+                document.getElementById('settingsMaxTokens').value = data.default_max_tokens ?? '';
+                document.getElementById('settingsRepeatPenalty').value = data.default_repeat_penalty ?? '';
+            }
+        } catch (e) {
+            console.error('Error fetching model config:', e);
+        }
+
+        document.getElementById('settingsModal').classList.remove('hidden');
+        document.getElementById('settingsModal').classList.add('flex');
+    }
+
+    function closeSettingsModal() {
+        document.getElementById('settingsModal').classList.add('hidden');
+        document.getElementById('settingsModal').classList.remove('flex');
+        settingsModelName = null;
+    }
+
+    function resetSettings() {
+        document.getElementById('settingsContextSize').value = '';
+        document.getElementById('settingsTemperature').value = '';
+        document.getElementById('settingsTopP').value = '';
+        document.getElementById('settingsTopK').value = '';
+        document.getElementById('settingsMaxTokens').value = '';
+        document.getElementById('settingsRepeatPenalty').value = '';
+    }
+
+    async function saveSettings() {
+        if (!settingsModelName) return;
+
+        const btn = document.getElementById('saveSettingsBtn');
+        const originalText = btn.textContent;
+        btn.textContent = 'Saving...';
+        btn.disabled = true;
+
+        // Build config — empty string means null (clear the override)
+        function parseNum(id) {
+            const val = document.getElementById(id).value.trim();
+            return val === '' ? null : Number(val);
+        }
+
+        const config = {
+            default_context_size: parseNum('settingsContextSize'),
+            default_temperature: parseNum('settingsTemperature'),
+            default_top_p: parseNum('settingsTopP'),
+            default_top_k: parseNum('settingsTopK'),
+            default_max_tokens: parseNum('settingsMaxTokens'),
+            default_repeat_penalty: parseNum('settingsRepeatPenalty'),
+        };
+
+        try {
+            const response = await adminFetch(`/admin/models/${encodeURIComponent(settingsModelName)}/config`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(config),
+            });
+
+            if (response.ok) {
+                closeSettingsModal();
+                // Reload to reflect any context_length badge changes
+                location.reload();
+            } else {
+                let errorMsg = 'Unknown error';
+                try {
+                    const error = await response.json();
+                    errorMsg = error.detail || errorMsg;
+                } catch (e) {}
+                alert('Failed to save settings: ' + errorMsg);
+            }
+        } catch (error) {
+            console.error('Error:', error);
+            alert('Error saving settings: ' + error.message);
+        } finally {
+            btn.textContent = originalText;
+            btn.disabled = false;
         }
     }
 

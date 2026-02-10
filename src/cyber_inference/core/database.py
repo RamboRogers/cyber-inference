@@ -79,9 +79,44 @@ async def init_database(db_path: Path) -> None:
         await conn.run_sync(Base.metadata.create_all)
         logger.info("[success]Database tables created/verified[/success]")
 
+    # Migrate existing tables: add any missing columns (SQLite CREATE TABLE
+    # IF NOT EXISTS won't add new columns to tables that already exist).
+    await _migrate_add_missing_columns()
+
     # Log table info
     for table_name in Base.metadata.tables.keys():
         logger.debug(f"  Table registered: {table_name}")
+
+
+async def _migrate_add_missing_columns() -> None:
+    """Add columns defined in ORM models but missing from existing SQLite tables."""
+    import sqlalchemy as sa
+
+    async with _engine.begin() as conn:
+        for table_name, table in Base.metadata.tables.items():
+            # Get existing column names from SQLite
+            existing = await conn.execute(sa.text(f"PRAGMA table_info('{table_name}')"))
+            existing_cols = {row[1] for row in existing.fetchall()}
+
+            for column in table.columns:
+                if column.name not in existing_cols:
+                    # Build ALTER TABLE ADD COLUMN statement
+                    col_type = column.type.compile(dialect=_engine.dialect)
+                    nullable = "" if column.nullable else " NOT NULL"
+                    default = ""
+                    if column.default is not None:
+                        val = column.default.arg
+                        if isinstance(val, str):
+                            default = f" DEFAULT '{val}'"
+                        elif val is not None:
+                            default = f" DEFAULT {val}"
+                    stmt = f"ALTER TABLE {table_name} ADD COLUMN {column.name} {col_type}{nullable}{default}"
+                    try:
+                        await conn.execute(sa.text(stmt))
+                        logger.info(f"  Migration: added column {table_name}.{column.name}")
+                    except Exception as e:
+                        # Column may already exist (race condition) or other issue
+                        logger.debug(f"  Migration skip {table_name}.{column.name}: {e}")
 
 
 async def close_database() -> None:

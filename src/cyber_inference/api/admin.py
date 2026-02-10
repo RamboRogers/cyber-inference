@@ -579,6 +579,78 @@ async def unload_model(
     return {"status": "unloaded", "model": model_name}
 
 
+@router.get("/models/{model_name:path}/config")
+async def get_model_config(
+    model_name: str,
+    _: bool = Depends(verify_admin_token),
+) -> dict:
+    """Get per-model inference defaults."""
+    async with get_db_session() as session:
+        result = await session.execute(select(Model).where(Model.name == model_name))
+        model = result.scalar_one_or_none()
+        if not model:
+            raise HTTPException(status_code=404, detail=f"Model not found: {model_name}")
+        return {
+            "model": model_name,
+            "context_length": model.context_length,
+            "default_context_size": model.default_context_size,
+            "default_temperature": model.default_temperature,
+            "default_top_p": model.default_top_p,
+            "default_top_k": model.default_top_k,
+            "default_max_tokens": model.default_max_tokens,
+            "default_repeat_penalty": model.default_repeat_penalty,
+        }
+
+
+@router.put("/models/{model_name:path}/config")
+async def update_model_config(
+    model_name: str,
+    config: dict,
+    _: bool = Depends(verify_admin_token),
+) -> dict:
+    """Update per-model inference defaults.
+
+    Pass null/None for any field to clear it (revert to global default).
+    """
+    logger.info(f"[info]PUT /admin/models/{model_name}/config[/info]")
+
+    allowed_fields = {
+        "default_context_size": int,
+        "default_temperature": float,
+        "default_top_p": float,
+        "default_top_k": int,
+        "default_max_tokens": int,
+        "default_repeat_penalty": float,
+    }
+
+    async with get_db_session() as session:
+        result = await session.execute(select(Model).where(Model.name == model_name))
+        model = result.scalar_one_or_none()
+        if not model:
+            raise HTTPException(status_code=404, detail=f"Model not found: {model_name}")
+
+        for field, cast_type in allowed_fields.items():
+            if field in config:
+                value = config[field]
+                if value is None:
+                    setattr(model, field, None)
+                else:
+                    setattr(model, field, cast_type(value))
+
+        await session.commit()
+        logger.info(f"[success]Updated config for {model_name}[/success]")
+
+        return {
+            "model": model_name,
+            "default_context_size": model.default_context_size,
+            "default_temperature": model.default_temperature,
+            "default_top_p": model.default_top_p,
+            "default_top_k": model.default_top_k,
+            "default_max_tokens": model.default_max_tokens,
+            "default_repeat_penalty": model.default_repeat_penalty,
+        }
+
+
 @router.get("/sessions")
 async def list_sessions(
     _: bool = Depends(verify_admin_token),

@@ -147,6 +147,34 @@ def _get_server_type(model_name: str) -> str:
         return "llama"
 
 
+async def _apply_model_defaults(request, model_name: str) -> None:
+    """Apply per-model inference defaults for fields not explicitly set in the request.
+
+    Uses Pydantic v2's model_fields_set to distinguish between explicit values
+    and schema defaults, so user-provided values are never overridden.
+    """
+    auto_loader = get_auto_loader()
+    model_info = await auto_loader.get_model_info(model_name)
+    if not model_info:
+        return
+
+    field_map = {
+        "temperature": "default_temperature",
+        "top_p": "default_top_p",
+        "max_tokens": "default_max_tokens",
+    }
+    # These fields only exist on ChatCompletionRequest
+    if hasattr(request, "frequency_penalty"):
+        field_map["frequency_penalty"] = "default_repeat_penalty"
+
+    explicitly_set = request.model_fields_set
+    for request_field, model_key in field_map.items():
+        if request_field not in explicitly_set:
+            value = model_info.get(model_key)
+            if value is not None:
+                setattr(request, request_field, value)
+
+
 @router.get("/models")
 async def list_models(db: AsyncSession = Depends(get_db)) -> ModelsResponse:
     """
@@ -219,6 +247,9 @@ async def chat_completions(
         raise HTTPException(status_code=503, detail=f"Failed to load model: {e}")
 
     logger.debug(f"  Server URL: {server_url}")
+
+    # Apply per-model inference defaults for fields not explicitly set
+    await _apply_model_defaults(request, request.model)
 
     # Determine server type for engine-specific behavior
     server_type = _get_server_type(request.model)
@@ -403,6 +434,9 @@ async def completions(
     except Exception as e:
         logger.error(f"[error]Failed to load model: {e}[/error]")
         raise HTTPException(status_code=503, detail=f"Failed to load model: {e}")
+
+    # Apply per-model inference defaults for fields not explicitly set
+    await _apply_model_defaults(request, request.model)
 
     # Determine server type for engine-specific behavior
     server_type = _get_server_type(request.model)

@@ -67,6 +67,14 @@ class Model(Base):
     model_type: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)  # chat, completion, embedding
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
+    # Per-model inference defaults (NULL = use global/request defaults)
+    default_context_size: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    default_temperature: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    default_top_p: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    default_top_k: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    default_max_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    default_repeat_penalty: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+
     # Status
     is_downloaded: Mapped[bool] = mapped_column(Boolean, default=False)
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=True)

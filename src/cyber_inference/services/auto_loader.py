@@ -298,6 +298,15 @@ class AutoLoader:
 
         logger.info(f"  Engine type: {engine_type}")
 
+        # Determine context size: per-model override > model native > global default
+        context_size = (
+            model_info.get("default_context_size")
+            or model_info.get("context_length")
+            or None  # let start_server() fall back to global default
+        )
+        if context_size:
+            logger.info(f"  Context size: {context_size}")
+
         # Start the appropriate server based on engine_type
         if engine_type == "transformers":
             # Use lightweight transformers server
@@ -316,6 +325,7 @@ class AutoLoader:
                 model_path,
                 embedding=is_embedding,
                 mmproj_path=mmproj_path,
+                context_size=context_size,
             )
 
         if proc.status != "running":
