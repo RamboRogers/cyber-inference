@@ -456,7 +456,7 @@ def load_model(model_path: str, device: str = "auto"):
         model_path,
         device_map=device,
         trust_remote_code=True,
-        torch_dtype="auto",
+        dtype="auto",
     )
     _model.eval()
 

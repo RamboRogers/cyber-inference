@@ -541,6 +541,18 @@ class ProcessManager:
 
         logger.debug(f"  Command: {' '.join(cmd)}")
 
+        # Build environment: inherit current env + set TRITON_PTXAS_PATH
+        # if a CUDA 13+ system ptxas exists (needed for sm_110a on Thor/Jetson)
+        import os
+        env = os.environ.copy()
+        if "TRITON_PTXAS_PATH" not in env:
+            for cuda_dir in sorted(Path("/usr/local").glob("cuda-1[3-9]*"), reverse=True):
+                system_ptxas = cuda_dir / "bin" / "ptxas"
+                if system_ptxas.exists():
+                    env["TRITON_PTXAS_PATH"] = str(system_ptxas)
+                    logger.info(f"  Using system ptxas: {system_ptxas}")
+                    break
+
         # Create process entry
         tf_proc = LlamaProcess(
             model_name=model_name,
@@ -554,6 +566,7 @@ class ProcessManager:
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
+                env=env,
             )
 
             tf_proc.process = process
