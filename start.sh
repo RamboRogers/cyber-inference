@@ -99,6 +99,13 @@ if check_command nvidia-smi; then
     if [ -n "$CUDA_HOME" ]; then
         success "CUDA_HOME: $CUDA_HOME"
     fi
+
+    # Set TRITON_PTXAS_PATH so Triton JIT uses the system ptxas
+    # (Triton bundles CUDA 12.8 ptxas which doesn't support sm_110a on Thor)
+    if [ -z "$TRITON_PTXAS_PATH" ] && [ -n "$CUDA_HOME" ] && [ -x "$CUDA_HOME/bin/ptxas" ]; then
+        export TRITON_PTXAS_PATH="$CUDA_HOME/bin/ptxas"
+        success "TRITON_PTXAS_PATH: $TRITON_PTXAS_PATH"
+    fi
 else
     info "No NVIDIA GPU detected (using CPU/MPS)"
 fi
