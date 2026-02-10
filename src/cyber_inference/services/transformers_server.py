@@ -41,9 +41,11 @@ _CHANNEL_MARKERS = {
     "<|start|>assistant<|channel|>analysis<|message|>": "<think>",
     "assistant<|channel|>analysis<|message|>": "<think>",
     "<|channel|>analysis<|message|>": "<think>",
+    "analysis<|message|>": "<think>",
     "<|start|>assistant<|channel|>final<|message|>": "</think>",
     "assistant<|channel|>final<|message|>": "</think>",
     "<|channel|>final<|message|>": "</think>",
+    "final<|message|>": "</think>",
 }
 _SPECIAL_TOKEN_RE = re.compile(r"<\|[^>]+\|>")
 # Carry buffer for channel marker reassembly.  Longest marker is ~49 chars.
@@ -113,7 +115,17 @@ def _normalize_generated_text(text: str) -> str:
     for marker, replacement in sorted(_CHANNEL_MARKERS.items(), key=lambda item: len(item[0]), reverse=True):
         text = text.replace(marker, replacement)
     text = text.replace("<|return|>", "\n")
-    return _SPECIAL_TOKEN_RE.sub("", text)
+    text = _SPECIAL_TOKEN_RE.sub("", text)
+
+    # Handle partially-stripped markers (bare "analysis" at start)
+    if "</think>" in text and "<think>" not in text:
+        parts = text.split("</think>", 1)
+        analysis = parts[0].strip()
+        if analysis.lower().startswith("analysis"):
+            analysis = analysis[len("analysis"):].strip()
+        text = f"<think>{analysis}</think>{parts[1]}"
+
+    return text
 
 
 def _generate(input_ids: torch.Tensor, request) -> torch.Tensor:

@@ -150,8 +150,9 @@ def _get_server_type(model_name: str) -> str:
 
 # ── Channel marker normalization ─────────────────────────────────
 # GPT-OSS and similar models emit channel tokens for thinking/final output.
-# Convert them to <think>/</ think> tags and strip leftover special tokens
-# so every backend (llama.cpp, transformers) returns clean output.
+# llama-server may partially strip special tokens, producing inconsistent
+# output: e.g. bare "analysis ..." at the start with raw
+# "assistant<|channel|>final<|message|>" mid-text.  We handle all variants.
 
 _CHANNEL_MARKERS = {
     "<|start|>assistant<|channel|>analysis<|message|>": "<think>",
@@ -173,14 +174,34 @@ def _normalize_channel_markers(text: str) -> str:
     for marker, replacement in _SORTED_MARKERS:
         text = text.replace(marker, replacement)
     text = text.replace("<|return|>", "\n")
-    return _SPECIAL_TOKEN_RE.sub("", text)
+    text = _SPECIAL_TOKEN_RE.sub("", text)
+
+    # Handle partially-stripped markers: llama-server may strip <|channel|>
+    # and <|message|> at the start (leaving bare "analysis ...") but keep
+    # them mid-text (producing </think> via the marker dict above).
+    # If we got </think> but no <think>, wrap the leading content.
+    if "</think>" in text and "<think>" not in text:
+        parts = text.split("</think>", 1)
+        analysis = parts[0].strip()
+        # Strip the bare "analysis" channel identifier word
+        if analysis.lower().startswith("analysis"):
+            analysis = analysis[len("analysis"):].strip()
+        text = f"<think>{analysis}</think>{parts[1]}"
+
+    return text
 
 
 class _StreamNormalizer:
-    """Buffers streaming text to normalize channel markers that may span chunks."""
+    """Buffers streaming text to normalize channel markers that may span chunks.
+
+    Tracks state to detect partially-stripped channel markers where
+    the opening "analysis" appears as a bare word at stream start.
+    """
 
     def __init__(self):
         self._carry = ""
+        self._started = False
+        self._emitted_think_open = False
 
     def feed(self, text: str) -> str:
         """Feed a text chunk. Returns normalized text ready to emit (may be empty)."""
@@ -189,13 +210,33 @@ class _StreamNormalizer:
             return ""
         process = self._carry[:-_STREAM_CARRY_SIZE]
         self._carry = self._carry[-_STREAM_CARRY_SIZE:]
-        return _normalize_channel_markers(process)
+        return self._process(process)
 
     def flush(self) -> str:
         """Flush remaining buffered text."""
-        result = _normalize_channel_markers(self._carry)
+        result = self._process(self._carry)
         self._carry = ""
         return result
+
+    def _process(self, text: str) -> str:
+        for marker, replacement in _SORTED_MARKERS:
+            text = text.replace(marker, replacement)
+        text = text.replace("<|return|>", "\n")
+        text = _SPECIAL_TOKEN_RE.sub("", text)
+
+        if not self._started and text.strip():
+            self._started = True
+            stripped = text.lstrip()
+            # Detect bare "analysis" from partially-stripped channel markers
+            if not self._emitted_think_open and "<think>" not in stripped:
+                if stripped.lower().startswith("analysis ") or stripped.lower().startswith("analysis\n"):
+                    self._emitted_think_open = True
+                    text = "<think>" + stripped[len("analysis"):]
+
+        if "<think>" in text:
+            self._emitted_think_open = True
+
+        return text
 
 
 async def _apply_model_defaults(request, model_name: str) -> None:
