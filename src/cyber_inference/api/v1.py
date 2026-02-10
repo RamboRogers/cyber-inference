@@ -166,7 +166,11 @@ _CHANNEL_MARKERS = {
 }
 _SORTED_MARKERS = sorted(_CHANNEL_MARKERS.items(), key=lambda kv: len(kv[0]), reverse=True)
 _SPECIAL_TOKEN_RE = re.compile(r"<\|[^>]+\|>")
-_STREAM_CARRY_SIZE = 64
+
+# Separate marker lists for the stream normalizer state machine
+_ANALYSIS_MARKERS = [m for m, r in _SORTED_MARKERS if r == "<think>"]
+_FINAL_MARKERS = [m for m, r in _SORTED_MARKERS if r == "</think>"]
+_SAFE_MARGIN = 64  # buffer margin to avoid splitting partial markers
 
 
 def _normalize_channel_markers(text: str) -> str:
@@ -192,51 +196,106 @@ def _normalize_channel_markers(text: str) -> str:
 
 
 class _StreamNormalizer:
-    """Buffers streaming text to normalize channel markers that may span chunks.
+    """Scanning state-machine normalizer for channel markers in streaming text.
 
-    Tracks state to detect partially-stripped channel markers where
-    the opening "analysis" appears as a bare word at stream start.
+    The old carry-buffer approach could split markers across process boundaries.
+    This version accumulates text and scans for complete markers, emitting only
+    the "safe" prefix (text that can't be part of a marker) progressively.
+
+    States:
+      - Accumulating: scanning buffer for analysis/final markers
+      - Done: past the final marker, emit text directly with cleanup
     """
 
     def __init__(self):
-        self._carry = ""
-        self._started = False
-        self._emitted_think_open = False
+        self._buf = ""
+        self._think_open = False
+        self._done = False
 
     def feed(self, text: str) -> str:
-        """Feed a text chunk. Returns normalized text ready to emit (may be empty)."""
-        self._carry += text
-        if len(self._carry) <= _STREAM_CARRY_SIZE:
-            return ""
-        process = self._carry[:-_STREAM_CARRY_SIZE]
-        self._carry = self._carry[-_STREAM_CARRY_SIZE:]
-        return self._process(process)
+        """Feed a streaming text chunk. Returns normalized text to emit."""
+        if self._done:
+            return self._cleanup(text)
+        self._buf += text
+        return self._scan()
 
     def flush(self) -> str:
-        """Flush remaining buffered text."""
-        result = self._process(self._carry)
-        self._carry = ""
+        """Flush remaining buffered text at end of stream."""
+        if self._done:
+            text = self._cleanup(self._buf)
+            self._buf = ""
+            return text
+        text = self._buf
+        self._buf = ""
+        if not text:
+            return "</think>" if self._think_open else ""
+        # Use the full (non-streaming) normalizer for correctness
+        result = _normalize_channel_markers(text)
+        if self._think_open:
+            if result.startswith("<think>"):
+                result = result[len("<think>"):]
+            if "</think>" not in result:
+                result += "</think>"
         return result
 
-    def _process(self, text: str) -> str:
-        for marker, replacement in _SORTED_MARKERS:
-            text = text.replace(marker, replacement)
+    def _scan(self) -> str:
+        out = ""
+
+        # ── Detect thinking-phase start ──────────────────────────
+        if not self._think_open:
+            for marker in _ANALYSIS_MARKERS:
+                idx = self._buf.find(marker)
+                if idx >= 0:
+                    out += self._cleanup(self._buf[:idx])
+                    self._buf = self._buf[idx + len(marker):]
+                    self._think_open = True
+                    out += "<think>"
+                    return out + self._scan()
+
+            # Bare "analysis" at stream start (all special tokens stripped)
+            stripped = self._buf.lstrip()
+            if stripped.lower().startswith("analysis ") or stripped.lower().startswith("analysis\n"):
+                self._buf = stripped[len("analysis"):]
+                self._think_open = True
+                out += "<think>"
+                return out + self._scan()
+
+        # ── Detect final-phase transition ────────────────────────
+        for marker in _FINAL_MARKERS:
+            idx = self._buf.find(marker)
+            if idx >= 0:
+                before = self._cleanup(self._buf[:idx])
+                self._buf = self._buf[idx + len(marker):]
+                self._done = True
+                if self._think_open:
+                    out += before + "</think>"
+                else:
+                    out += before
+                if self._buf:
+                    out += self._cleanup(self._buf)
+                    self._buf = ""
+                return out
+
+        # ── Emit safe prefix ─────────────────────────────────────
+        if len(self._buf) > _SAFE_MARGIN:
+            safe_end = len(self._buf) - _SAFE_MARGIN
+            safe = self._buf[:safe_end]
+            # Don't split incomplete <|...|> tokens at the boundary
+            lp = safe.rfind("<|")
+            if lp >= 0 and safe.find("|>", lp) < 0:
+                safe_end = lp
+                safe = safe[:safe_end]
+            if safe_end > 0:
+                out += self._cleanup(safe)
+                self._buf = self._buf[safe_end:]
+
+        return out
+
+    @staticmethod
+    def _cleanup(text: str) -> str:
+        """Remove remaining special tokens."""
         text = text.replace("<|return|>", "\n")
-        text = _SPECIAL_TOKEN_RE.sub("", text)
-
-        if not self._started and text.strip():
-            self._started = True
-            stripped = text.lstrip()
-            # Detect bare "analysis" from partially-stripped channel markers
-            if not self._emitted_think_open and "<think>" not in stripped:
-                if stripped.lower().startswith("analysis ") or stripped.lower().startswith("analysis\n"):
-                    self._emitted_think_open = True
-                    text = "<think>" + stripped[len("analysis"):]
-
-        if "<think>" in text:
-            self._emitted_think_open = True
-
-        return text
+        return _SPECIAL_TOKEN_RE.sub("", text)
 
 
 async def _apply_model_defaults(request, model_name: str) -> None:

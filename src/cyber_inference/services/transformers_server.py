@@ -48,8 +48,6 @@ _CHANNEL_MARKERS = {
     "final<|message|>": "</think>",
 }
 _SPECIAL_TOKEN_RE = re.compile(r"<\|[^>]+\|>")
-# Carry buffer for channel marker reassembly.  Longest marker is ~49 chars.
-_STREAM_CARRY_SIZE = 64
 
 
 # ── Request / Response schemas ──────────────────────────────────
@@ -268,29 +266,11 @@ async def _stream_chat(input_ids, prompt_len, request):
     }
     yield f"data: {json.dumps(role_chunk)}\n\n"
 
-    stream_carry = ""
-
-    def emit_text_chunk(text: str) -> str | None:
-        normalized = _normalize_generated_text(text)
-        if not normalized:
-            return None
-        chunk = {
-            "id": completion_id,
-            "object": "chat.completion.chunk",
-            "created": int(time.time()),
-            "model": _model_name,
-            "choices": [
-                {
-                    "index": 0,
-                    "delta": {"content": normalized},
-                    "finish_reason": None,
-                }
-            ],
-        }
-        return f"data: {json.dumps(chunk)}\n\n"
-
     # Read from the blocking TextIteratorStreamer via the thread-pool
     # executor so we don't block the asyncio event loop.
+    # Raw chunks are emitted without normalization here; the v1.py proxy
+    # layer applies its own streaming normalizer which handles channel
+    # markers correctly across chunk boundaries.
     loop = asyncio.get_running_loop()
     iter_stream = iter(streamer)
     _sentinel = object()
@@ -304,21 +284,20 @@ async def _stream_chat(input_ids, prompt_len, request):
             break
         if not text_chunk:
             continue
-        stream_carry += text_chunk
-        if len(stream_carry) <= _STREAM_CARRY_SIZE:
-            continue
-
-        # Preserve a suffix window so channel markers split across streamer
-        # chunks still map cleanly to <think> / </think>.
-        process_text = stream_carry[:-_STREAM_CARRY_SIZE]
-        stream_carry = stream_carry[-_STREAM_CARRY_SIZE:]
-        encoded_chunk = emit_text_chunk(process_text)
-        if encoded_chunk:
-            yield encoded_chunk
-
-    encoded_chunk = emit_text_chunk(stream_carry)
-    if encoded_chunk:
-        yield encoded_chunk
+        chunk = {
+            "id": completion_id,
+            "object": "chat.completion.chunk",
+            "created": int(time.time()),
+            "model": _model_name,
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"content": text_chunk},
+                    "finish_reason": None,
+                }
+            ],
+        }
+        yield f"data: {json.dumps(chunk)}\n\n"
 
     # Final chunk
     chunk = {
