@@ -14,6 +14,7 @@ Usage:
 """
 
 import argparse
+import asyncio
 import json
 import re
 import sys
@@ -45,7 +46,8 @@ _CHANNEL_MARKERS = {
     "<|channel|>final<|message|>": "</think>",
 }
 _SPECIAL_TOKEN_RE = re.compile(r"<\|[^>]+\|>")
-_STREAM_CARRY_SIZE = 512
+# Carry buffer for channel marker reassembly.  Longest marker is ~49 chars.
+_STREAM_CARRY_SIZE = 64
 
 
 # ── Request / Response schemas ──────────────────────────────────
@@ -115,7 +117,7 @@ def _normalize_generated_text(text: str) -> str:
 
 
 def _generate(input_ids: torch.Tensor, request) -> torch.Tensor:
-    """Run model.generate() with request parameters."""
+    """Run model.generate() with request parameters (blocking, run in thread)."""
     generate_kwargs = {
         "input_ids": input_ids,
         "max_new_tokens": request.max_tokens,
@@ -141,7 +143,7 @@ def _generate(input_ids: torch.Tensor, request) -> torch.Tensor:
     if _tokenizer.eos_token_id is not None:
         generate_kwargs["pad_token_id"] = _tokenizer.eos_token_id
 
-    with torch.no_grad():
+    with torch.inference_mode():
         output = _model.generate(**generate_kwargs)
     return output
 
@@ -174,7 +176,8 @@ async def chat_completions(request: ChatCompletionRequest):
             media_type="text/event-stream",
         )
 
-    output = _generate(input_ids, request)
+    # Run generation in thread pool to avoid blocking the event loop
+    output = await asyncio.to_thread(_generate, input_ids, request)
     new_tokens = output[0][prompt_len:]
     text = _normalize_generated_text(
         _tokenizer.decode(new_tokens, skip_special_tokens=False)
@@ -201,7 +204,13 @@ async def chat_completions(request: ChatCompletionRequest):
 
 
 async def _stream_chat(input_ids, prompt_len, request):
-    """Stream chat completions using TextIteratorStreamer."""
+    """Stream chat completions using TextIteratorStreamer.
+
+    Generation runs in a background thread.  The streamer's blocking
+    ``__next__`` calls are dispatched via ``run_in_executor`` so that
+    the asyncio event loop stays responsive for health checks and
+    concurrent requests.
+    """
     from transformers import TextIteratorStreamer
 
     streamer = TextIteratorStreamer(
@@ -228,10 +237,10 @@ async def _stream_chat(input_ids, prompt_len, request):
 
     def run_generate() -> None:
         try:
-            _model.generate(**generate_kwargs)
-        except BaseException as exc:  # pragma: no cover - defensive runtime guard
+            with torch.inference_mode():
+                _model.generate(**generate_kwargs)
+        except BaseException as exc:
             generation_error.append(exc)
-            # Ensure stream consumers are unblocked if generation fails in the worker thread.
             streamer.on_finalized_text("", stream_end=True)
 
     thread = threading.Thread(target=run_generate, daemon=True)
@@ -268,7 +277,19 @@ async def _stream_chat(input_ids, prompt_len, request):
         }
         return f"data: {json.dumps(chunk)}\n\n"
 
-    for text_chunk in streamer:
+    # Read from the blocking TextIteratorStreamer via the thread-pool
+    # executor so we don't block the asyncio event loop.
+    loop = asyncio.get_running_loop()
+    iter_stream = iter(streamer)
+    _sentinel = object()
+
+    def _next_chunk():
+        return next(iter_stream, _sentinel)
+
+    while True:
+        text_chunk = await loop.run_in_executor(None, _next_chunk)
+        if text_chunk is _sentinel:
+            break
         if not text_chunk:
             continue
         stream_carry += text_chunk
@@ -315,7 +336,7 @@ async def completions(request: CompletionRequest):
     input_ids = _tokenizer.encode(request.prompt, return_tensors="pt").to(_model.device)
     prompt_len = input_ids.shape[1]
 
-    output = _generate(input_ids, request)
+    output = await asyncio.to_thread(_generate, input_ids, request)
     new_tokens = output[0][prompt_len:]
     text = _tokenizer.decode(new_tokens, skip_special_tokens=True)
 
@@ -349,7 +370,7 @@ async def embeddings(request: EmbeddingRequest):
 
     for i, text in enumerate(inputs):
         tokens = _tokenizer(text, return_tensors="pt", truncation=True).to(_model.device)
-        with torch.no_grad():
+        with torch.inference_mode():
             output = _model(**tokens, output_hidden_states=True)
         # Use last hidden state mean pooling
         hidden = output.hidden_states[-1]
@@ -367,6 +388,26 @@ async def embeddings(request: EmbeddingRequest):
 # ── Model loading & main ────────────────────────────────────────
 
 
+def _detect_unified_memory() -> bool:
+    """Detect if CUDA device uses unified memory (e.g. NVIDIA Thor SoC, Jetson).
+
+    On unified memory systems, device_map="auto" may incorrectly offload layers
+    to CPU because CUDA reports only a fraction of the total shared memory.
+    """
+    if not torch.cuda.is_available():
+        return False
+    props = torch.cuda.get_device_properties(0)
+    # Unified memory devices: NVIDIA Thor (cc 11.0), Jetson Orin (cc 8.7+)
+    # These have is_integrated=True or share system memory with GPU
+    if getattr(props, "is_integrated", False):
+        return True
+    # Heuristic: if total CUDA memory < 50GB but device name suggests SoC
+    soc_names = ["thor", "orin", "jetson", "tegra"]
+    if any(name in props.name.lower() for name in soc_names):
+        return True
+    return False
+
+
 def load_model(model_path: str, device: str = "auto"):
     """Load model and tokenizer."""
     global _model, _tokenizer, _model_name, _device
@@ -375,6 +416,36 @@ def load_model(model_path: str, device: str = "auto"):
 
     _model_name = Path(model_path).name
     print(f"[transformers-server] Loading model: {model_path}", flush=True)
+    print(f"[transformers-server] CUDA available: {torch.cuda.is_available()}", flush=True)
+    if torch.cuda.is_available():
+        props = torch.cuda.get_device_properties(0)
+        print(
+            f"[transformers-server] CUDA device: {props.name}, "
+            f"compute capability: {props.major}.{props.minor}, "
+            f"VRAM: {props.total_mem / 1024**3:.1f} GB",
+            flush=True,
+        )
+        unified = _detect_unified_memory()
+        if unified:
+            print("[transformers-server] Unified memory detected, forcing device_map='cuda:0'", flush=True)
+            if device == "auto":
+                device = "cuda:0"
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        print("[transformers-server] MPS (Apple Metal) available", flush=True)
+
+    # Check for MXFP4 kernel support
+    try:
+        from transformers.quantizers.quantizer_mxfp4 import is_kernels_available
+        kernels_ok = is_kernels_available()
+        print(f"[transformers-server] MXFP4 kernels available: {kernels_ok}", flush=True)
+        if not kernels_ok:
+            print(
+                "[transformers-server] WARNING: kernels package not installed, "
+                "MXFP4 models will be dequantized to BF16 (slow)",
+                flush=True,
+            )
+    except ImportError:
+        pass
 
     _tokenizer = AutoTokenizer.from_pretrained(
         model_path,
@@ -385,7 +456,7 @@ def load_model(model_path: str, device: str = "auto"):
         model_path,
         device_map=device,
         trust_remote_code=True,
-        dtype="auto",
+        torch_dtype="auto",
     )
     _model.eval()
 
