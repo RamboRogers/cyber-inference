@@ -13,6 +13,7 @@ handling automatic model loading and streaming responses.
 
 import asyncio
 import json
+import re
 import tempfile
 import time
 import uuid
@@ -145,6 +146,56 @@ def _get_server_type(model_name: str) -> str:
         return proc.server_type if proc else "llama"
     except Exception:
         return "llama"
+
+
+# ── Channel marker normalization ─────────────────────────────────
+# GPT-OSS and similar models emit channel tokens for thinking/final output.
+# Convert them to <think>/</ think> tags and strip leftover special tokens
+# so every backend (llama.cpp, transformers) returns clean output.
+
+_CHANNEL_MARKERS = {
+    "<|start|>assistant<|channel|>analysis<|message|>": "<think>",
+    "assistant<|channel|>analysis<|message|>": "<think>",
+    "<|channel|>analysis<|message|>": "<think>",
+    "analysis<|message|>": "<think>",
+    "<|start|>assistant<|channel|>final<|message|>": "</think>",
+    "assistant<|channel|>final<|message|>": "</think>",
+    "<|channel|>final<|message|>": "</think>",
+    "final<|message|>": "</think>",
+}
+_SORTED_MARKERS = sorted(_CHANNEL_MARKERS.items(), key=lambda kv: len(kv[0]), reverse=True)
+_SPECIAL_TOKEN_RE = re.compile(r"<\|[^>]+\|>")
+_STREAM_CARRY_SIZE = 64
+
+
+def _normalize_channel_markers(text: str) -> str:
+    """Normalize model-specific channel tokens into <think>/</think> tags."""
+    for marker, replacement in _SORTED_MARKERS:
+        text = text.replace(marker, replacement)
+    text = text.replace("<|return|>", "\n")
+    return _SPECIAL_TOKEN_RE.sub("", text)
+
+
+class _StreamNormalizer:
+    """Buffers streaming text to normalize channel markers that may span chunks."""
+
+    def __init__(self):
+        self._carry = ""
+
+    def feed(self, text: str) -> str:
+        """Feed a text chunk. Returns normalized text ready to emit (may be empty)."""
+        self._carry += text
+        if len(self._carry) <= _STREAM_CARRY_SIZE:
+            return ""
+        process = self._carry[:-_STREAM_CARRY_SIZE]
+        self._carry = self._carry[-_STREAM_CARRY_SIZE:]
+        return _normalize_channel_markers(process)
+
+    def flush(self) -> str:
+        """Flush remaining buffered text."""
+        result = _normalize_channel_markers(self._carry)
+        self._carry = ""
+        return result
 
 
 async def _apply_model_defaults(request, model_name: str) -> None:
@@ -310,11 +361,12 @@ async def chat_completions(
 
     choices = []
     for i, choice in enumerate(result.get("choices", [])):
+        raw_content = choice.get("message", {}).get("content", "")
         choices.append(ChatCompletionChoice(
             index=i,
             message=ChatMessage(
                 role=choice.get("message", {}).get("role", "assistant"),
-                content=choice.get("message", {}).get("content", ""),
+                content=_normalize_channel_markers(raw_content),
             ),
             finish_reason=choice.get("finish_reason"),
         ))
@@ -351,8 +403,24 @@ async def _stream_chat_completion(
     # Mark model active immediately to prevent idle unload during long stream startup.
     await auto_loader.touch_request(model)
     keepalive_task = asyncio.create_task(_stream_activity_keepalive(model))
+    normalizer = _StreamNormalizer()
 
     logger.debug(f"Starting streaming response for {model}")
+
+    def _make_chunk(content: str, finish_reason=None) -> dict:
+        return {
+            "data": json.dumps({
+                "id": completion_id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model,
+                "choices": [{
+                    "index": 0,
+                    "delta": {"content": content} if content else {},
+                    "finish_reason": finish_reason,
+                }],
+            })
+        }
 
     try:
         # Streaming can legitimately exceed several minutes for large models.
@@ -372,29 +440,59 @@ async def _stream_chat_completion(
                     )
                     response.raise_for_status()
 
+                sent_role = False
                 async for line in response.aiter_lines():
                     # Keep model activity fresh while stream is in progress.
                     await auto_loader.touch_request(model)
                     if line.startswith("data: "):
                         data = line[6:]
                         if data == "[DONE]":
-                            yield {"data": "[DONE]"}
                             break
 
                         try:
                             chunk = json.loads(data)
-                            # Transform chunk to match OpenAI format
+                        except json.JSONDecodeError:
+                            continue
+
+                        choices = chunk.get("choices", [])
+                        if not choices:
+                            continue
+
+                        delta = choices[0].get("delta", {})
+
+                        # Forward the role chunk as-is
+                        if "role" in delta and not sent_role:
+                            sent_role = True
                             yield {
                                 "data": json.dumps({
                                     "id": completion_id,
                                     "object": "chat.completion.chunk",
                                     "created": created,
                                     "model": model,
-                                    "choices": chunk.get("choices", []),
+                                    "choices": [{
+                                        "index": 0,
+                                        "delta": {"role": delta["role"]},
+                                        "finish_reason": None,
+                                    }],
                                 })
                             }
-                        except json.JSONDecodeError:
-                            continue
+                            # If the role chunk also has content, fall through
+                            if "content" not in delta:
+                                continue
+
+                        content = delta.get("content", "")
+                        if content:
+                            normalized = normalizer.feed(content)
+                            if normalized:
+                                yield _make_chunk(normalized)
+
+                # Flush remaining buffered text
+                remaining = normalizer.flush()
+                if remaining:
+                    yield _make_chunk(remaining)
+
+                yield _make_chunk("", finish_reason="stop")
+                yield {"data": "[DONE]"}
 
     except Exception as e:
         logger.error(
