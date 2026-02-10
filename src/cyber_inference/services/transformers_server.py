@@ -422,7 +422,7 @@ def load_model(model_path: str, device: str = "auto"):
         print(
             f"[transformers-server] CUDA device: {props.name}, "
             f"compute capability: {props.major}.{props.minor}, "
-            f"VRAM: {props.total_mem / 1024**3:.1f} GB",
+            f"VRAM: {props.total_memory / 1024**3:.1f} GB",
             flush=True,
         )
         unified = _detect_unified_memory()
