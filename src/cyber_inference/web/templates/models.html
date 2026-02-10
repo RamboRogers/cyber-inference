@@ -397,88 +397,79 @@
 
 <!-- Model Settings Modal -->
 <div id="settingsModal" class="fixed inset-0 z-50 hidden items-center justify-center bg-black/80 backdrop-blur-sm">
-    <div class="cyber-card rounded-xl w-full max-w-lg mx-4 neon-border">
-        <div class="px-6 py-4 border-b border-cyber-blue/30 flex items-center justify-between">
-            <h3 class="font-cyber text-xl text-cyber-blue">MODEL SETTINGS</h3>
+    <div class="cyber-card rounded-xl w-full max-w-lg mx-4 neon-border max-h-[85vh] flex flex-col">
+        <div class="px-6 py-3 border-b border-cyber-blue/30 flex items-center justify-between shrink-0">
+            <div>
+                <h3 class="font-cyber text-lg text-cyber-blue">MODEL SETTINGS</h3>
+                <div class="text-xs font-mono text-gray-400 mt-0.5">
+                    <span class="text-white" id="settingsModelName">-</span>
+                    <span class="text-gray-600 ml-2" id="settingsContextHint"></span>
+                </div>
+            </div>
             <button onclick="closeSettingsModal()" class="text-gray-400 hover:text-white">
-                <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
                 </svg>
             </button>
         </div>
-        <div class="p-6 space-y-5">
-            <div class="text-sm font-mono text-gray-400 mb-2">
-                <span class="text-white" id="settingsModelName">-</span>
-                <span class="text-gray-600 ml-2" id="settingsContextHint"></span>
-            </div>
+        <div class="p-5 overflow-y-auto space-y-4">
+            <p class="text-xs text-gray-600 font-mono">Defaults applied when requests don't specify values. Blank = use global/request default.</p>
 
-            <!-- Context Size -->
+            <!-- Context Size (full width - most important) -->
             <div>
-                <label class="block text-sm font-mono text-gray-400 mb-1">Context Size</label>
+                <label class="block text-xs font-mono text-gray-400 mb-1">Context Size</label>
                 <input type="number" id="settingsContextSize" min="256" step="256"
-                       class="cyber-input w-full px-4 py-2 rounded-lg font-mono"
+                       class="cyber-input w-full px-3 py-1.5 rounded-lg font-mono text-sm"
                        placeholder="Global default">
-                <p class="text-xs text-gray-600 mt-1 font-mono">Tokens of context window (blank = global default)</p>
             </div>
 
-            <!-- Temperature -->
-            <div>
-                <label class="block text-sm font-mono text-gray-400 mb-1">Temperature</label>
-                <input type="number" id="settingsTemperature" min="0" max="2" step="0.05"
-                       class="cyber-input w-full px-4 py-2 rounded-lg font-mono"
-                       placeholder="0.7">
-                <p class="text-xs text-gray-600 mt-1 font-mono">Sampling temperature 0.0-2.0 (blank = request default)</p>
-            </div>
-
-            <!-- Top P -->
-            <div>
-                <label class="block text-sm font-mono text-gray-400 mb-1">Top P</label>
-                <input type="number" id="settingsTopP" min="0" max="1" step="0.05"
-                       class="cyber-input w-full px-4 py-2 rounded-lg font-mono"
-                       placeholder="1.0">
-                <p class="text-xs text-gray-600 mt-1 font-mono">Nucleus sampling 0.0-1.0 (blank = request default)</p>
-            </div>
-
-            <!-- Top K -->
-            <div>
-                <label class="block text-sm font-mono text-gray-400 mb-1">Top K</label>
-                <input type="number" id="settingsTopK" min="0" max="200" step="1"
-                       class="cyber-input w-full px-4 py-2 rounded-lg font-mono"
-                       placeholder="40">
-                <p class="text-xs text-gray-600 mt-1 font-mono">Top-K sampling 0-200 (blank = request default)</p>
-            </div>
-
-            <!-- Max Tokens -->
-            <div>
-                <label class="block text-sm font-mono text-gray-400 mb-1">Max Tokens</label>
-                <input type="number" id="settingsMaxTokens" min="1" step="64"
-                       class="cyber-input w-full px-4 py-2 rounded-lg font-mono"
-                       placeholder="Auto">
-                <p class="text-xs text-gray-600 mt-1 font-mono">Max output tokens per response (blank = request default)</p>
-            </div>
-
-            <!-- Repeat Penalty -->
-            <div>
-                <label class="block text-sm font-mono text-gray-400 mb-1">Repeat Penalty</label>
-                <input type="number" id="settingsRepeatPenalty" min="0" max="2" step="0.05"
-                       class="cyber-input w-full px-4 py-2 rounded-lg font-mono"
-                       placeholder="1.0">
-                <p class="text-xs text-gray-600 mt-1 font-mono">Repetition penalty 0.0-2.0 (blank = request default)</p>
+            <!-- 2-column grid for sampling params -->
+            <div class="grid grid-cols-2 gap-3">
+                <div>
+                    <label class="block text-xs font-mono text-gray-400 mb-1">Temperature</label>
+                    <input type="number" id="settingsTemperature" min="0" max="2" step="0.05"
+                           class="cyber-input w-full px-3 py-1.5 rounded-lg font-mono text-sm"
+                           placeholder="0.7">
+                </div>
+                <div>
+                    <label class="block text-xs font-mono text-gray-400 mb-1">Top P</label>
+                    <input type="number" id="settingsTopP" min="0" max="1" step="0.05"
+                           class="cyber-input w-full px-3 py-1.5 rounded-lg font-mono text-sm"
+                           placeholder="1.0">
+                </div>
+                <div>
+                    <label class="block text-xs font-mono text-gray-400 mb-1">Top K</label>
+                    <input type="number" id="settingsTopK" min="0" max="200" step="1"
+                           class="cyber-input w-full px-3 py-1.5 rounded-lg font-mono text-sm"
+                           placeholder="40">
+                </div>
+                <div>
+                    <label class="block text-xs font-mono text-gray-400 mb-1">Max Tokens</label>
+                    <input type="number" id="settingsMaxTokens" min="1" step="64"
+                           class="cyber-input w-full px-3 py-1.5 rounded-lg font-mono text-sm"
+                           placeholder="Auto">
+                </div>
+                <div>
+                    <label class="block text-xs font-mono text-gray-400 mb-1">Repeat Penalty</label>
+                    <input type="number" id="settingsRepeatPenalty" min="0" max="2" step="0.05"
+                           class="cyber-input w-full px-3 py-1.5 rounded-lg font-mono text-sm"
+                           placeholder="1.0">
+                </div>
             </div>
         </div>
-        <div class="px-6 py-4 border-t border-cyber-gray flex justify-between">
+        <div class="px-5 py-3 border-t border-cyber-gray flex justify-between shrink-0">
             <button onclick="resetSettings()"
-                    class="px-4 py-2 rounded-lg font-mono text-sm text-gray-500 hover:text-gray-300 transition-colors">
+                    class="px-3 py-1.5 rounded-lg font-mono text-xs text-gray-500 hover:text-gray-300 transition-colors">
                 Reset All
             </button>
             <div class="flex space-x-3">
                 <button onclick="closeSettingsModal()"
-                        class="px-6 py-2 rounded-lg font-mono text-gray-400 hover:text-white transition-colors">
+                        class="px-4 py-1.5 rounded-lg font-mono text-sm text-gray-400 hover:text-white transition-colors">
                     Cancel
                 </button>
                 <button onclick="saveSettings()"
                         id="saveSettingsBtn"
-                        class="cyber-btn px-6 py-2 rounded-lg font-mono">
+                        class="cyber-btn px-5 py-1.5 rounded-lg font-mono text-sm">
                     Save
                 </button>
             </div>
