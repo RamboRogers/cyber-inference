@@ -443,12 +443,35 @@ def load_model(model_path: str, device: str = "auto"):
         trust_remote_code=True,
     )
 
-    _model = AutoModelForCausalLM.from_pretrained(
-        model_path,
-        device_map=device,
-        trust_remote_code=True,
-        dtype="auto",
-    )
+    load_kwargs = {
+        "device_map": device,
+        "trust_remote_code": True,
+        "dtype": "auto",
+    }
+
+    # Try AutoModelForCausalLM first; fall back for vision/multimodal architectures
+    try:
+        _model = AutoModelForCausalLM.from_pretrained(model_path, **load_kwargs)
+    except (ValueError, KeyError) as e:
+        print(f"[transformers-server] AutoModelForCausalLM failed: {e}", flush=True)
+        # Vision-language models (Qwen3-VL, etc.) need a different auto class
+        try:
+            from transformers import AutoModelForVision2Seq
+            print("[transformers-server] Trying AutoModelForVision2Seq...", flush=True)
+            _model = AutoModelForVision2Seq.from_pretrained(model_path, **load_kwargs)
+        except (ValueError, KeyError, ImportError):
+            from transformers import AutoModel
+            print("[transformers-server] Trying AutoModel...", flush=True)
+            _model = AutoModel.from_pretrained(model_path, **load_kwargs)
+    except ImportError as e:
+        # Missing optional dependency (e.g. mamba-ssm for Mamba/hybrid models)
+        print(
+            f"[transformers-server] FATAL: Missing required package: {e}\n"
+            f"[transformers-server] Install it and restart.",
+            file=sys.stderr, flush=True,
+        )
+        raise
+
     _model.eval()
 
     _device = next(_model.parameters()).device
