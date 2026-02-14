@@ -353,41 +353,41 @@
                     </div>
                 </div>
 
-                <!-- Llama 3.1 8B Instruct -->
+                <!-- Qwen3-VL 8B Instruct -->
                 <div class="bg-cyber-dark/30 rounded-lg p-4 border border-cyber-gray hover:border-amber-500/30 transition-all cursor-pointer group"
-                     onclick="downloadTransformersFromRepo('meta-llama/Llama-3.1-8B-Instruct')">
-                    <div class="flex items-center space-x-3 mb-2">
-                        <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-amber-500/20 to-blue-500/20 flex items-center justify-center group-hover:shadow-lg group-hover:shadow-amber-500/20 transition-all">
-                            <span class="text-blue-400 font-bold text-lg">L</span>
-                        </div>
-                        <div>
-                            <div class="font-mono text-white">Llama 3.1 8B Instruct</div>
-                            <div class="text-xs text-gray-500">meta-llama</div>
-                        </div>
-                    </div>
-                    <div class="text-xs text-gray-400">Meta's Llama 3.1 instruction-tuned, great balance</div>
-                    <div class="mt-2 flex gap-2">
-                        <span class="text-[10px] px-2 py-0.5 rounded bg-amber-500/10 text-amber-400">Transformers</span>
-                        <span class="text-[10px] px-2 py-0.5 rounded bg-blue-500/10 text-blue-400">8B</span>
-                    </div>
-                </div>
-
-                <!-- Qwen2.5 7B Instruct -->
-                <div class="bg-cyber-dark/30 rounded-lg p-4 border border-cyber-gray hover:border-amber-500/30 transition-all cursor-pointer group"
-                     onclick="downloadTransformersFromRepo('Qwen/Qwen2.5-7B-Instruct')">
+                     onclick="downloadTransformersFromRepo('Qwen/Qwen3-VL-8B-Instruct')">
                     <div class="flex items-center space-x-3 mb-2">
                         <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-amber-500/20 to-pink-500/20 flex items-center justify-center group-hover:shadow-lg group-hover:shadow-amber-500/20 transition-all">
                             <span class="text-pink-400 font-bold text-lg">Q</span>
                         </div>
                         <div>
-                            <div class="font-mono text-white">Qwen2.5 7B Instruct</div>
+                            <div class="font-mono text-white">Qwen3-VL 8B Instruct</div>
                             <div class="text-xs text-gray-500">Qwen</div>
                         </div>
                     </div>
-                    <div class="text-xs text-gray-400">Alibaba's latest, excellent multilingual performance</div>
+                    <div class="text-xs text-gray-400">Qwen vision-language model for multimodal chat and reasoning</div>
                     <div class="mt-2 flex gap-2">
                         <span class="text-[10px] px-2 py-0.5 rounded bg-amber-500/10 text-amber-400">Transformers</span>
-                        <span class="text-[10px] px-2 py-0.5 rounded bg-pink-500/10 text-pink-400">7B</span>
+                        <span class="text-[10px] px-2 py-0.5 rounded bg-pink-500/10 text-pink-400">8B VLM</span>
+                    </div>
+                </div>
+
+                <!-- Cosmos Reason2 8B -->
+                <div class="bg-cyber-dark/30 rounded-lg p-4 border border-cyber-gray hover:border-amber-500/30 transition-all cursor-pointer group"
+                     onclick="downloadTransformersFromRepo('nvidia/Cosmos-Reason2-8B')">
+                    <div class="flex items-center space-x-3 mb-2">
+                        <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-amber-500/20 to-cyan-500/20 flex items-center justify-center group-hover:shadow-lg group-hover:shadow-amber-500/20 transition-all">
+                            <span class="text-cyan-400 font-bold text-lg">C</span>
+                        </div>
+                        <div>
+                            <div class="font-mono text-white">Cosmos Reason2 8B</div>
+                            <div class="text-xs text-gray-500">nvidia</div>
+                        </div>
+                    </div>
+                    <div class="text-xs text-gray-400">NVIDIA reasoning-focused 8B model for edge and local inference</div>
+                    <div class="mt-2 flex gap-2">
+                        <span class="text-[10px] px-2 py-0.5 rounded bg-amber-500/10 text-amber-400">Transformers</span>
+                        <span class="text-[10px] px-2 py-0.5 rounded bg-cyan-500/10 text-cyan-400">8B</span>
                     </div>
                 </div>
             </div>
@@ -1358,4 +1358,3 @@
     }
 </script>
 {% endblock %}
-
