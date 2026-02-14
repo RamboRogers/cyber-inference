@@ -33,9 +33,10 @@ app = FastAPI(title="cyber-inference transformers server")
 
 # Global model state
 _model = None
-_tokenizer = None
+_tokenizer = None  # AutoTokenizer for text models, AutoProcessor for VLMs
 _model_name = ""
 _device = None
+_is_vlm = False
 
 _CHANNEL_MARKERS = {
     "<|start|>assistant<|channel|>analysis<|message|>": "<think>",
@@ -55,7 +56,7 @@ _SPECIAL_TOKEN_RE = re.compile(r"<\|[^>]+\|>")
 
 class ChatMessage(BaseModel):
     role: str
-    content: str
+    content: str | list = ""  # str for text, list[dict] for multimodal VLM input
 
 
 class ChatCompletionRequest(BaseModel):
@@ -126,13 +127,23 @@ def _normalize_generated_text(text: str) -> str:
     return text
 
 
-def _generate(input_ids: torch.Tensor, request) -> torch.Tensor:
-    """Run model.generate() with request parameters (blocking, run in thread)."""
-    generate_kwargs = {
-        "input_ids": input_ids,
-        "max_new_tokens": request.max_tokens,
-        "do_sample": request.temperature > 0,
-    }
+def _generate(inputs, request) -> torch.Tensor:
+    """Run model.generate() with request parameters (blocking, run in thread).
+
+    Args:
+        inputs: Either an input_ids tensor (text models) or a dict of
+                BatchFeature tensors (VLM models with pixel_values etc.).
+        request: The request object with generation parameters.
+    """
+    if isinstance(inputs, dict):
+        # VLM: unpack the full BatchFeature dict
+        generate_kwargs = dict(inputs)
+    else:
+        generate_kwargs = {"input_ids": inputs}
+
+    generate_kwargs["max_new_tokens"] = request.max_tokens
+    generate_kwargs["do_sample"] = request.temperature > 0
+
     if request.temperature > 0:
         generate_kwargs["temperature"] = request.temperature
         generate_kwargs["top_p"] = request.top_p
@@ -158,13 +169,29 @@ def _generate(input_ids: torch.Tensor, request) -> torch.Tensor:
     return output
 
 
-@app.post("/v1/chat/completions")
-async def chat_completions(request: ChatCompletionRequest):
-    if _model is None:
-        raise HTTPException(status_code=503, detail="Model not loaded")
+def _prepare_inputs(messages: list[dict]) -> tuple:
+    """Prepare model inputs from chat messages.
 
-    messages = [{"role": m.role, "content": m.content} for m in request.messages]
+    Returns:
+        (inputs, prompt_len) where inputs is either an input_ids tensor
+        (text models) or a dict of BatchFeature tensors (VLM models).
+    """
+    if _is_vlm:
+        # VLM: processor.apply_chat_template returns a BatchFeature dict
+        # with input_ids, attention_mask, pixel_values, image_grid_thw, etc.
+        inputs = _tokenizer.apply_chat_template(
+            messages,
+            tokenize=True,
+            add_generation_prompt=True,
+            return_dict=True,
+            return_tensors="pt",
+        )
+        inputs.pop("token_type_ids", None)
+        inputs = inputs.to(_model.device)
+        prompt_len = inputs["input_ids"].shape[1]
+        return inputs, prompt_len
 
+    # Text model: standard tokenizer path
     try:
         input_ids = _tokenizer.apply_chat_template(
             messages, return_tensors="pt", add_generation_prompt=True
@@ -173,21 +200,32 @@ async def chat_completions(request: ChatCompletionRequest):
         # Fallback: manual formatting
         text = ""
         for m in messages:
-            text += f"<|{m['role']}|>\n{m['content']}\n"
+            content = m["content"] if isinstance(m["content"], str) else str(m["content"])
+            text += f"<|{m['role']}|>\n{content}\n"
         text += "<|assistant|>\n"
         input_ids = _tokenizer.encode(text, return_tensors="pt")
 
     input_ids = input_ids.to(_model.device)
     prompt_len = input_ids.shape[1]
+    return input_ids, prompt_len
+
+
+@app.post("/v1/chat/completions")
+async def chat_completions(request: ChatCompletionRequest):
+    if _model is None:
+        raise HTTPException(status_code=503, detail="Model not loaded")
+
+    messages = [{"role": m.role, "content": m.content} for m in request.messages]
+    inputs, prompt_len = _prepare_inputs(messages)
 
     if request.stream:
         return StreamingResponse(
-            _stream_chat(input_ids, prompt_len, request),
+            _stream_chat(inputs, prompt_len, request),
             media_type="text/event-stream",
         )
 
     # Run generation in thread pool to avoid blocking the event loop
-    output = await asyncio.to_thread(_generate, input_ids, request)
+    output = await asyncio.to_thread(_generate, inputs, request)
     new_tokens = output[0][prompt_len:]
     text = _normalize_generated_text(
         _tokenizer.decode(new_tokens, skip_special_tokens=False)
@@ -213,13 +251,16 @@ async def chat_completions(request: ChatCompletionRequest):
     }
 
 
-async def _stream_chat(input_ids, prompt_len, request):
+async def _stream_chat(inputs, prompt_len, request):
     """Stream chat completions using TextIteratorStreamer.
 
     Generation runs in a background thread.  The streamer's blocking
     ``__next__`` calls are dispatched via ``run_in_executor`` so that
     the asyncio event loop stays responsive for health checks and
     concurrent requests.
+
+    Args:
+        inputs: Either an input_ids tensor (text) or BatchFeature dict (VLM).
     """
     from transformers import TextIteratorStreamer
 
@@ -230,12 +271,16 @@ async def _stream_chat(input_ids, prompt_len, request):
         clean_up_tokenization_spaces=False,
     )
 
-    generate_kwargs = {
-        "input_ids": input_ids,
-        "max_new_tokens": request.max_tokens,
-        "do_sample": request.temperature > 0,
-        "streamer": streamer,
-    }
+    if isinstance(inputs, dict):
+        # VLM: unpack the full BatchFeature dict
+        generate_kwargs = dict(inputs)
+    else:
+        generate_kwargs = {"input_ids": inputs}
+
+    generate_kwargs["max_new_tokens"] = request.max_tokens
+    generate_kwargs["do_sample"] = request.temperature > 0
+    generate_kwargs["streamer"] = streamer
+
     if request.temperature > 0:
         generate_kwargs["temperature"] = request.temperature
         generate_kwargs["top_p"] = request.top_p
@@ -399,14 +444,34 @@ def _detect_unified_memory() -> bool:
     return False
 
 
-def load_model(model_path: str, device: str = "auto"):
-    """Load model and tokenizer."""
-    global _model, _tokenizer, _model_name, _device
+def _detect_vlm(model_path: str) -> bool:
+    """Detect if model is a Vision-Language Model from its config.json."""
+    config_path = Path(model_path) / "config.json"
+    if not config_path.exists():
+        return False
+    try:
+        config = json.loads(config_path.read_text())
+        # Check for vision_config section (definitive VLM indicator)
+        if "vision_config" in config:
+            return True
+        # Check architectures for VL/Vision patterns
+        for arch in config.get("architectures", []):
+            if "VL" in arch or "Vision" in arch:
+                return True
+    except Exception:
+        pass
+    return False
 
-    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+def load_model(model_path: str, device: str = "auto"):
+    """Load model and tokenizer/processor."""
+    global _model, _tokenizer, _model_name, _device, _is_vlm
 
     _model_name = Path(model_path).name
+    _is_vlm = _detect_vlm(model_path)
+
     print(f"[transformers-server] Loading model: {model_path}", flush=True)
+    print(f"[transformers-server] VLM detected: {_is_vlm}", flush=True)
     print(f"[transformers-server] CUDA available: {torch.cuda.is_available()}", flush=True)
     if torch.cuda.is_available():
         props = torch.cuda.get_device_properties(0)
@@ -438,10 +503,20 @@ def load_model(model_path: str, device: str = "auto"):
     except ImportError:
         pass
 
-    _tokenizer = AutoTokenizer.from_pretrained(
-        model_path,
-        trust_remote_code=True,
-    )
+    # Load tokenizer/processor
+    if _is_vlm:
+        from transformers import AutoProcessor
+        print("[transformers-server] Using AutoProcessor (VLM)", flush=True)
+        _tokenizer = AutoProcessor.from_pretrained(
+            model_path,
+            trust_remote_code=True,
+        )
+    else:
+        from transformers import AutoTokenizer
+        _tokenizer = AutoTokenizer.from_pretrained(
+            model_path,
+            trust_remote_code=True,
+        )
 
     load_kwargs = {
         "device_map": device,
@@ -449,28 +524,40 @@ def load_model(model_path: str, device: str = "auto"):
         "dtype": "auto",
     }
 
-    # Try AutoModelForCausalLM first; fall back for vision/multimodal architectures
-    try:
-        _model = AutoModelForCausalLM.from_pretrained(model_path, **load_kwargs)
-    except (ValueError, KeyError) as e:
-        print(f"[transformers-server] AutoModelForCausalLM failed: {e}", flush=True)
-        # Vision-language models (Qwen3-VL, etc.) need a different auto class
+    # Load model with appropriate auto class
+    if _is_vlm:
+        from transformers import AutoModelForVision2Seq
+        print("[transformers-server] Using AutoModelForVision2Seq (VLM)", flush=True)
         try:
-            from transformers import AutoModelForVision2Seq
-            print("[transformers-server] Trying AutoModelForVision2Seq...", flush=True)
             _model = AutoModelForVision2Seq.from_pretrained(model_path, **load_kwargs)
-        except (ValueError, KeyError, ImportError):
-            from transformers import AutoModel
-            print("[transformers-server] Trying AutoModel...", flush=True)
-            _model = AutoModel.from_pretrained(model_path, **load_kwargs)
-    except ImportError as e:
-        # Missing optional dependency (e.g. mamba-ssm for Mamba/hybrid models)
-        print(
-            f"[transformers-server] FATAL: Missing required package: {e}\n"
-            f"[transformers-server] Install it and restart.",
-            file=sys.stderr, flush=True,
-        )
-        raise
+        except ImportError as e:
+            print(
+                f"[transformers-server] FATAL: Missing required package: {e}\n"
+                f"[transformers-server] Install it and restart.",
+                file=sys.stderr, flush=True,
+            )
+            raise
+    else:
+        from transformers import AutoModelForCausalLM
+        try:
+            _model = AutoModelForCausalLM.from_pretrained(model_path, **load_kwargs)
+        except (ValueError, KeyError) as e:
+            print(f"[transformers-server] AutoModelForCausalLM failed: {e}", flush=True)
+            try:
+                from transformers import AutoModelForVision2Seq
+                print("[transformers-server] Trying AutoModelForVision2Seq...", flush=True)
+                _model = AutoModelForVision2Seq.from_pretrained(model_path, **load_kwargs)
+            except (ValueError, KeyError, ImportError):
+                from transformers import AutoModel
+                print("[transformers-server] Trying AutoModel...", flush=True)
+                _model = AutoModel.from_pretrained(model_path, **load_kwargs)
+        except ImportError as e:
+            print(
+                f"[transformers-server] FATAL: Missing required package: {e}\n"
+                f"[transformers-server] Install it and restart.",
+                file=sys.stderr, flush=True,
+            )
+            raise
 
     _model.eval()
 

@@ -274,20 +274,49 @@ class ModelManager:
         try:
             import json
             config = json.loads(config_path.read_text())
-            # Priority order of config keys that indicate context length
-            for key in (
+            context_keys = (
                 "max_position_embeddings",
                 "n_positions",
                 "max_sequence_length",
                 "seq_length",
                 "sliding_window",
-            ):
+            )
+            # Check top-level config first
+            for key in context_keys:
                 value = config.get(key)
                 if isinstance(value, int) and value > 0:
                     logger.debug(f"Transformers context length from {key}: {value}")
                     return value
+            # VLM models (Qwen3-VL etc.) nest context length under text_config
+            for nested_key in ("text_config", "language_config", "llm_config"):
+                nested = config.get(nested_key, {})
+                if not isinstance(nested, dict):
+                    continue
+                for key in context_keys:
+                    value = nested.get(key)
+                    if isinstance(value, int) and value > 0:
+                        logger.debug(f"Transformers context length from {nested_key}.{key}: {value}")
+                        return value
         except Exception as e:
             logger.debug(f"Failed to read config.json from {model_dir}: {e}")
+        return None
+
+    @staticmethod
+    def _detect_vlm_from_config(model_dir: Path) -> Optional[str]:
+        """Detect VLM model type from config.json architectures/vision_config."""
+        config_path = model_dir / "config.json"
+        if not config_path.exists():
+            return None
+        try:
+            import json
+            config = json.loads(config_path.read_text())
+            if "vision_config" in config:
+                return "vlm"
+            for arch in config.get("architectures", []):
+                if "VL" in arch or "Vision" in arch:
+                    return "vlm"
+        except Exception:
+            pass
         return None
 
     @staticmethod
@@ -993,6 +1022,7 @@ class ModelManager:
 
                     embedding_patterns = ["embed", "bge", "e5-", "gte-", "stella", "nomic"]
                     transcription_patterns = ["whisper", "distil-whisper", "faster-whisper"]
+                    vlm_patterns = ["vlm", "-vl-", "-vl ", "vision", "llava", "cosmos-reason"]
 
                     if any(pattern in check_string for pattern in embedding_patterns):
                         existing.model_type = "embedding"
@@ -1000,6 +1030,13 @@ class ModelManager:
                     elif any(pattern in check_string for pattern in transcription_patterns):
                         existing.model_type = "transcription"
                         logger.info("  Auto-detected model type: transcription")
+                    elif any(pattern in check_string for pattern in vlm_patterns):
+                        existing.model_type = "vlm"
+                        logger.info("  Auto-detected model type: vlm")
+                    elif file_path.is_dir():
+                        existing.model_type = self._detect_vlm_from_config(file_path)
+                        if existing.model_type:
+                            logger.info("  Auto-detected model type from config.json: vlm")
 
                 await session.commit()
                 logger.debug(f"Updated existing model record: {model_name}")
@@ -1014,6 +1051,7 @@ class ModelManager:
 
             embedding_patterns = ["embed", "bge", "e5-", "gte-", "stella", "nomic"]
             transcription_patterns = ["whisper", "distil-whisper", "faster-whisper"]
+            vlm_patterns = ["vlm", "-vl-", "-vl ", "vision", "llava", "cosmos-reason"]
 
             if any(pattern in check_string for pattern in embedding_patterns):
                 model_type = "embedding"
@@ -1021,6 +1059,13 @@ class ModelManager:
             elif any(pattern in check_string for pattern in transcription_patterns):
                 model_type = "transcription"
                 logger.info("  Auto-detected model type: transcription")
+            elif any(pattern in check_string for pattern in vlm_patterns):
+                model_type = "vlm"
+                logger.info("  Auto-detected model type: vlm")
+            elif file_path.is_dir():
+                model_type = self._detect_vlm_from_config(file_path)
+                if model_type:
+                    logger.info("  Auto-detected model type from config.json: vlm")
 
             # Create new record
             model = Model(
