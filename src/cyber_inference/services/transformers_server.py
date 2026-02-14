@@ -21,6 +21,7 @@ import sys
 import threading
 import time
 import uuid
+from collections.abc import Mapping
 from pathlib import Path
 
 import torch
@@ -33,7 +34,8 @@ app = FastAPI(title="cyber-inference transformers server")
 
 # Global model state
 _model = None
-_tokenizer = None  # AutoTokenizer for text models, AutoProcessor for VLMs
+_processor = None  # AutoProcessor for VLM models
+_tokenizer = None  # Tokenizer used for encode/decode/streaming across all model types
 _model_name = ""
 _device = None
 _is_vlm = False
@@ -127,6 +129,33 @@ def _normalize_generated_text(text: str) -> str:
     return text
 
 
+def _get_tokenizer():
+    """Return the active tokenizer or raise a clear error if uninitialized."""
+    if _tokenizer is None:
+        raise RuntimeError("Tokenizer not initialized")
+    return _tokenizer
+
+
+def _get_pad_token_id() -> int | None:
+    """Resolve pad token ID for generation with robust fallbacks."""
+    tokenizer = _get_tokenizer()
+    pad_token_id = getattr(tokenizer, "pad_token_id", None)
+    if pad_token_id is not None:
+        return pad_token_id
+
+    eos_token_id = getattr(tokenizer, "eos_token_id", None)
+    if isinstance(eos_token_id, (list, tuple)):
+        eos_token_id = eos_token_id[0] if eos_token_id else None
+    if eos_token_id is not None:
+        return eos_token_id
+
+    model_config = getattr(_model, "config", None)
+    model_eos_token_id = getattr(model_config, "eos_token_id", None)
+    if isinstance(model_eos_token_id, (list, tuple)):
+        model_eos_token_id = model_eos_token_id[0] if model_eos_token_id else None
+    return model_eos_token_id
+
+
 def _generate(inputs, request) -> torch.Tensor:
     """Run model.generate() with request parameters (blocking, run in thread).
 
@@ -135,7 +164,7 @@ def _generate(inputs, request) -> torch.Tensor:
                 BatchFeature tensors (VLM models with pixel_values etc.).
         request: The request object with generation parameters.
     """
-    if isinstance(inputs, dict):
+    if isinstance(inputs, Mapping):
         # VLM: unpack the full BatchFeature dict
         generate_kwargs = dict(inputs)
     else:
@@ -147,26 +176,110 @@ def _generate(inputs, request) -> torch.Tensor:
     if request.temperature > 0:
         generate_kwargs["temperature"] = request.temperature
         generate_kwargs["top_p"] = request.top_p
+
+    tokenizer = _get_tokenizer()
     if request.stop:
         from transformers import StoppingCriteria, StoppingCriteriaList
 
-        stop_ids = [_tokenizer.encode(s, add_special_tokens=False) for s in request.stop]
+        stop_ids = []
+        for stop_seq in request.stop:
+            encoded = tokenizer.encode(stop_seq, add_special_tokens=False)
+            if encoded:
+                stop_ids.append(encoded)
 
-        class StopOnTokens(StoppingCriteria):
-            def __call__(self, ids, scores, **kwargs):
-                for stop_seq in stop_ids:
-                    if ids[0][-len(stop_seq):].tolist() == stop_seq:
-                        return True
-                return False
+        if stop_ids:
+            class StopOnTokens(StoppingCriteria):
+                def __call__(self, ids, scores, **kwargs):
+                    for stop_seq in stop_ids:
+                        if ids[0][-len(stop_seq):].tolist() == stop_seq:
+                            return True
+                    return False
 
-        generate_kwargs["stopping_criteria"] = StoppingCriteriaList([StopOnTokens()])
+            generate_kwargs["stopping_criteria"] = StoppingCriteriaList([StopOnTokens()])
 
-    if _tokenizer.eos_token_id is not None:
-        generate_kwargs["pad_token_id"] = _tokenizer.eos_token_id
+    pad_token_id = _get_pad_token_id()
+    if pad_token_id is not None:
+        generate_kwargs["pad_token_id"] = pad_token_id
 
     with torch.inference_mode():
         output = _model.generate(**generate_kwargs)
     return output
+
+
+def _normalize_vlm_content_part(part) -> dict:
+    """Normalize a single VLM content part into processor-compatible format."""
+    if isinstance(part, dict):
+        data = dict(part)
+        part_type = data.get("type")
+
+        # OpenAI-style image parts need conversion for HF ProcessorMixin.
+        # Processor chat template expects {"type":"image", "url|image|path|base64": ...}
+        # while OpenAI clients send {"type":"image_url", "image_url": {"url": ...}}.
+        if part_type in {"image_url", "input_image"}:
+            image_value = data.get("image_url")
+            if isinstance(image_value, dict):
+                image_value = (
+                    image_value.get("url")
+                    or image_value.get("image")
+                    or image_value.get("path")
+                    or image_value.get("base64")
+                )
+            if image_value is None:
+                image_value = (
+                    data.get("url")
+                    or data.get("image")
+                    or data.get("path")
+                    or data.get("base64")
+                )
+
+            normalized = {"type": "image"}
+            if image_value is not None:
+                normalized["url"] = image_value if isinstance(image_value, str) else str(image_value)
+            return normalized
+
+        if part_type == "image":
+            if "image_url" in data and "url" not in data:
+                image_value = data["image_url"]
+                if isinstance(image_value, dict):
+                    image_value = image_value.get("url")
+                if isinstance(image_value, str):
+                    data["url"] = image_value
+            return data
+
+        if part_type == "text" and "text" not in data:
+            data["text"] = ""
+        return data
+
+    if isinstance(part, str):
+        return {"type": "text", "text": part}
+
+    return {"type": "text", "text": str(part)}
+
+
+def _normalize_vlm_messages(messages: list[dict]) -> list[dict]:
+    """Normalize OpenAI-style chat messages for VLM processor chat templates."""
+    normalized_messages: list[dict] = []
+    for message in messages:
+        role = message.get("role", "user")
+        content = message.get("content", "")
+
+        if isinstance(content, list):
+            normalized_content = [_normalize_vlm_content_part(part) for part in content]
+        elif isinstance(content, dict):
+            if "type" in content:
+                normalized_content = [_normalize_vlm_content_part(content)]
+            elif "image_url" in content:
+                normalized_content = [
+                    _normalize_vlm_content_part({"type": "image_url", "image_url": content["image_url"]})
+                ]
+            else:
+                normalized_content = [{"type": "text", "text": str(content)}]
+        else:
+            normalized_content = [{"type": "text", "text": str(content)}]
+
+        normalized_messages.append({"role": role, "content": normalized_content})
+
+    return normalized_messages
 
 
 def _prepare_inputs(messages: list[dict]) -> tuple:
@@ -177,10 +290,14 @@ def _prepare_inputs(messages: list[dict]) -> tuple:
         (text models) or a dict of BatchFeature tensors (VLM models).
     """
     if _is_vlm:
+        if _processor is None:
+            raise RuntimeError("Processor not initialized for VLM model")
+
         # VLM: processor.apply_chat_template returns a BatchFeature dict
         # with input_ids, attention_mask, pixel_values, image_grid_thw, etc.
-        inputs = _tokenizer.apply_chat_template(
-            messages,
+        normalized_messages = _normalize_vlm_messages(messages)
+        inputs = _processor.apply_chat_template(
+            normalized_messages,
             tokenize=True,
             add_generation_prompt=True,
             return_dict=True,
@@ -189,11 +306,12 @@ def _prepare_inputs(messages: list[dict]) -> tuple:
         inputs.pop("token_type_ids", None)
         inputs = inputs.to(_model.device)
         prompt_len = inputs["input_ids"].shape[1]
-        return inputs, prompt_len
+        return dict(inputs), prompt_len
 
     # Text model: standard tokenizer path
+    tokenizer = _get_tokenizer()
     try:
-        input_ids = _tokenizer.apply_chat_template(
+        input_ids = tokenizer.apply_chat_template(
             messages, return_tensors="pt", add_generation_prompt=True
         )
     except Exception:
@@ -203,7 +321,7 @@ def _prepare_inputs(messages: list[dict]) -> tuple:
             content = m["content"] if isinstance(m["content"], str) else str(m["content"])
             text += f"<|{m['role']}|>\n{content}\n"
         text += "<|assistant|>\n"
-        input_ids = _tokenizer.encode(text, return_tensors="pt")
+        input_ids = tokenizer.encode(text, return_tensors="pt")
 
     input_ids = input_ids.to(_model.device)
     prompt_len = input_ids.shape[1]
@@ -227,8 +345,9 @@ async def chat_completions(request: ChatCompletionRequest):
     # Run generation in thread pool to avoid blocking the event loop
     output = await asyncio.to_thread(_generate, inputs, request)
     new_tokens = output[0][prompt_len:]
+    tokenizer = _get_tokenizer()
     text = _normalize_generated_text(
-        _tokenizer.decode(new_tokens, skip_special_tokens=False)
+        tokenizer.decode(new_tokens, skip_special_tokens=False)
     ).strip()
 
     return {
@@ -264,14 +383,15 @@ async def _stream_chat(inputs, prompt_len, request):
     """
     from transformers import TextIteratorStreamer
 
+    tokenizer = _get_tokenizer()
     streamer = TextIteratorStreamer(
-        _tokenizer,
+        tokenizer,
         skip_prompt=True,
         skip_special_tokens=False,
         clean_up_tokenization_spaces=False,
     )
 
-    if isinstance(inputs, dict):
+    if isinstance(inputs, Mapping):
         # VLM: unpack the full BatchFeature dict
         generate_kwargs = dict(inputs)
     else:
@@ -285,8 +405,9 @@ async def _stream_chat(inputs, prompt_len, request):
         generate_kwargs["temperature"] = request.temperature
         generate_kwargs["top_p"] = request.top_p
 
-    if _tokenizer.eos_token_id is not None:
-        generate_kwargs["pad_token_id"] = _tokenizer.eos_token_id
+    pad_token_id = _get_pad_token_id()
+    if pad_token_id is not None:
+        generate_kwargs["pad_token_id"] = pad_token_id
 
     generation_error: list[BaseException] = []
 
@@ -369,12 +490,13 @@ async def completions(request: CompletionRequest):
     if _model is None:
         raise HTTPException(status_code=503, detail="Model not loaded")
 
-    input_ids = _tokenizer.encode(request.prompt, return_tensors="pt").to(_model.device)
+    tokenizer = _get_tokenizer()
+    input_ids = tokenizer.encode(request.prompt, return_tensors="pt").to(_model.device)
     prompt_len = input_ids.shape[1]
 
     output = await asyncio.to_thread(_generate, input_ids, request)
     new_tokens = output[0][prompt_len:]
-    text = _tokenizer.decode(new_tokens, skip_special_tokens=True)
+    text = tokenizer.decode(new_tokens, skip_special_tokens=True)
 
     return {
         "id": f"cmpl-{uuid.uuid4().hex[:8]}",
@@ -403,9 +525,10 @@ async def embeddings(request: EmbeddingRequest):
 
     inputs = request.input if isinstance(request.input, list) else [request.input]
     all_embeddings = []
+    tokenizer = _get_tokenizer()
 
     for i, text in enumerate(inputs):
-        tokens = _tokenizer(text, return_tensors="pt", truncation=True).to(_model.device)
+        tokens = tokenizer(text, return_tensors="pt", truncation=True).to(_model.device)
         with torch.inference_mode():
             output = _model(**tokens, output_hidden_states=True)
         # Use last hidden state mean pooling
@@ -465,10 +588,12 @@ def _detect_vlm(model_path: str) -> bool:
 
 def load_model(model_path: str, device: str = "auto"):
     """Load model and tokenizer/processor."""
-    global _model, _tokenizer, _model_name, _device, _is_vlm
+    global _model, _processor, _tokenizer, _model_name, _device, _is_vlm
 
     _model_name = Path(model_path).name
     _is_vlm = _detect_vlm(model_path)
+    _processor = None
+    _tokenizer = None
 
     print(f"[transformers-server] Loading model: {model_path}", flush=True)
     print(f"[transformers-server] VLM detected: {_is_vlm}", flush=True)
@@ -507,16 +632,28 @@ def load_model(model_path: str, device: str = "auto"):
     if _is_vlm:
         from transformers import AutoProcessor
         print("[transformers-server] Using AutoProcessor (VLM)", flush=True)
-        _tokenizer = AutoProcessor.from_pretrained(
+        _processor = AutoProcessor.from_pretrained(
             model_path,
             trust_remote_code=True,
         )
+        _tokenizer = getattr(_processor, "tokenizer", None)
+        if _tokenizer is None:
+            raise RuntimeError(
+                "[transformers-server] VLM processor did not provide a tokenizer attribute"
+            )
     else:
         from transformers import AutoTokenizer
         _tokenizer = AutoTokenizer.from_pretrained(
             model_path,
             trust_remote_code=True,
         )
+
+    processor_name = _processor.__class__.__name__ if _processor is not None else "None"
+    tokenizer_name = _tokenizer.__class__.__name__ if _tokenizer is not None else "None"
+    print(
+        f"[transformers-server] Processor: {processor_name}, Tokenizer: {tokenizer_name}",
+        flush=True,
+    )
 
     load_kwargs = {
         "device_map": device,
