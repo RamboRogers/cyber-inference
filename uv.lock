@@ -436,6 +436,7 @@ dependencies = [
     { name = "httpx" },
     { name = "huggingface-hub" },
     { name = "jinja2" },
+    { name = "kernels" },
     { name = "psutil" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
@@ -477,6 +478,7 @@ requires-dist = [
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.28.0" },
     { name = "huggingface-hub", specifier = ">=0.26.0" },
     { name = "jinja2", specifier = ">=3.1.0" },
+    { name = "kernels", specifier = ">=0.10.0" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.13.0" },
     { name = "psutil", specifier = ">=6.0.0" },
     { name = "pydantic", specifier = ">=2.10.0" },
@@ -727,6 +729,20 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/df/bf/f7da0350254c0ed7c72f3e33cef02e048281fec7ecec5f032d4aac52226b/jinja2-3.1.6.tar.gz", hash = "sha256:0137fb05990d35f1275a587e9aee6d56da821fc83491a0fb838183be43f66d6d", size = 245115, upload-time = "2025-03-05T20:05:02.478Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/62/a1/3d680cbfd5f4b8f15abc1d571870c5fc3e594bb582bc3b64ea099db13e56/jinja2-3.1.6-py3-none-any.whl", hash = "sha256:85ece4451f492d0c13c5dd7c13a64681a86afae63a5f347908daf103ce6d2f67", size = 134899, upload-time = "2025-03-05T20:05:00.369Z" },
+]
+
+[[package]]
+name = "kernels"
+version = "0.12.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "huggingface-hub" },
+    { name = "packaging" },
+    { name = "pyyaml" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/5d/c5/d9bd5f3332b288bf3e771a42b7c3c9d2af8daa58c682a84c4e0c83058d62/kernels-0.12.1.tar.gz", hash = "sha256:41e31ef167add0062cdc302a943ce287194c13b5af12b82a5fa76e7353ca0042", size = 56712, upload-time = "2026-01-26T16:15:48.319Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4b/ab/6d1453b2a1b0a473e107745ef4d4f79241f6ef0ed8a371d62e93b4100bee/kernels-0.12.1-py3-none-any.whl", hash = "sha256:4569fe00bc6a2b0f2cccff81841d7917af143c786ade152c3b2a78f61097c757", size = 55110, upload-time = "2026-01-26T16:15:46.951Z" },
 ]
 
 [[package]]
