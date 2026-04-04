@@ -527,3 +527,23 @@ async def test_web_logs_page():
 
         assert response.status_code == 200
         assert "text/html" in response.headers.get("content-type", "")
+
+
+@pytest.mark.asyncio
+async def test_base_layout_uses_local_assets_only():
+    """The shared web layout should not require external runtime CSS/JS/font/image assets."""
+    async with make_test_client() as client:
+        response = await client.get("/")
+
+    assert response.status_code == 200
+    html = response.text
+    assert "/static/css/app.css" in html
+    assert "/static/images/ramborogers.png" in html
+
+    for blocked_asset_host in (
+        "cdn.tailwindcss.com",
+        "fonts.googleapis.com",
+        "fonts.gstatic.com",
+        "raw.githubusercontent.com",
+    ):
+        assert blocked_asset_host not in html

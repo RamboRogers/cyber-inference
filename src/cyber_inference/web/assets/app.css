@@ -1,0 +1,239 @@
+@font-face {
+  font-family: 'Orbitron';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/static/fonts/orbitron-400.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'Orbitron';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('/static/fonts/orbitron-500.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'Orbitron';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('/static/fonts/orbitron-600.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'Orbitron';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('/static/fonts/orbitron-700.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'Orbitron';
+  font-style: normal;
+  font-weight: 800;
+  font-display: swap;
+  src: url('/static/fonts/orbitron-800.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'Orbitron';
+  font-style: normal;
+  font-weight: 900;
+  font-display: swap;
+  src: url('/static/fonts/orbitron-900.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'Rajdhani';
+  font-style: normal;
+  font-weight: 300;
+  font-display: swap;
+  src: url('/static/fonts/rajdhani-300.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'Rajdhani';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/static/fonts/rajdhani-400.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'Rajdhani';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('/static/fonts/rajdhani-500.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'Rajdhani';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('/static/fonts/rajdhani-600.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'Rajdhani';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('/static/fonts/rajdhani-700.ttf') format('truetype');
+}
+@font-face {
+  font-family: 'Share Tech Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/static/fonts/share-tech-mono-400.ttf') format('truetype');
+}
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer components {
+  .nav-link {
+    @apply flex items-center gap-2 px-3 py-1.5 rounded-lg text-gray-400 hover:text-cyber-neon hover:bg-cyber-neon/10 transition-all duration-200 text-sm font-medium;
+  }
+
+  .nav-link.active {
+    @apply text-cyber-neon bg-cyber-neon/15 shadow-sm shadow-cyber-neon/20;
+  }
+}
+
+html,
+body {
+  background-color: #0a0a0f !important;
+}
+
+body {
+  background: linear-gradient(135deg, #0a0a0f 0%, #12121a 50%, #0d0d14 100%) !important;
+  min-height: 100vh;
+}
+
+.scanlines::before {
+  content: '';
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 255, 159, 0.03) 2px,
+    rgba(0, 255, 159, 0.03) 4px
+  );
+  pointer-events: none;
+  z-index: 1000;
+}
+
+.neon-text {
+  text-shadow: 0 0 5px #00ff9f, 0 0 10px #00ff9f, 0 0 20px #00ff9f, 0 0 40px #00ff9f;
+}
+
+.neon-text-subtle {
+  text-shadow: 0 0 5px #00ff9f, 0 0 10px #00ff9f;
+}
+
+.neon-border {
+  border: 1px solid #00ff9f;
+  box-shadow: 0 0 5px #00ff9f, inset 0 0 5px rgba(0, 255, 159, 0.1);
+}
+
+.neon-border-pulse {
+  animation: borderPulse 2s ease-in-out infinite;
+}
+
+@keyframes borderPulse {
+  0%,
+  100% {
+    box-shadow: 0 0 5px #00ff9f, inset 0 0 5px rgba(0, 255, 159, 0.1);
+  }
+  50% {
+    box-shadow: 0 0 20px #00ff9f, inset 0 0 10px rgba(0, 255, 159, 0.2);
+  }
+}
+
+.cyber-card {
+  background: linear-gradient(135deg, rgba(26, 26, 36, 0.9) 0%, rgba(18, 18, 26, 0.95) 100%);
+  border: 1px solid rgba(0, 255, 159, 0.3);
+  backdrop-filter: blur(10px);
+}
+
+.cyber-card:hover {
+  border-color: rgba(0, 255, 159, 0.6);
+  box-shadow: 0 0 20px rgba(0, 255, 159, 0.2);
+}
+
+.cyber-btn {
+  background: linear-gradient(135deg, rgba(0, 255, 159, 0.1) 0%, rgba(0, 255, 159, 0.05) 100%);
+  border: 1px solid #00ff9f;
+  color: #00ff9f;
+  transition: all 0.3s ease;
+}
+
+.cyber-btn:hover {
+  background: rgba(0, 255, 159, 0.2);
+  box-shadow: 0 0 20px rgba(0, 255, 159, 0.4);
+  transform: translateY(-2px);
+}
+
+.cyber-btn-danger {
+  border-color: #ff3333;
+  color: #ff3333;
+}
+
+.cyber-btn-danger:hover {
+  background: rgba(255, 51, 51, 0.2);
+  box-shadow: 0 0 20px rgba(255, 51, 51, 0.4);
+}
+
+.cyber-input {
+  background: rgba(10, 10, 15, 0.8);
+  border: 1px solid rgba(0, 255, 159, 0.3);
+  color: #00ff9f;
+  transition: all 0.3s ease;
+}
+
+.cyber-input:focus {
+  border-color: #00ff9f;
+  box-shadow: 0 0 10px rgba(0, 255, 159, 0.3);
+  outline: none;
+}
+
+.cyber-input::placeholder {
+  color: rgba(0, 255, 159, 0.4);
+}
+
+.cyber-progress {
+  background: rgba(0, 255, 159, 0.1);
+  border: 1px solid rgba(0, 255, 159, 0.3);
+}
+
+.cyber-progress-bar {
+  background: linear-gradient(90deg, #00ff9f 0%, #00cc7f 100%);
+  box-shadow: 0 0 10px #00ff9f;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0a0a0f;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #00ff9f40;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #00ff9f60;
+}
+
+.grid-pattern {
+  background-image:
+    linear-gradient(rgba(0, 255, 159, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 255, 159, 0.03) 1px, transparent 1px);
+  background-size: 50px 50px;
+}

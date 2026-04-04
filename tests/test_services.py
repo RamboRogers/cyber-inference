@@ -415,6 +415,17 @@ class TestAutoLoader:
         assert process_manager.start_server.await_args.kwargs["context_size"] == 131072
 
 
+def test_vendored_web_assets_exist():
+    """Required vendored frontend assets should exist in the repo."""
+    root = Path("src/cyber_inference/web/static")
+    for asset_path in (
+        "css/app.css",
+        "images/ramborogers.png",
+        "fonts/orbitron-400.ttf",
+    ):
+        assert (root / asset_path).exists()
+
+
 class TestDownloadProgressEvents:
     """Tests for download progress event shaping."""
 
