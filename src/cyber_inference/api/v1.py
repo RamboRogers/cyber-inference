@@ -317,6 +317,54 @@ async def _apply_model_defaults(request, model_name: str, server_type: str) -> N
             setattr(request, request_field, value)
 
 
+def _tool_choice_requests_tools(tool_choice: str | dict[str, object] | None) -> bool:
+    """Return True when tool_choice makes tool support part of the request contract."""
+    if tool_choice is None:
+        return False
+    if isinstance(tool_choice, str):
+        return tool_choice not in {"auto", "none"}
+    return True
+
+
+def _request_uses_tool_calling(request: ChatCompletionRequest) -> bool:
+    """Detect whether a chat request depends on tool-calling support."""
+    if request.tools:
+        return True
+    if request.parallel_tool_calls is True:
+        return True
+    if _tool_choice_requests_tools(request.tool_choice):
+        return True
+    return any(
+        message.role == "tool" or message.tool_calls or message.tool_call_id
+        for message in request.messages
+    )
+
+
+async def _validate_tool_calling_request(
+    request: ChatCompletionRequest,
+    model_name: str,
+    server_type: str,
+) -> None:
+    """Reject tool-calling requests when runtime capability is unavailable."""
+    if not _request_uses_tool_calling(request):
+        return
+    if server_type != "llama":
+        raise HTTPException(
+            status_code=400,
+            detail="Tool calling is only available for llama-backed chat models.",
+        )
+
+    status_info = await get_auto_loader().get_model_status(model_name)
+    effective_config = status_info.get("effective_config", {})
+    tool_calling = effective_config.get("tool_calling", {}) if isinstance(effective_config, dict) else {}
+    if not isinstance(tool_calling, dict) or tool_calling.get("status") != "supported":
+        warnings = tool_calling.get("warnings", []) if isinstance(tool_calling, dict) else []
+        detail = "Tool calling is not available for this loaded model/template."
+        if isinstance(warnings, list) and warnings:
+            detail = f"{detail} {warnings[0]}"
+        raise HTTPException(status_code=400, detail=detail)
+
+
 @router.get("/models")
 async def list_models(db: AsyncSession = Depends(get_db)) -> ModelsResponse:
     """
@@ -393,6 +441,7 @@ async def chat_completions(
     # Determine server type for engine-specific behavior
     server_type = _get_server_type(request.model)
     await _apply_model_defaults(request, request.model, server_type)
+    await _validate_tool_calling_request(request, request.model, server_type)
 
     # Prepare request for the inference server
     token_limit = request.max_tokens or 512
@@ -402,6 +451,8 @@ async def chat_completions(
                 "role": m.role,
                 "content": _serialize_message_content(m.content),
                 **({"name": m.name} if m.name else {}),
+                **({"tool_calls": m.tool_calls} if m.tool_calls else {}),
+                **({"tool_call_id": m.tool_call_id} if m.tool_call_id else {}),
             }
             for m in request.messages
         ],
@@ -421,6 +472,12 @@ async def chat_completions(
 
     if request.stop:
         llama_request["stop"] = request.stop if isinstance(request.stop, list) else [request.stop]
+    if request.tools is not None:
+        llama_request["tools"] = request.tools
+    if request.tool_choice is not None:
+        llama_request["tool_choice"] = request.tool_choice
+    if request.parallel_tool_calls is not None:
+        llama_request["parallel_tool_calls"] = request.parallel_tool_calls
 
     if request.stream:
         return EventSourceResponse(
@@ -454,13 +511,16 @@ async def chat_completions(
 
     choices = []
     for i, choice in enumerate(result.get("choices", [])):
-        raw_content = choice.get("message", {}).get("content", "")
+        raw_message = choice.get("message", {})
+        raw_content = raw_message.get("content")
         choices.append(ChatCompletionChoice(
             index=i,
             message=ChatMessage(
-                role=choice.get("message", {}).get("role", "assistant"),
-                content=_normalize_channel_markers(raw_content),
-                name=None,
+                role=raw_message.get("role", "assistant"),
+                content=_normalize_channel_markers(raw_content) if isinstance(raw_content, str) else raw_content,
+                name=raw_message.get("name"),
+                tool_calls=raw_message.get("tool_calls"),
+                tool_call_id=raw_message.get("tool_call_id"),
             ),
             finish_reason=choice.get("finish_reason"),
         ))
@@ -498,10 +558,11 @@ async def _stream_chat_completion(
     await auto_loader.touch_request(model)
     keepalive_task = asyncio.create_task(_stream_activity_keepalive(model))
     normalizer = _StreamNormalizer()
+    finish_reason = "stop"
 
     logger.debug(f"Starting streaming response for {model}")
 
-    def _make_chunk(content: str, finish_reason=None) -> dict:
+    def _make_chunk(delta: dict[str, object] | None = None, finish_reason=None) -> dict:
         return {
             "data": json.dumps({
                 "id": completion_id,
@@ -510,7 +571,7 @@ async def _stream_chat_completion(
                 "model": model,
                 "choices": [{
                     "index": 0,
-                    "delta": {"content": content} if content else {},
+                    "delta": delta or {},
                     "finish_reason": finish_reason,
                 }],
             })
@@ -553,39 +614,33 @@ async def _stream_chat_completion(
                             continue
 
                         delta = choices[0].get("delta", {})
+                        emitted_delta: dict[str, object] = {}
+                        chunk_finish_reason = choices[0].get("finish_reason")
+                        if chunk_finish_reason is not None:
+                            finish_reason = chunk_finish_reason
 
-                        # Forward the role chunk as-is
                         if "role" in delta and not sent_role:
                             sent_role = True
-                            yield {
-                                "data": json.dumps({
-                                    "id": completion_id,
-                                    "object": "chat.completion.chunk",
-                                    "created": created,
-                                    "model": model,
-                                    "choices": [{
-                                        "index": 0,
-                                        "delta": {"role": delta["role"]},
-                                        "finish_reason": None,
-                                    }],
-                                })
-                            }
-                            # If the role chunk also has content, fall through
-                            if "content" not in delta:
-                                continue
+                            emitted_delta["role"] = delta["role"]
 
-                        content = delta.get("content", "")
-                        if content:
+                        if "tool_calls" in delta:
+                            emitted_delta["tool_calls"] = delta["tool_calls"]
+
+                        content = delta.get("content")
+                        if isinstance(content, str) and content:
                             normalized = normalizer.feed(content)
                             if normalized:
-                                yield _make_chunk(normalized)
+                                emitted_delta["content"] = normalized
+
+                        if emitted_delta:
+                            yield _make_chunk(emitted_delta)
 
                 # Flush remaining buffered text
                 remaining = normalizer.flush()
                 if remaining:
-                    yield _make_chunk(remaining)
+                    yield _make_chunk({"content": remaining})
 
-                yield _make_chunk("", finish_reason="stop")
+                yield _make_chunk({}, finish_reason=finish_reason)
                 yield {"data": "[DONE]"}
 
     except Exception as e:

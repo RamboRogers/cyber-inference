@@ -32,6 +32,14 @@ def _parse_bool(value: object) -> bool:
     return bool(value)
 
 
+def _parse_optional_str(value: object) -> str | None:
+    """Parse optional string config values from DB/env writes."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
 ConfigCaster = Callable[[object], object] | type[int] | type[float] | type[str]
 
 CONFIG_DB_CASTS: dict[str, ConfigCaster] = {
@@ -42,7 +50,10 @@ CONFIG_DB_CASTS: dict[str, ConfigCaster] = {
     "max_loaded_models": int,
     "max_memory_percent": float,
     "llama_gpu_layers": int,
-    "admin_password": str,
+    "llama_enable_jinja": _parse_bool,
+    "llama_tool_template": _parse_optional_str,
+    "llama_tool_template_file": _parse_optional_str,
+    "admin_password": _parse_optional_str,
 }
 
 
@@ -93,6 +104,12 @@ class Settings(BaseSettings):
     llama_server_base_port: int = Field(default=8338, description="Base port for llama.cpp servers")
     llama_threads: int | None = Field(default=None, description="Number of threads (auto if None)")
     llama_gpu_layers: int = Field(default=-1, description="GPU layers (-1 for auto)")
+    llama_enable_jinja: bool = Field(default=True, description="Enable --jinja for llama chat models")
+    llama_tool_template: str | None = Field(default=None, description="Global built-in chat template override")
+    llama_tool_template_file: str | None = Field(
+        default=None,
+        description="Global chat template file override",
+    )
 
     # Security
     admin_password: str | None = Field(default=None, description="Admin password (optional)")
@@ -198,7 +215,7 @@ async def load_db_config_overrides() -> dict[str, object]:
             overrides[config.key] = cast(config.value)
         except (TypeError, ValueError):
             overrides[config.key] = config.value
-        if config.key == "admin_password":
+        if config.key in {"admin_password", "llama_tool_template", "llama_tool_template_file"}:
             value = overrides[config.key]
             if isinstance(value, str) and not value.strip():
                 overrides[config.key] = None
@@ -212,7 +229,7 @@ async def apply_db_config_overrides(settings: Settings) -> dict[str, object]:
     """
     overrides = await load_db_config_overrides()
     for key, value in overrides.items():
-        if key == "admin_password" and isinstance(value, str) and not value.strip():
+        if key in {"admin_password", "llama_tool_template", "llama_tool_template_file"} and isinstance(value, str) and not value.strip():
             value = None
         if hasattr(settings, key):
             setattr(settings, key, value)

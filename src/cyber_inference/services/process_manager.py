@@ -275,26 +275,24 @@ class ProcessManager:
             logger.warning(f"[warning]Specified mmproj not found: {mmproj_path}[/warning]")
             mmproj_path = self._find_mmproj(model_path)
 
-        cmd = [
-            str(llama_server),
-            "--model", str(model_path),
-            "--port", str(port),
-            "--host", "127.0.0.1",
-            "--ctx-size", str(ctx_size),
-            "--n-gpu-layers", str(n_gpu_layers),
-        ]
+        launch_config: dict[str, object] = {}
+        if effective_config and isinstance(effective_config.get("launch_config"), dict):
+            launch_config = {
+                str(key): value
+                for key, value in effective_config["launch_config"].items()
+            }
 
-        if mmproj_path and mmproj_path.exists():
-            cmd.extend(["--mmproj", str(mmproj_path)])
-            logger.info(f"  Using mmproj: {mmproj_path.name}")
-
-        if n_threads:
-            cmd.extend(["--threads", str(n_threads)])
-
-        # Enable embedding endpoint for embedding models
-        if embedding:
-            cmd.append("--embedding")
-            logger.info("  Embedding mode enabled")
+        cmd = self._build_llama_server_command(
+            llama_server,
+            model_path,
+            port,
+            ctx_size,
+            n_gpu_layers,
+            n_threads,
+            embedding,
+            mmproj_path,
+            launch_config,
+        )
 
         logger.debug(f"  Command: {' '.join(cmd)}")
 
@@ -348,6 +346,62 @@ class ProcessManager:
             llama_proc.error_message = str(e)
             self._release_port(port)
             raise
+
+    def _build_llama_server_command(
+        self,
+        llama_server: Path,
+        model_path: Path,
+        port: int,
+        ctx_size: int,
+        n_gpu_layers: int,
+        n_threads: int | None,
+        embedding: bool,
+        mmproj_path: Path | None,
+        launch_config: dict[str, object] | None,
+    ) -> list[str]:
+        """Build the llama-server command line so launch policy is unit-testable."""
+        cmd = [
+            str(llama_server),
+            "--model", str(model_path),
+            "--port", str(port),
+            "--host", "127.0.0.1",
+            "--ctx-size", str(ctx_size),
+            "--n-gpu-layers", str(n_gpu_layers),
+        ]
+
+        if mmproj_path and mmproj_path.exists():
+            cmd.extend(["--mmproj", str(mmproj_path)])
+
+        launch_config = launch_config or {}
+        jinja_enabled = bool(launch_config.get("jinja_enabled"))
+        template_name = launch_config.get("tool_template_name")
+        template_path = launch_config.get("tool_template_path")
+
+        if not embedding and jinja_enabled:
+            cmd.append("--jinja")
+            if template_name:
+                cmd.extend(["--chat-template", str(template_name)])
+            elif template_path:
+                cmd.extend(["--chat-template-file", str(template_path)])
+
+        if n_threads:
+            cmd.extend(["--threads", str(n_threads)])
+
+        # Enable embedding endpoint for embedding models
+        if embedding:
+            cmd.append("--embedding")
+        return cmd
+
+    async def get_server_props(self, port: int) -> dict[str, object]:
+        """Fetch `/props` from a running llama server."""
+        props_url = f"http://127.0.0.1:{port}/props"
+        async with httpx.AsyncClient() as client:
+            response = await client.get(props_url, timeout=5.0)
+            response.raise_for_status()
+            payload = response.json()
+        if not isinstance(payload, dict):
+            raise RuntimeError(f"Unexpected /props payload type: {type(payload).__name__}")
+        return payload
 
     async def start_whisper_server(
         self,

@@ -1292,6 +1292,10 @@ class ModelManager:
                     "default_top_k": model.default_top_k,
                     "default_max_tokens": model.default_max_tokens,
                     "default_repeat_penalty": model.default_repeat_penalty,
+                    "tool_template_mode": model.tool_template_mode,
+                    "tool_template_name": model.tool_template_name,
+                    "tool_template_path": model.tool_template_path,
+                    "tool_jinja_enabled": model.tool_jinja_enabled,
                 })
 
             if updated:
@@ -1335,6 +1339,10 @@ class ModelManager:
                     "default_top_k": None,
                     "default_max_tokens": None,
                     "default_repeat_penalty": None,
+                    "tool_template_mode": None,
+                    "tool_template_name": None,
+                    "tool_template_path": None,
+                    "tool_jinja_enabled": None,
                 })
 
         # Scan for unregistered transformers models (directories in models/transformers/)
@@ -1376,6 +1384,10 @@ class ModelManager:
                         "default_top_k": None,
                         "default_max_tokens": None,
                         "default_repeat_penalty": None,
+                        "tool_template_mode": None,
+                        "tool_template_name": None,
+                        "tool_template_path": None,
+                        "tool_jinja_enabled": None,
                     })
 
         logger.debug(f"Found {len(models)} models")

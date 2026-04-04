@@ -74,6 +74,10 @@ class Model(Base):
     default_top_k: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     default_max_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     default_repeat_penalty: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    tool_template_mode: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    tool_template_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    tool_template_path: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
+    tool_jinja_enabled: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
 
     # Status
     is_downloaded: Mapped[bool] = mapped_column(Boolean, default=False)

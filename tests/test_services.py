@@ -189,9 +189,14 @@ class TestProcessManager:
         from cyber_inference.services.process_manager import ProcessManager
 
         models_dir, bin_dir = temp_dirs
-        pm = ProcessManager(models_dir=models_dir, bin_dir=bin_dir)
+        pm = ProcessManager(models_dir=models_dir, bin_dir=bin_dir, base_port=48338)
 
-        port = pm._find_available_port()
+        fake_socket = MagicMock()
+        fake_socket.__enter__.return_value = fake_socket
+        fake_socket.__exit__.return_value = False
+
+        with patch("cyber_inference.services.process_manager.socket.socket", return_value=fake_socket):
+            port = pm._find_available_port()
         assert port >= pm.base_port
         assert port in pm._port_allocations
 
@@ -218,6 +223,60 @@ class TestProcessManager:
 
         processes = pm.get_all_processes()
         assert processes == []
+
+    def test_build_llama_server_command_includes_tool_flags(self, temp_dirs):
+        """Chat launches should include jinja and template overrides when configured."""
+        from cyber_inference.services.process_manager import ProcessManager
+
+        models_dir, bin_dir = temp_dirs
+        pm = ProcessManager(models_dir=models_dir, bin_dir=bin_dir)
+        template_path = models_dir / "tool-use.jinja"
+        template_path.write_text("{{ messages }}")
+
+        cmd = pm._build_llama_server_command(
+            Path("/tmp/llama-server"),
+            Path("/tmp/demo.gguf"),
+            9338,
+            8192,
+            -1,
+            8,
+            False,
+            None,
+            {
+                "jinja_enabled": True,
+                "tool_template_path": str(template_path),
+            },
+        )
+
+        assert "--jinja" in cmd
+        assert "--chat-template-file" in cmd
+        assert str(template_path) in cmd
+
+    def test_build_llama_server_command_skips_tool_flags_for_embeddings(self, temp_dirs):
+        """Embedding launches should keep embedding mode and skip chat tool flags."""
+        from cyber_inference.services.process_manager import ProcessManager
+
+        models_dir, bin_dir = temp_dirs
+        pm = ProcessManager(models_dir=models_dir, bin_dir=bin_dir)
+
+        cmd = pm._build_llama_server_command(
+            Path("/tmp/llama-server"),
+            Path("/tmp/demo.gguf"),
+            9338,
+            8192,
+            -1,
+            8,
+            True,
+            None,
+            {
+                "jinja_enabled": True,
+                "tool_template_name": "chatml",
+            },
+        )
+
+        assert "--embedding" in cmd
+        assert "--jinja" not in cmd
+        assert "--chat-template" not in cmd
 
 
 class TestAutoLoader:
@@ -413,6 +472,119 @@ class TestAutoLoader:
         await loader.load_model("demo")
 
         assert process_manager.start_server.await_args.kwargs["context_size"] == 131072
+
+    @pytest.mark.asyncio
+    async def test_load_model_caches_supported_tool_capability(self):
+        """Successful llama props probing should mark tool calling as supported."""
+        from cyber_inference.services.auto_loader import AutoLoader
+
+        process_manager = MagicMock()
+        proc = MagicMock(status="running", port=9338, server_type="llama", effective_config={})
+        process_manager.start_server = AsyncMock(return_value=proc)
+        process_manager.get_server_props = AsyncMock(
+            return_value={"chat_template_tool_use": "builtin"}
+        )
+        model_manager = MagicMock()
+        model_manager.get_model = AsyncMock(
+            return_value={
+                "name": "demo",
+                "engine_type": "llama",
+                "context_length": 131072,
+                "default_context_size": None,
+                "model_type": "chat",
+                "mmproj_path": None,
+                "hf_repo_id": "demo/repo",
+                "tool_template_mode": None,
+                "tool_template_name": None,
+                "tool_template_path": None,
+                "tool_jinja_enabled": None,
+            }
+        )
+        model_manager.get_model_path = AsyncMock(return_value=Path("/tmp/demo.gguf"))
+        model_manager.update_last_used = AsyncMock()
+
+        loader = AutoLoader(process_manager=process_manager, model_manager=model_manager)
+
+        await loader.load_model("demo")
+
+        assert proc.effective_config["launch_config"]["jinja_enabled"] is True
+        assert proc.effective_config["tool_calling"]["status"] == "supported"
+        assert proc.effective_config["tool_calling"]["source"] == "detected"
+
+    @pytest.mark.asyncio
+    async def test_load_model_marks_probe_failures_without_failing_chat_load(self):
+        """Tool capability probe failures should not block normal llama chat loads."""
+        from cyber_inference.services.auto_loader import AutoLoader
+
+        process_manager = MagicMock()
+        proc = MagicMock(status="running", port=9338, server_type="llama", effective_config={})
+        process_manager.start_server = AsyncMock(return_value=proc)
+        process_manager.get_server_props = AsyncMock(side_effect=RuntimeError("props unavailable"))
+        model_manager = MagicMock()
+        model_manager.get_model = AsyncMock(
+            return_value={
+                "name": "demo",
+                "engine_type": "llama",
+                "context_length": 8192,
+                "default_context_size": None,
+                "model_type": "chat",
+                "mmproj_path": None,
+                "hf_repo_id": "demo/repo",
+                "tool_template_mode": None,
+                "tool_template_name": None,
+                "tool_template_path": None,
+                "tool_jinja_enabled": None,
+            }
+        )
+        model_manager.get_model_path = AsyncMock(return_value=Path("/tmp/demo.gguf"))
+        model_manager.update_last_used = AsyncMock()
+
+        loader = AutoLoader(process_manager=process_manager, model_manager=model_manager)
+
+        url = await loader.load_model("demo")
+
+        assert url == "http://127.0.0.1:9338"
+        assert proc.effective_config["tool_calling"]["status"] == "probe_failed"
+        assert proc.effective_config["tool_calling"]["warnings"]
+
+    @pytest.mark.asyncio
+    async def test_non_llama_load_ignores_global_jinja_disable(self, monkeypatch):
+        """Disabling llama jinja globally should not break non-llama backends."""
+        from cyber_inference.services.auto_loader import AutoLoader
+
+        monkeypatch.setenv("CYBER_INFERENCE_LLAMA_ENABLE_JINJA", "false")
+        reload_settings()
+
+        process_manager = MagicMock()
+        proc = MagicMock(status="running", port=9444, server_type="transformers", effective_config={})
+        process_manager.start_transformers_server = AsyncMock(return_value=proc)
+        model_manager = MagicMock()
+        model_manager.get_model = AsyncMock(
+            return_value={
+                "name": "demo",
+                "engine_type": "transformers",
+                "context_length": 8192,
+                "default_context_size": None,
+                "model_type": "chat",
+                "mmproj_path": None,
+                "hf_repo_id": "demo/repo",
+                "tool_template_mode": None,
+                "tool_template_name": None,
+                "tool_template_path": None,
+                "tool_jinja_enabled": None,
+            }
+        )
+        model_manager.get_model_path = AsyncMock(return_value=Path("/tmp/demo"))
+        model_manager.update_last_used = AsyncMock()
+
+        try:
+            loader = AutoLoader(process_manager=process_manager, model_manager=model_manager)
+            url = await loader.load_model("demo")
+        finally:
+            monkeypatch.delenv("CYBER_INFERENCE_LLAMA_ENABLE_JINJA", raising=False)
+            reload_settings()
+
+        assert url == "http://127.0.0.1:9444"
 
 
 def test_vendored_web_assets_exist():

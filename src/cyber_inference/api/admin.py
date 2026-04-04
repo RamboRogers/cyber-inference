@@ -9,6 +9,7 @@ Provides management endpoints for:
 - Authentication (optional)
 """
 
+from collections.abc import Callable
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -41,6 +42,25 @@ logger = get_logger(__name__)
 
 router = APIRouter()
 security = HTTPBearer(auto_error=False)
+
+ModelConfigCaster = Callable[[object], object] | type[int] | type[float] | type[str]
+
+
+def _parse_bool_config(value: object) -> bool:
+    """Parse bool-like values for admin config writes."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _normalize_optional_string(value: object) -> str | None:
+    """Normalize optional string values from admin requests."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def _get_auto_loader() -> AutoLoader:
@@ -217,6 +237,10 @@ async def list_models(
                 model_type=m.model_type,
                 engine_type=m.engine_type,
                 mmproj_path=m.mmproj_path,
+                tool_template_mode=m.tool_template_mode,
+                tool_template_name=m.tool_template_name,
+                tool_template_path=m.tool_template_path,
+                tool_jinja_enabled=m.tool_jinja_enabled,
                 is_downloaded=m.is_downloaded,
                 is_enabled=m.is_enabled,
                 download_progress=m.download_progress,
@@ -365,6 +389,10 @@ async def download_model(
                 context_length=4096,
                 model_type=None,
                 mmproj_path=None,
+                tool_template_mode=None,
+                tool_template_name=None,
+                tool_template_path=None,
+                tool_jinja_enabled=None,
                 is_downloaded=True,
                 is_enabled=True,
                 download_progress=100.0,
@@ -383,6 +411,10 @@ async def download_model(
             context_length=model["context_length"],
             model_type=model.get("model_type"),
             mmproj_path=model.get("mmproj_path"),
+            tool_template_mode=model.get("tool_template_mode"),
+            tool_template_name=model.get("tool_template_name"),
+            tool_template_path=model.get("tool_template_path"),
+            tool_jinja_enabled=model.get("tool_jinja_enabled"),
             is_downloaded=True,
             is_enabled=True,
             download_progress=100.0,
@@ -452,6 +484,10 @@ async def download_transformers_model(
                 context_length=4096,
                 model_type=None,
                 mmproj_path=None,
+                tool_template_mode=None,
+                tool_template_name=None,
+                tool_template_path=None,
+                tool_jinja_enabled=None,
                 is_downloaded=True,
                 is_enabled=True,
                 download_progress=100.0,
@@ -470,6 +506,10 @@ async def download_transformers_model(
             context_length=model["context_length"],
             model_type=model.get("model_type"),
             mmproj_path=model.get("mmproj_path"),
+            tool_template_mode=model.get("tool_template_mode"),
+            tool_template_name=model.get("tool_template_name"),
+            tool_template_path=model.get("tool_template_path"),
+            tool_jinja_enabled=model.get("tool_jinja_enabled"),
             is_downloaded=True,
             is_enabled=True,
             download_progress=100.0,
@@ -606,6 +646,10 @@ async def get_model_config(
             "default_top_k": model.default_top_k,
             "default_max_tokens": model.default_max_tokens,
             "default_repeat_penalty": model.default_repeat_penalty,
+            "tool_template_mode": model.tool_template_mode,
+            "tool_template_name": model.tool_template_name,
+            "tool_template_path": model.tool_template_path,
+            "tool_jinja_enabled": model.tool_jinja_enabled,
             "runtime": status_info,
         }
 
@@ -622,13 +666,17 @@ async def update_model_config(
     """
     logger.info(f"[info]PUT /admin/models/{model_name}/config[/info]")
 
-    allowed_fields = {
+    allowed_fields: dict[str, ModelConfigCaster] = {
         "default_context_size": int,
         "default_temperature": float,
         "default_top_p": float,
         "default_top_k": int,
         "default_max_tokens": int,
         "default_repeat_penalty": float,
+        "tool_template_mode": str,
+        "tool_template_name": str,
+        "tool_template_path": str,
+        "tool_jinja_enabled": _parse_bool_config,
     }
 
     async with get_db_session() as session:
@@ -642,6 +690,13 @@ async def update_model_config(
                 value = config[field]
                 if value is None:
                     setattr(model, field, None)
+                elif field in {"tool_template_name", "tool_template_path"}:
+                    setattr(model, field, _normalize_optional_string(value))
+                elif field == "tool_template_mode":
+                    normalized = _normalize_optional_string(value)
+                    if normalized not in {"inherit", "disabled", "explicit", "auto"}:
+                        raise HTTPException(status_code=400, detail="Invalid tool_template_mode")
+                    setattr(model, field, normalized)
                 else:
                     setattr(model, field, cast_type(value))
 
@@ -657,6 +712,10 @@ async def update_model_config(
             "default_top_k": model.default_top_k,
             "default_max_tokens": model.default_max_tokens,
             "default_repeat_penalty": model.default_repeat_penalty,
+            "tool_template_mode": model.tool_template_mode,
+            "tool_template_name": model.tool_template_name,
+            "tool_template_path": model.tool_template_path,
+            "tool_jinja_enabled": model.tool_jinja_enabled,
             "runtime": runtime,
             "reload_triggered": runtime.get("reload_triggered", False),
             "message": runtime.get("message"),
@@ -722,6 +781,9 @@ async def get_config(
         "max_loaded_models": settings.max_loaded_models,
         "max_memory_percent": settings.max_memory_percent,
         "llama_gpu_layers": settings.llama_gpu_layers,
+        "llama_enable_jinja": settings.llama_enable_jinja,
+        "llama_tool_template": settings.llama_tool_template,
+        "llama_tool_template_file": settings.llama_tool_template_file,
         "admin_password_set": settings.admin_password is not None,
         "live_apply_keys": [
             "default_context_size",
@@ -731,10 +793,16 @@ async def get_config(
             "max_loaded_models",
             "max_memory_percent",
             "llama_gpu_layers",
+            "llama_enable_jinja",
+            "llama_tool_template",
+            "llama_tool_template_file",
         ],
         "reload_on_save_keys": [
             "default_context_size",
             "llama_gpu_layers",
+            "llama_enable_jinja",
+            "llama_tool_template",
+            "llama_tool_template_file",
         ],
         "restart_only_keys": ["host", "port", "log_level"],
     }
@@ -756,15 +824,21 @@ async def update_config(
             select(Configuration).where(Configuration.key == key)
         )
         config = result.scalar_one_or_none()
+        optional_string_keys = {"admin_password", "llama_tool_template", "llama_tool_template_file"}
+        stored_value = (
+            ""
+            if key in optional_string_keys and update.value is None
+            else str(update.value)
+        )
 
         if config:
-            config.value = "" if key == "admin_password" and update.value is None else str(update.value)
+            config.value = stored_value
             if update.description:
                 config.description = update.description
         else:
             config = Configuration(
                 key=key,
-                value="" if key == "admin_password" and update.value is None else str(update.value),
+                value=stored_value,
                 description=update.description,
             )
             session.add(config)
@@ -775,7 +849,7 @@ async def update_config(
         cast_fn = CONFIG_DB_CASTS.get(key)
         if cast_fn is not None and update.value is not None:
             typed_value = cast_fn(update.value)
-        if key == "admin_password" and isinstance(typed_value, str) and not typed_value.strip():
+        if key in optional_string_keys and isinstance(typed_value, str) and not typed_value.strip():
             typed_value = None
 
         settings = get_settings()

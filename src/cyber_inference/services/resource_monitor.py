@@ -189,7 +189,7 @@ class ResourceMonitor:
 
         nvidia_proc = Path("/proc/driver/nvidia/gpus")
         if nvidia_proc.exists():
-            gpu_name = None
+            gpu_name: str | None = None
             try:
                 info_files = list(nvidia_proc.glob("*/information"))
                 if info_files:
@@ -336,8 +336,12 @@ class ResourceMonitor:
         used_memory_mb = mem.used / (1024 ** 2)
         memory_percent = mem.percent
 
-        # Swap info
-        swap = psutil.swap_memory()
+        # Swap info can fail on some macOS hosts; keep telemetry best-effort.
+        try:
+            swap = psutil.swap_memory()
+        except OSError as exc:
+            logger.debug(f"Swap telemetry unavailable: {exc}")
+            swap = None
 
         # Disk info (use models directory or current directory)
         disk_path = Path.cwd()
@@ -375,9 +379,9 @@ class ResourceMonitor:
             available_memory_mb=available_memory_mb,
             used_memory_mb=used_memory_mb,
             memory_percent=memory_percent,
-            swap_total_mb=swap.total / (1024 ** 2),
-            swap_used_mb=swap.used / (1024 ** 2),
-            swap_percent=swap.percent,
+            swap_total_mb=(swap.total / (1024 ** 2)) if swap else 0.0,
+            swap_used_mb=(swap.used / (1024 ** 2)) if swap else 0.0,
+            swap_percent=swap.percent if swap else 0.0,
             gpu=gpu,
             disk_total_gb=disk.total / (1024 ** 3),
             disk_used_gb=disk.used / (1024 ** 3),
@@ -455,7 +459,7 @@ class ResourceMonitor:
         try:
             process = psutil.Process(pid)
             mem_info = process.memory_info()
-            return mem_info.rss / (1024 ** 2)
+            return float(mem_info.rss) / (1024 ** 2)
         except psutil.NoSuchProcess:
             return None
 

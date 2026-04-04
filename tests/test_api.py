@@ -8,11 +8,13 @@ Tests cover:
 - Error handling
 """
 
+import json
 from contextlib import asynccontextmanager
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 
 from cyber_inference.core.database import get_db
@@ -308,6 +310,227 @@ async def test_chat_completions_forwards_top_k_and_repeat_penalty():
 
 
 @pytest.mark.asyncio
+async def test_chat_completions_forwards_tool_payload_and_preserves_tool_calls():
+    """Tool fields should reach llama.cpp and tool-call responses should survive shaping."""
+    from cyber_inference.api.v1 import chat_completions
+
+    captured_request = {}
+
+    class DummyResponse:
+        status_code = 200
+        text = ""
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "lookup_weather",
+                                        "arguments": "{\"city\":\"Boston\"}",
+                                    },
+                                }
+                            ],
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            }
+
+    class DummyClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, json):
+            captured_request["url"] = url
+            captured_request["json"] = json
+            return DummyResponse()
+
+    auto_loader = MagicMock()
+    auto_loader.ensure_model_loaded = AsyncMock(return_value="http://127.0.0.1:9999")
+    auto_loader.get_request_defaults = AsyncMock(return_value={})
+    auto_loader.get_model_status = AsyncMock(
+        return_value={"effective_config": {"tool_calling": {"status": "supported"}}}
+    )
+    auto_loader.record_request = AsyncMock()
+
+    request = ChatCompletionRequest(
+        model="demo",
+        messages=[ChatMessage(role="user", content="Hello")],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "lookup_weather",
+                    "description": "Look up weather",
+                    "parameters": {"type": "object"},
+                },
+            }
+        ],
+        tool_choice="auto",
+        parallel_tool_calls=True,
+    )
+
+    with (
+        patch("cyber_inference.api.v1.get_auto_loader", return_value=auto_loader),
+        patch("cyber_inference.api.v1._get_server_type", return_value="llama"),
+        patch("cyber_inference.api.v1.httpx.AsyncClient", return_value=DummyClient()),
+    ):
+        response = await chat_completions(request, MagicMock())
+
+    assert captured_request["json"]["tools"] == request.tools
+    assert captured_request["json"]["tool_choice"] == "auto"
+    assert captured_request["json"]["parallel_tool_calls"] is True
+    assert response.choices[0].message.content is None
+    assert response.choices[0].message.tool_calls[0]["id"] == "call_1"
+    assert response.choices[0].finish_reason == "tool_calls"
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_rejects_tool_payload_when_capability_missing():
+    """Tool requests should fail loudly instead of silently degrading."""
+    from cyber_inference.api.v1 import chat_completions
+
+    auto_loader = MagicMock()
+    auto_loader.ensure_model_loaded = AsyncMock(return_value="http://127.0.0.1:9999")
+    auto_loader.get_request_defaults = AsyncMock(return_value={})
+    auto_loader.get_model_status = AsyncMock(
+        return_value={
+            "effective_config": {
+                "tool_calling": {
+                    "status": "probe_failed",
+                    "warnings": ["Runtime capability probe failed"],
+                }
+            }
+        }
+    )
+
+    request = ChatCompletionRequest(
+        model="demo",
+        messages=[ChatMessage(role="user", content="Hello")],
+        tools=[{"type": "function", "function": {"name": "lookup_weather"}}],
+    )
+
+    with (
+        patch("cyber_inference.api.v1.get_auto_loader", return_value=auto_loader),
+        patch("cyber_inference.api.v1._get_server_type", return_value="llama"),
+    ):
+        with pytest.raises(HTTPException) as exc_info:
+            await chat_completions(request, MagicMock())
+
+    assert exc_info.value.status_code == 400
+    assert "Tool calling is not available" in str(exc_info.value.detail)
+
+
+@pytest.mark.asyncio
+async def test_stream_chat_completion_preserves_tool_call_deltas():
+    """Streaming tool-call deltas should pass through without text normalization."""
+    from cyber_inference.api.v1 import _stream_chat_completion
+
+    class DummyStreamResponse:
+        status_code = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def aread(self):
+            return b""
+
+        async def aiter_lines(self):
+            payloads = [
+                {"choices": [{"delta": {"role": "assistant"}, "finish_reason": None}]},
+                {
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "call_1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "lookup_weather",
+                                            "arguments": "{",
+                                        },
+                                    }
+                                ]
+                            },
+                            "finish_reason": None,
+                        }
+                    ]
+                },
+                {
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "function": {
+                                            "arguments": "\"city\":\"Boston\"}",
+                                        },
+                                    }
+                                ]
+                            },
+                            "finish_reason": "tool_calls",
+                        }
+                    ]
+                },
+            ]
+            for payload in payloads:
+                yield f"data: {json.dumps(payload)}"
+            yield "data: [DONE]"
+
+    class DummyClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def stream(self, method, url, json):
+            return DummyStreamResponse()
+
+    auto_loader = MagicMock()
+    auto_loader.touch_request = AsyncMock()
+    auto_loader.record_request = AsyncMock()
+
+    with (
+        patch("cyber_inference.api.v1.get_auto_loader", return_value=auto_loader),
+        patch("cyber_inference.api.v1.httpx.AsyncClient", return_value=DummyClient()),
+    ):
+        chunks = []
+        async for item in _stream_chat_completion(
+            "http://127.0.0.1:9999",
+            {"messages": []},
+            "demo",
+        ):
+            chunks.append(item)
+
+    decoded = [json.loads(item["data"]) for item in chunks if item["data"] != "[DONE]"]
+    assert decoded[0]["choices"][0]["delta"]["role"] == "assistant"
+    assert decoded[1]["choices"][0]["delta"]["tool_calls"][0]["id"] == "call_1"
+    assert decoded[2]["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"] == "\"city\":\"Boston\"}"
+    assert decoded[-1]["choices"][0]["finish_reason"] == "tool_calls"
+
+
+@pytest.mark.asyncio
 async def test_update_model_config_returns_runtime_metadata(test_db):
     """Saving model config should surface authoritative runtime metadata in the response."""
     model = Model(
@@ -351,6 +574,52 @@ async def test_update_model_config_returns_runtime_metadata(test_db):
     assert data["default_top_k"] == 48
     assert data["reload_triggered"] is True
     assert data["runtime"]["status"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_update_model_config_accepts_tool_template_fields(test_db):
+    """Per-model tool template settings should be persisted through the admin API."""
+    model = Model(
+        name="demo-model",
+        filename="demo.gguf",
+        file_path="/tmp/demo.gguf",
+        size_bytes=1,
+        context_length=4096,
+        is_downloaded=True,
+        is_enabled=True,
+        created_at=datetime.now(),
+    )
+    test_db.add(model)
+    await test_db.commit()
+
+    @asynccontextmanager
+    async def override_get_db_session():
+        yield test_db
+
+    auto_loader = MagicMock()
+    auto_loader.reconcile_model_config_change = AsyncMock(
+        return_value={"reload_triggered": False, "message": "Saved", "status": "not_loaded"}
+    )
+
+    with (
+        patch("cyber_inference.api.admin.get_db_session", override_get_db_session),
+        patch("cyber_inference.api.admin._get_auto_loader", return_value=auto_loader),
+    ):
+        async with make_test_client() as client:
+            response = await client.put(
+                "/admin/models/demo-model/config",
+                json={
+                    "tool_template_mode": "explicit",
+                    "tool_template_path": "/tmp/tool-use.jinja",
+                    "tool_jinja_enabled": True,
+                },
+            )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["tool_template_mode"] == "explicit"
+    assert data["tool_template_path"] == "/tmp/tool-use.jinja"
+    assert data["tool_jinja_enabled"] is True
 
 
 @pytest.mark.asyncio

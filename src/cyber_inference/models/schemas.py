@@ -56,10 +56,14 @@ class ChatContentPart(BaseModel):
 class ChatMessage(BaseModel):
     """Chat message in a conversation."""
     role: str = Field(..., description="Role of the message author (system, user, assistant)")
-    content: str | list[ChatContentPart] | dict[str, Any] = Field(
+    content: str | list[ChatContentPart] | dict[str, Any] | None = Field(
         ..., description="Content of the message"
     )
     name: str | None = Field(None, description="Optional name of the author")
+    tool_calls: list[dict[str, Any]] | None = Field(None, description="Tool calls emitted by the assistant")
+    tool_call_id: str | None = Field(None, description="Tool call id for tool-role messages")
+
+    model_config = {"extra": "allow"}
 
 
 class ChatCompletionRequest(BaseModel):
@@ -77,6 +81,12 @@ class ChatCompletionRequest(BaseModel):
     presence_penalty: float = Field(0.0, ge=-2.0, le=2.0)
     frequency_penalty: float = Field(0.0, ge=-2.0, le=2.0)
     user: str | None = Field(None, description="User identifier")
+    tools: list[dict[str, Any]] | None = Field(None, description="Available tools")
+    tool_choice: str | dict[str, Any] | None = Field(None, description="Tool choice policy")
+    parallel_tool_calls: bool | None = Field(
+        None,
+        description="Whether parallel tool calling is enabled",
+    )
 
 
 class ChatCompletionChoice(BaseModel):
@@ -219,6 +229,10 @@ class ModelResponse(BaseModel):
     model_type: str | None
     engine_type: str | None = "llama"
     mmproj_path: str | None = None
+    tool_template_mode: str | None = None
+    tool_template_name: str | None = None
+    tool_template_path: str | None = None
+    tool_jinja_enabled: bool | None = None
     is_downloaded: bool
     is_enabled: bool
     download_progress: float

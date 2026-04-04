@@ -11,7 +11,7 @@ Handles:
 import asyncio
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from cyber_inference.core.config import get_settings
 from cyber_inference.core.logging import get_logger
@@ -36,9 +36,39 @@ GLOBAL_RUNTIME_REFRESH_KEYS = {
     "max_loaded_models",
     "max_memory_percent",
     "llama_gpu_layers",
+    "llama_enable_jinja",
+    "llama_tool_template",
+    "llama_tool_template_file",
 }
 
-GLOBAL_RELOAD_KEYS = {"default_context_size", "llama_gpu_layers"}
+GLOBAL_RELOAD_KEYS = {
+    "default_context_size",
+    "llama_gpu_layers",
+    "llama_enable_jinja",
+    "llama_tool_template",
+    "llama_tool_template_file",
+}
+
+TOOL_TEMPLATE_MODES = {"inherit", "disabled", "explicit", "auto"}
+
+
+def _normalize_optional_string(value: object) -> str | None:
+    """Return a stripped string or None."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _parse_optional_bool(value: object) -> bool | None:
+    """Parse an optional bool-like value."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
 
 
 class AutoLoader:
@@ -291,6 +321,9 @@ class AutoLoader:
             "idle_unload_enabled": self._idle_unload_enabled,
             "max_loaded_models": self._max_loaded,
             "max_memory_percent": self._max_memory_percent,
+            "llama_enable_jinja": settings.llama_enable_jinja,
+            "llama_tool_template": settings.llama_tool_template,
+            "llama_tool_template_file": settings.llama_tool_template_file,
         }
 
     def _get_saved_generation_defaults(self, model_info: dict[str, Any]) -> dict[str, Any]:
@@ -301,6 +334,270 @@ class AutoLoader:
             "top_k": model_info.get("default_top_k"),
             "max_tokens": model_info.get("default_max_tokens"),
             "repeat_penalty": model_info.get("default_repeat_penalty"),
+        }
+
+    def _classify_model_usage(self, model_name: str, model_info: dict[str, Any]) -> tuple[bool, bool]:
+        """Classify the model as embedding or transcription."""
+        model_type = model_info.get("model_type")
+        is_embedding = model_type == "embedding"
+        is_transcription = model_type == "transcription"
+
+        if not is_embedding and not is_transcription:
+            name_lower = model_name.lower()
+            repo_id = str(model_info.get("hf_repo_id") or "").lower()
+            check_string = f"{name_lower} {repo_id}"
+
+            embedding_patterns = ["embed", "bge", "e5-", "gte-", "stella", "nomic"]
+            transcription_patterns = ["whisper", "distil-whisper", "faster-whisper"]
+
+            is_embedding = any(pattern in check_string for pattern in embedding_patterns)
+            is_transcription = any(pattern in check_string for pattern in transcription_patterns)
+
+        return is_embedding, is_transcription
+
+    def _resolve_tooling_config(
+        self,
+        model_info: dict[str, Any],
+        *,
+        strict: bool,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Resolve launch-time and request-time tool-calling policy for a model."""
+        settings = get_settings()
+        model_name = str(model_info.get("name") or "")
+        server_type = str(model_info.get("engine_type", "llama"))
+        is_embedding, is_transcription = self._classify_model_usage(model_name, model_info)
+        model_mode = _normalize_optional_string(model_info.get("tool_template_mode")) or "inherit"
+        model_template_name = _normalize_optional_string(model_info.get("tool_template_name"))
+        model_template_path = _normalize_optional_string(model_info.get("tool_template_path"))
+        model_jinja_enabled = _parse_optional_bool(model_info.get("tool_jinja_enabled"))
+        global_template_name = _normalize_optional_string(settings.llama_tool_template)
+        global_template_path = _normalize_optional_string(settings.llama_tool_template_file)
+
+        if model_mode not in TOOL_TEMPLATE_MODES:
+            if strict:
+                raise ValueError(f"Invalid tool_template_mode for {model_name}: {model_mode}")
+            model_mode = "inherit"
+
+        warnings: list[str] = []
+
+        def fail_or_warn(message: str) -> None:
+            if strict:
+                raise ValueError(message)
+            warnings.append(message)
+
+        explicit_model_override = (
+            model_mode != "inherit"
+            or model_template_name is not None
+            or model_template_path is not None
+            or model_jinja_enabled is not None
+        )
+
+        if server_type != "llama" or is_embedding or is_transcription:
+            unsupported_tool_request = (
+                global_template_name is not None
+                or global_template_path is not None
+                or model_template_name is not None
+                or model_template_path is not None
+                or model_mode == "explicit"
+                or model_jinja_enabled is True
+            )
+            if unsupported_tool_request:
+                fail_or_warn(
+                    "Tool template overrides are only supported for llama chat models."
+                )
+            return (
+                {
+                    "jinja_enabled": False,
+                    "tool_template_mode": model_mode,
+                    "tool_template_name": None,
+                    "tool_template_path": None,
+                    "tool_template_source": "none",
+                    "launch_warnings": warnings,
+                },
+                {
+                    "status": "unsupported",
+                    "source": "assumed_none",
+                    "template_source": "none",
+                    "warnings": warnings.copy(),
+                },
+            )
+
+        chosen_name: str | None = None
+        chosen_path: str | None = None
+        template_source = "none"
+        capability_source = "assumed_none"
+        jinja_enabled = bool(settings.llama_enable_jinja)
+
+        if model_mode == "disabled":
+            jinja_enabled = False
+            capability_source = "configured"
+        elif model_mode == "explicit":
+            chosen_name = model_template_name
+            chosen_path = model_template_path
+            template_source = "model_override"
+            capability_source = "configured"
+            jinja_enabled = True if model_jinja_enabled is None else bool(model_jinja_enabled)
+            if not chosen_name and not chosen_path:
+                fail_or_warn(
+                    f"Model {model_name} uses tool_template_mode=explicit but no template override is set."
+                )
+        elif model_mode == "auto":
+            jinja_enabled = bool(settings.llama_enable_jinja if model_jinja_enabled is None else model_jinja_enabled)
+            capability_source = "configured"
+        elif explicit_model_override:
+            chosen_name = model_template_name
+            chosen_path = model_template_path
+            template_source = "model_override" if (chosen_name or chosen_path) else "none"
+            capability_source = "configured"
+            if model_jinja_enabled is None:
+                jinja_enabled = bool(settings.llama_enable_jinja or chosen_name or chosen_path)
+            else:
+                jinja_enabled = bool(model_jinja_enabled)
+        elif global_template_name or global_template_path:
+            chosen_name = global_template_name
+            chosen_path = global_template_path
+            template_source = "global_override"
+            capability_source = "configured"
+            jinja_enabled = True
+
+        if chosen_name and chosen_path:
+            fail_or_warn(
+                f"Model {model_name} cannot use both tool_template_name and tool_template_path."
+            )
+            chosen_name = None
+            chosen_path = None
+            template_source = "none"
+
+        if chosen_path and not Path(chosen_path).exists():
+            fail_or_warn(f"Tool template file does not exist: {chosen_path}")
+            chosen_path = None
+            template_source = "none"
+
+        if (chosen_name or chosen_path) and not jinja_enabled:
+            jinja_enabled = True
+
+        if not jinja_enabled:
+            status = "unsupported"
+        elif chosen_name or chosen_path:
+            status = "supported"
+        else:
+            status = "unknown"
+            warnings.append(
+                "No explicit tool template override is configured; tool requests stay disabled until runtime capability is confirmed."
+            )
+
+        launch_config = {
+            "jinja_enabled": jinja_enabled,
+            "tool_template_mode": model_mode,
+            "tool_template_name": chosen_name,
+            "tool_template_path": chosen_path,
+            "tool_template_source": template_source,
+            "launch_warnings": warnings.copy(),
+        }
+        tool_calling = {
+            "status": status,
+            "source": capability_source,
+            "template_source": template_source,
+            "warnings": warnings.copy(),
+        }
+        return launch_config, tool_calling
+
+    @staticmethod
+    def _find_nested_value(payload: object, key: str) -> object | None:
+        """Search nested dict/list payloads for a key."""
+        if isinstance(payload, dict):
+            if key in payload:
+                return cast(object, payload[key])
+            for value in payload.values():
+                found = AutoLoader._find_nested_value(value, key)
+                if found is not None:
+                    return found
+        elif isinstance(payload, list):
+            for item in payload:
+                found = AutoLoader._find_nested_value(item, key)
+                if found is not None:
+                    return found
+        return None
+
+    async def _probe_tool_calling_capability(
+        self,
+        proc: LlamaProcess,
+        effective_config: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Probe a running llama server once and cache its tool-calling state."""
+        launch_config = effective_config.get("launch_config", {})
+        if not isinstance(launch_config, dict):
+            launch_config = {}
+        current = effective_config.get("tool_calling", {})
+        warnings = list(current.get("warnings", [])) if isinstance(current, dict) else []
+        template_source = str(launch_config.get("tool_template_source", "none"))
+        explicit_template = bool(
+            launch_config.get("tool_template_name") or launch_config.get("tool_template_path")
+        )
+
+        if not launch_config.get("jinja_enabled"):
+            return {
+                "status": "unsupported",
+                "source": "configured" if explicit_template else "assumed_none",
+                "template_source": template_source,
+                "warnings": warnings,
+            }
+
+        try:
+            props = await self._get_process_manager().get_server_props(proc.port)
+        except Exception as exc:
+            if explicit_template:
+                warnings.append(f"Runtime capability probe failed: {exc}")
+                return {
+                    "status": "supported",
+                    "source": "configured",
+                    "template_source": template_source,
+                    "warnings": warnings,
+                }
+            warnings.append(f"Runtime capability probe failed: {exc}")
+            return {
+                "status": "probe_failed",
+                "source": "assumed_none",
+                "template_source": template_source,
+                "warnings": warnings,
+            }
+
+        template_tool_use = self._find_nested_value(props, "chat_template_tool_use")
+        chat_template = self._find_nested_value(props, "chat_template")
+
+        if explicit_template:
+            return {
+                "status": "supported",
+                "source": "configured",
+                "template_source": template_source,
+                "warnings": warnings,
+            }
+
+        if template_tool_use:
+            return {
+                "status": "supported",
+                "source": "detected",
+                "template_source": "native_metadata",
+                "warnings": warnings,
+            }
+
+        if chat_template:
+            warnings.append(
+                "Runtime reports a chat template but not tool-use metadata; tool requests remain disabled."
+            )
+            return {
+                "status": "unknown",
+                "source": "detected",
+                "template_source": "native_metadata",
+                "warnings": warnings,
+            }
+
+        warnings.append("Runtime props did not report a chat template for tool calling.")
+        return {
+            "status": "unknown",
+            "source": "assumed_none",
+            "template_source": "none",
+            "warnings": warnings,
         }
 
     def _build_effective_runtime_config(
@@ -322,6 +619,7 @@ class AutoLoader:
             key for key, value in saved_defaults.items()
             if key not in supported_fields and value is not None
         ]
+        tool_launch_config, tool_calling = self._resolve_tooling_config(model_info, strict=False)
         configured_context_size = model_info.get("default_context_size")
         native_context_size = model_info.get("context_length")
         if proc:
@@ -347,9 +645,11 @@ class AutoLoader:
             "context_source": context_source,
             "gpu_layers": proc.gpu_layers if proc else (settings.llama_gpu_layers if server_type == "llama" else None),
         }
+        launch_config.update(tool_launch_config)
         return {
             "server_type": server_type,
             "launch_config": launch_config,
+            "tool_calling": tool_calling,
             "request_defaults": effective_request_defaults,
             "unsupported_saved_defaults": unsupported_saved_defaults,
             "supports_request_defaults": sorted(supported_fields),
@@ -421,22 +721,7 @@ class AutoLoader:
             logger.debug(f"mmproj path from DB: {mmproj_path}")
 
         # Check model type
-        model_type = model_info.get("model_type")
-        is_embedding = model_type == "embedding"
-        is_transcription = model_type == "transcription"
-
-        # Auto-detect model types by name AND repo ID if type not set
-        if not is_embedding and not is_transcription:
-            name_lower = model_name.lower()
-            repo_id = model_info.get("hf_repo_id") or ""
-            repo_lower = repo_id.lower()
-            check_string = f"{name_lower} {repo_lower}"
-
-            embedding_patterns = ["embed", "bge", "e5-", "gte-", "stella", "nomic"]
-            transcription_patterns = ["whisper", "distil-whisper", "faster-whisper"]
-
-            is_embedding = any(pattern in check_string for pattern in embedding_patterns)
-            is_transcription = any(pattern in check_string for pattern in transcription_patterns)
+        is_embedding, is_transcription = self._classify_model_usage(model_name, model_info)
 
         if is_embedding:
             logger.info("  Model type: embedding")
@@ -471,6 +756,9 @@ class AutoLoader:
         )
         if gpu_layers_override is not None:
             effective_config["launch_config"]["gpu_layers"] = gpu_layers_override
+        launch_config, tool_calling = self._resolve_tooling_config(model_info, strict=True)
+        effective_config["launch_config"].update(launch_config)
+        effective_config["tool_calling"] = tool_calling
 
         # Start the appropriate server based on engine_type
         if engine_type == "transformers":
@@ -503,6 +791,12 @@ class AutoLoader:
 
         if proc.status != "running":
             raise RuntimeError(f"Failed to start server: {proc.error_message}")
+
+        if proc.server_type == "llama" and not is_embedding and not is_transcription:
+            effective_config["tool_calling"] = await self._probe_tool_calling_capability(
+                proc,
+                effective_config,
+            )
 
         # Update last used
         await mm.update_last_used(model_name)
