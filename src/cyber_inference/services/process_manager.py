@@ -11,12 +11,10 @@ Manages:
 
 import asyncio
 import re
-import signal
 import socket
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 import httpx
 import psutil
@@ -35,20 +33,23 @@ class LlamaProcess:
     model_name: str
     model_path: Path
     port: int
-    mmproj_path: Optional[Path] = None
-    pid: Optional[int] = None
-    process: Optional[asyncio.subprocess.Process] = None
+    mmproj_path: Path | None = None
+    pid: int | None = None
+    process: asyncio.subprocess.Process | None = None
     status: str = "starting"  # starting, running, stopping, stopped, error
-    error_message: Optional[str] = None
+    error_message: str | None = None
     started_at: datetime = field(default_factory=datetime.now)
-    last_request_at: Optional[datetime] = None
+    last_request_at: datetime | None = None
     request_count: int = 0
     context_size: int = 4096
     gpu_layers: int = -1
-    threads: Optional[int] = None
+    threads: int | None = None
 
     # Server type: 'llama', 'whisper', or 'transformers'
     server_type: str = "llama"
+    last_transition_reason: str | None = None
+    reload_count: int = 0
+    effective_config: dict[str, object] = field(default_factory=dict)
 
     # Resource tracking
     memory_mb: float = 0.0
@@ -68,8 +69,8 @@ class ProcessManager:
 
     def __init__(
         self,
-        models_dir: Optional[Path] = None,
-        bin_dir: Optional[Path] = None,
+        models_dir: Path | None = None,
+        bin_dir: Path | None = None,
         base_port: int = 8338,
     ):
         """
@@ -169,7 +170,7 @@ class ProcessManager:
             self._port_allocations.discard(port)
             logger.debug(f"Released port: {port}")
 
-    def _find_mmproj(self, model_path: Path) -> Optional[Path]:
+    def _find_mmproj(self, model_path: Path) -> Path | None:
         """
         Find the mmproj file for a model by scanning the models directory.
 
@@ -222,11 +223,14 @@ class ProcessManager:
         self,
         model_name: str,
         model_path: Path,
-        context_size: Optional[int] = None,
-        gpu_layers: Optional[int] = None,
-        threads: Optional[int] = None,
+        context_size: int | None = None,
+        gpu_layers: int | None = None,
+        threads: int | None = None,
         embedding: bool = False,
-        mmproj_path: Optional[Path] = None,
+        mmproj_path: Path | None = None,
+        effective_config: dict[str, object] | None = None,
+        transition_reason: str | None = None,
+        reload_count: int = 0,
     ) -> LlamaProcess:
         """
         Start a new llama-server process for a model.
@@ -303,6 +307,9 @@ class ProcessManager:
             context_size=ctx_size,
             gpu_layers=n_gpu_layers,
             threads=n_threads,
+            last_transition_reason=transition_reason,
+            reload_count=reload_count,
+            effective_config=effective_config or {},
         )
 
         try:
@@ -346,8 +353,8 @@ class ProcessManager:
         self,
         model_name: str,
         model_path: Path,
-        gpu_layers: Optional[int] = None,
-        threads: Optional[int] = None,
+        gpu_layers: int | None = None,
+        threads: int | None = None,
     ) -> LlamaProcess:
         """
         Start a new whisper-server process for a transcription model.
@@ -478,7 +485,7 @@ class ProcessManager:
 
                 try:
                     # Try root endpoint first (common for whisper.cpp server)
-                    response = await client.get(
+                    await client.get(
                         f"http://127.0.0.1:{port}/",
                         timeout=2.0,
                     )
@@ -683,6 +690,8 @@ class ProcessManager:
     ) -> None:
         """Monitor and log process output."""
         try:
+            if process.stdout is None:
+                return
             async for line in process.stdout:
                 decoded = line.decode().strip()
                 if decoded:
@@ -795,7 +804,7 @@ class ProcessManager:
                         timeout=timeout,
                     )
                     logger.info(f"[success]Server stopped gracefully: {model_name}[/success]")
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     # Force kill
                     logger.warning(f"[warning]Force killing server: {model_name}[/warning]")
                     llama_proc.process.kill()
@@ -846,7 +855,7 @@ class ProcessManager:
 
         logger.info("[success]All servers shut down[/success]")
 
-    def get_process(self, model_name: str) -> Optional[LlamaProcess]:
+    def get_process(self, model_name: str) -> LlamaProcess | None:
         """Get a process by model name."""
         return self._processes.get(model_name)
 
@@ -861,7 +870,7 @@ class ProcessManager:
         """Get all tracked processes."""
         return list(self._processes.values())
 
-    async def get_server_url(self, model_name: str) -> Optional[str]:
+    async def get_server_url(self, model_name: str) -> str | None:
         """Get the URL for a running model server."""
         proc = self._processes.get(model_name)
         if proc and proc.status == "running":

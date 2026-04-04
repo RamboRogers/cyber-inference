@@ -23,6 +23,7 @@ wheels/
 .env
 .env.local
 .env.*.local
+.omx
 
 # Downloaded models (root level only, not src/cyber_inference/models/)
 /models/

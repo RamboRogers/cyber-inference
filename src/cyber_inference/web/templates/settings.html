@@ -109,12 +109,29 @@
                                value="{{ settings.max_context_size }}"
                                class="cyber-input w-full px-4 py-2 rounded-lg font-mono" min="1024" required>
                     </div>
-                    <div>
-                        <label class="block text-sm font-mono text-gray-400 mb-2">Idle Timeout (seconds)</label>
-                        <input type="number" id="model_idle_timeout" name="model_idle_timeout"
-                               value="{{ settings.model_idle_timeout }}"
-                               class="cyber-input w-full px-4 py-2 rounded-lg font-mono" min="60" required>
-                        <p class="text-xs text-gray-500 mt-1">Models unload after this idle time</p>
+                    <div class="space-y-3">
+                        <div>
+                            <label class="block text-sm font-mono text-gray-400 mb-2">Idle Unload Timer</label>
+                            <label class="flex items-center gap-3">
+                                <input type="checkbox" id="model_idle_unload_enabled" name="model_idle_unload_enabled"
+                                       class="h-4 w-4 accent-cyber-neon"
+                                       {% if settings.model_idle_unload_enabled %}checked{% endif %}
+                                       onchange="toggleIdleTimeoutField()">
+                                <span class="text-sm font-mono text-gray-300">
+                                    Enable timer-based unloading for idle models
+                                </span>
+                            </label>
+                            <p class="text-xs text-gray-500 mt-1">
+                                Disable this to keep models resident until capacity or explicit unload/reload requires removal.
+                            </p>
+                        </div>
+                        <div id="idleTimeoutField">
+                            <label class="block text-sm font-mono text-gray-400 mb-2">Idle Timeout (seconds)</label>
+                            <input type="number" id="model_idle_timeout" name="model_idle_timeout"
+                                   value="{{ settings.model_idle_timeout }}"
+                                   class="cyber-input w-full px-4 py-2 rounded-lg font-mono" min="60" required>
+                            <p class="text-xs text-gray-500 mt-1">Loaded models unload after this much idle time when the timer is enabled.</p>
+                        </div>
                     </div>
                     <div>
                         <label class="block text-sm font-mono text-gray-400 mb-2">Max Loaded Models</label>
@@ -505,7 +522,7 @@
         return false;
     }
 
-    async function saveSettings(event) {
+        async function saveSettings(event) {
         event.preventDefault();
 
         const saveBtn = document.getElementById('saveSettingsBtn');
@@ -519,10 +536,12 @@
             // Collect all values
             const defaultContextSize = parseInt(document.getElementById('default_context_size').value);
             const maxContextSize = parseInt(document.getElementById('max_context_size').value);
-            const modelIdleTimeout = parseInt(document.getElementById('model_idle_timeout').value);
+            const idleUnloadEnabled = document.getElementById('model_idle_unload_enabled').checked;
             const maxLoadedModels = parseInt(document.getElementById('max_loaded_models').value);
             const maxMemoryPercent = parseInt(document.getElementById('max_memory_percent').value);
             const llamaGpuLayers = parseInt(document.getElementById('llama_gpu_layers').value);
+            const modelIdleTimeoutInput = document.getElementById('model_idle_timeout');
+            const modelIdleTimeout = modelIdleTimeoutInput ? parseInt(modelIdleTimeoutInput.value) : 300;
 
             // Validation
             if (maxContextSize < defaultContextSize) {
@@ -539,8 +558,8 @@
                 return;
             }
 
-            if (modelIdleTimeout < 60) {
-                showToast({ tone: 'warning', message: 'Idle timeout must be at least 60 seconds.' });
+            if (idleUnloadEnabled && modelIdleTimeout < 60) {
+                showToast({ tone: 'warning', message: 'Idle timeout must be at least 60 seconds when the timer is enabled.' });
                 saveBtn.disabled = false;
                 saveBtn.innerHTML = originalText;
                 return;
@@ -564,6 +583,7 @@
             const settings = [
                 { key: 'default_context_size', value: defaultContextSize },
                 { key: 'max_context_size', value: maxContextSize },
+                { key: 'model_idle_unload_enabled', value: idleUnloadEnabled },
                 { key: 'model_idle_timeout', value: modelIdleTimeout },
                 { key: 'max_loaded_models', value: maxLoadedModels },
                 { key: 'max_memory_percent', value: maxMemoryPercent },
@@ -601,7 +621,12 @@
             }
 
             // Success - reload page to show updated values
-            showToast({ tone: 'success', message: 'Settings saved successfully.' });
+            showToast({
+                tone: 'success',
+                message: idleUnloadEnabled
+                    ? 'Settings saved. Idle timer remains available and runtime policy was updated live.'
+                    : 'Settings saved. Idle timer disabled; models stay resident until capacity or explicit actions require unload.',
+            });
             setTimeout(() => location.reload(), 800);
 
         } catch (error) {
@@ -610,6 +635,18 @@
             saveBtn.disabled = false;
             saveBtn.innerHTML = originalText;
         }
+
+        function toggleIdleTimeoutField() {
+            const enabled = document.getElementById('model_idle_unload_enabled').checked;
+            const field = document.getElementById('idleTimeoutField');
+            const input = document.getElementById('model_idle_timeout');
+            if (!field || !input) return;
+            field.classList.toggle('opacity-50', !enabled);
+            input.disabled = !enabled;
+            input.required = enabled;
+        }
+
+        toggleIdleTimeoutField();
     }
 
     async function setAdminPassword() {

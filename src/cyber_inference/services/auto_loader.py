@@ -11,15 +11,34 @@ Handles:
 import asyncio
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Any
 
 from cyber_inference.core.config import get_settings
 from cyber_inference.core.logging import get_logger
 from cyber_inference.services.model_manager import ModelManager
-from cyber_inference.services.process_manager import ProcessManager, LlamaProcess
+from cyber_inference.services.process_manager import LlamaProcess, ProcessManager
 from cyber_inference.services.resource_monitor import ResourceMonitor
 
 logger = get_logger(__name__)
+
+
+REQUEST_DEFAULT_SUPPORT: dict[str, set[str]] = {
+    "llama": {"temperature", "top_p", "top_k", "max_tokens", "repeat_penalty"},
+    "transformers": {"temperature", "top_p", "max_tokens"},
+    "whisper": set(),
+}
+
+GLOBAL_RUNTIME_REFRESH_KEYS = {
+    "default_context_size",
+    "max_context_size",
+    "model_idle_unload_enabled",
+    "model_idle_timeout",
+    "max_loaded_models",
+    "max_memory_percent",
+    "llama_gpu_layers",
+}
+
+GLOBAL_RELOAD_KEYS = {"default_context_size", "llama_gpu_layers"}
 
 
 class AutoLoader:
@@ -35,9 +54,9 @@ class AutoLoader:
 
     def __init__(
         self,
-        process_manager: Optional[ProcessManager] = None,
-        model_manager: Optional[ModelManager] = None,
-        resource_monitor: Optional[ResourceMonitor] = None,
+        process_manager: ProcessManager | None = None,
+        model_manager: ModelManager | None = None,
+        resource_monitor: ResourceMonitor | None = None,
     ):
         """
         Initialize the auto-loader.
@@ -56,13 +75,16 @@ class AutoLoader:
         self._idle_timeout = settings.model_idle_timeout
         self._max_loaded = settings.max_loaded_models
         self._max_memory_percent = settings.max_memory_percent
+        self._idle_unload_enabled = settings.model_idle_unload_enabled
 
         self._running = False
-        self._cleanup_task: Optional[asyncio.Task] = None
+        self._cleanup_task: asyncio.Task | None = None
         self._locks: dict[str, asyncio.Lock] = {}
+        self._model_events: dict[str, dict[str, Any]] = {}
 
         logger.info("[info]AutoLoader initialized[/info]")
-        logger.debug(f"  Idle timeout: {self._idle_timeout}s")
+        logger.debug(f"  Idle timeout configured: {self._idle_timeout}s")
+        logger.debug(f"  Idle unload enabled: {self._idle_unload_enabled}")
         logger.debug(f"  Max loaded models: {self._max_loaded}")
         logger.debug(f"  Max memory percent: {self._max_memory_percent}%")
 
@@ -125,7 +147,8 @@ class AutoLoader:
 
         while self._running:
             try:
-                await self._check_idle_models()
+                if self._idle_unload_enabled:
+                    await self._check_idle_models()
                 await self._check_memory_pressure()
             except Exception as e:
                 logger.error(f"Cleanup loop error: {e}")
@@ -134,6 +157,9 @@ class AutoLoader:
 
     async def _check_idle_models(self) -> None:
         """Check for and unload idle models."""
+        if not self._idle_unload_enabled:
+            return
+
         pm = self._get_process_manager()
         now = datetime.now()
         idle_threshold = timedelta(seconds=self._idle_timeout)
@@ -150,7 +176,7 @@ class AutoLoader:
                     f"[warning]Unloading idle model: {proc.model_name} "
                     f"(idle for {idle_time.total_seconds():.0f}s)[/warning]"
                 )
-                await self.unload_model(proc.model_name)
+                await self.unload_model(proc.model_name, reason="idle_timeout")
 
     async def _check_memory_pressure(self) -> None:
         """Check memory and unload models if necessary."""
@@ -181,7 +207,7 @@ class AutoLoader:
 
                 oldest = candidates[0]
                 logger.info(f"[warning]Unloading LRU model: {oldest.model_name}[/warning]")
-                await self.unload_model(oldest.model_name)
+                await self.unload_model(oldest.model_name, reason="memory_pressure")
 
     async def ensure_model_loaded(self, model_name: str) -> str:
         """
@@ -230,12 +256,132 @@ class AutoLoader:
                             oldest_name = name
 
                 if oldest_name:
-                    await self.unload_model(oldest_name)
+                    await self.unload_model(
+                        oldest_name,
+                        reason=f"capacity_eviction:{model_name}",
+                    )
 
             # Load the model
-            return await self.load_model(model_name)
+            return await self.load_model(model_name, reason="on_demand_load")
 
-    async def load_model(self, model_name: str) -> str:
+    def _record_event(
+        self,
+        model_name: str,
+        event: str,
+        reason: str | None = None,
+        **details: Any,
+    ) -> None:
+        """Record the latest runtime event for a model."""
+        self._model_events[model_name] = {
+            "event": event,
+            "reason": reason,
+            "timestamp": datetime.now().isoformat(),
+            **details,
+        }
+
+    def refresh_runtime_settings(self) -> dict[str, Any]:
+        """Refresh runtime policy values from cached settings."""
+        settings = get_settings()
+        self._idle_timeout = settings.model_idle_timeout
+        self._max_loaded = settings.max_loaded_models
+        self._max_memory_percent = settings.max_memory_percent
+        self._idle_unload_enabled = settings.model_idle_unload_enabled
+        return {
+            "idle_timeout": self._idle_timeout,
+            "idle_unload_enabled": self._idle_unload_enabled,
+            "max_loaded_models": self._max_loaded,
+            "max_memory_percent": self._max_memory_percent,
+        }
+
+    def _get_saved_generation_defaults(self, model_info: dict[str, Any]) -> dict[str, Any]:
+        """Return saved generation defaults in request-field shape."""
+        return {
+            "temperature": model_info.get("default_temperature"),
+            "top_p": model_info.get("default_top_p"),
+            "top_k": model_info.get("default_top_k"),
+            "max_tokens": model_info.get("default_max_tokens"),
+            "repeat_penalty": model_info.get("default_repeat_penalty"),
+        }
+
+    def _build_effective_runtime_config(
+        self,
+        model_info: dict[str, Any],
+        proc: LlamaProcess | None,
+    ) -> dict[str, Any]:
+        """Build an operator-facing view of the effective runtime config."""
+        settings = get_settings()
+        server_type = proc.server_type if proc else model_info.get("engine_type", "llama")
+        supported_fields = REQUEST_DEFAULT_SUPPORT.get(server_type, set())
+        saved_defaults = self._get_saved_generation_defaults(model_info)
+        effective_request_defaults = {
+            key: value
+            for key, value in saved_defaults.items()
+            if key in supported_fields and value is not None
+        }
+        unsupported_saved_defaults = [
+            key for key, value in saved_defaults.items()
+            if key not in supported_fields and value is not None
+        ]
+        configured_context_size = model_info.get("default_context_size")
+        native_context_size = model_info.get("context_length")
+        if proc:
+            launch_context_size = proc.context_size
+            launch_config = proc.effective_config.get("launch_config", {})
+            if isinstance(launch_config, dict):
+                context_source = str(launch_config.get("context_source", "running"))
+            else:
+                context_source = "running"
+        elif configured_context_size:
+            launch_context_size = configured_context_size
+            context_source = "configured_default"
+        elif native_context_size:
+            launch_context_size = native_context_size
+            context_source = "model_native_max"
+        else:
+            launch_context_size = settings.default_context_size
+            context_source = "global_default"
+        launch_config = {
+            "context_size": launch_context_size,
+            "configured_context_size": configured_context_size,
+            "native_context_size": native_context_size,
+            "context_source": context_source,
+            "gpu_layers": proc.gpu_layers if proc else (settings.llama_gpu_layers if server_type == "llama" else None),
+        }
+        return {
+            "server_type": server_type,
+            "launch_config": launch_config,
+            "request_defaults": effective_request_defaults,
+            "unsupported_saved_defaults": unsupported_saved_defaults,
+            "supports_request_defaults": sorted(supported_fields),
+        }
+
+    async def get_request_defaults(
+        self,
+        model_name: str,
+        server_type: str | None = None,
+    ) -> dict[str, Any]:
+        """Get supported saved request defaults for a model/server type."""
+        model_info = await self.get_model_info(model_name)
+        if not model_info:
+            return {}
+
+        resolved_server_type = server_type or model_info.get("engine_type", "llama")
+        saved_defaults = self._get_saved_generation_defaults(model_info)
+        supported_fields = REQUEST_DEFAULT_SUPPORT.get(resolved_server_type, set())
+        return {
+            key: value
+            for key, value in saved_defaults.items()
+            if key in supported_fields and value is not None
+        }
+
+    async def load_model(
+        self,
+        model_name: str,
+        reason: str = "manual_load",
+        reload_count: int = 0,
+        context_size_override: int | None = None,
+        gpu_layers_override: int | None = None,
+    ) -> str:
         """
         Load a model and return its server URL.
 
@@ -249,6 +395,7 @@ class AutoLoader:
             URL of the model's server
         """
         logger.info(f"[highlight]Loading model: {model_name}[/highlight]")
+        self._record_event(model_name, "loading", reason=reason)
 
         mm = self._get_model_manager()
         pm = self._get_process_manager()
@@ -299,13 +446,31 @@ class AutoLoader:
         logger.info(f"  Engine type: {engine_type}")
 
         # Determine context size: per-model override > model native > global default
-        context_size = (
-            model_info.get("default_context_size")
-            or model_info.get("context_length")
-            or None  # let start_server() fall back to global default
-        )
+        context_size: int | None
+        if context_size_override is not None:
+            context_size = context_size_override
+        else:
+            configured_context = model_info.get("default_context_size")
+            native_context = model_info.get("context_length")
+            context_size = (
+                int(configured_context)
+                if configured_context is not None
+                else int(native_context)
+                if native_context is not None
+                else None  # let start_server() fall back to global default
+            )
         if context_size:
             logger.info(f"  Context size: {context_size}")
+
+        effective_config = self._build_effective_runtime_config(model_info, proc=None)
+        effective_config["launch_config"]["context_size"] = context_size or effective_config["launch_config"]["context_size"]
+        effective_config["launch_config"]["context_source"] = (
+            "load_override"
+            if context_size_override is not None
+            else effective_config["launch_config"]["context_source"]
+        )
+        if gpu_layers_override is not None:
+            effective_config["launch_config"]["gpu_layers"] = gpu_layers_override
 
         # Start the appropriate server based on engine_type
         if engine_type == "transformers":
@@ -315,9 +480,13 @@ class AutoLoader:
                 model_path,
                 embedding=is_embedding,
             )
+            proc.last_transition_reason = reason
+            proc.reload_count = reload_count
         elif is_transcription:
             # Use whisper-server for transcription models
             proc = await pm.start_whisper_server(model_name, model_path)
+            proc.last_transition_reason = reason
+            proc.reload_count = reload_count
         else:
             # Use llama-server for chat/embedding models
             proc = await pm.start_server(
@@ -326,6 +495,10 @@ class AutoLoader:
                 embedding=is_embedding,
                 mmproj_path=mmproj_path,
                 context_size=context_size,
+                gpu_layers=gpu_layers_override,
+                effective_config=effective_config,
+                transition_reason=reason,
+                reload_count=reload_count,
             )
 
         if proc.status != "running":
@@ -335,11 +508,19 @@ class AutoLoader:
         await mm.update_last_used(model_name)
 
         url = f"http://127.0.0.1:{proc.port}"
+        proc.effective_config = effective_config
         logger.info(f"[success]Model loaded: {model_name} at {url} [{engine_type}][/success]")
+        self._record_event(
+            model_name,
+            "loaded",
+            reason=reason,
+            port=proc.port,
+            server_type=proc.server_type,
+        )
 
         return url
 
-    async def unload_model(self, model_name: str) -> None:
+    async def unload_model(self, model_name: str, reason: str = "manual_unload") -> None:
         """
         Unload a model.
 
@@ -347,11 +528,71 @@ class AutoLoader:
             model_name: Name of the model to unload
         """
         logger.info(f"[warning]Unloading model: {model_name}[/warning]")
+        self._record_event(model_name, "unloading", reason=reason)
 
         pm = self._get_process_manager()
         await pm.stop_server(model_name)
 
         logger.info(f"[success]Model unloaded: {model_name}[/success]")
+        self._record_event(model_name, "unloaded", reason=reason)
+
+    async def reload_model(self, model_name: str, reason: str) -> dict[str, Any]:
+        """Reload a running model so saved config becomes authoritative."""
+        try:
+            pm = self._get_process_manager()
+        except RuntimeError:
+            status = await self.get_model_status(model_name)
+            status["reload_triggered"] = False
+            status["message"] = "Runtime not initialized; changes apply on next load."
+            return status
+        proc = pm.get_process(model_name)
+        if not proc or proc.status != "running":
+            status = await self.get_model_status(model_name)
+            status["reload_triggered"] = False
+            status["message"] = "Model is not currently loaded; changes apply on next load."
+            return status
+
+        next_reload_count = proc.reload_count + 1
+        self._record_event(model_name, "reloading", reason=reason)
+        await self.unload_model(model_name, reason=f"reload:{reason}")
+        await self.load_model(
+            model_name,
+            reason=f"reload:{reason}",
+            reload_count=next_reload_count,
+        )
+        status = await self.get_model_status(model_name)
+        status["reload_triggered"] = True
+        status["message"] = "Running model reloaded with the updated settings."
+        return status
+
+    async def reconcile_model_config_change(self, model_name: str) -> dict[str, Any]:
+        """Apply model config changes to a running model when needed."""
+        return await self.reload_model(model_name, reason="model_config_updated")
+
+    async def reconcile_global_config_change(self, key: str) -> dict[str, Any]:
+        """Apply a global config change to live runtime state."""
+        runtime_state = self.refresh_runtime_settings()
+        reloaded_models: list[str] = []
+
+        try:
+            pm = self._get_process_manager()
+        except RuntimeError:
+            pm = None
+
+        if key in GLOBAL_RELOAD_KEYS and pm is not None:
+            for proc in list(pm.get_all_processes()):
+                if proc.server_type != "llama":
+                    continue
+                await self.reload_model(proc.model_name, reason=f"global_config:{key}")
+                reloaded_models.append(proc.model_name)
+
+        return {
+            "applied_live": key in GLOBAL_RUNTIME_REFRESH_KEYS,
+            "reload_triggered": bool(reloaded_models),
+            "reloaded_models": reloaded_models,
+            "runtime_policy": runtime_state,
+            "restart_required": key not in GLOBAL_RUNTIME_REFRESH_KEYS,
+        }
 
     async def record_request(self, model_name: str) -> None:
         """Record that a request was made to a model."""
@@ -373,26 +614,34 @@ class AutoLoader:
             if m["is_downloaded"] and m["is_enabled"]
         ]
 
-    async def get_model_info(self, model_name: str) -> Optional[dict]:
+    async def get_model_info(self, model_name: str) -> dict | None:
         """Get information about a specific model."""
         mm = self._get_model_manager()
         return await mm.get_model(model_name)
 
     async def get_loaded_models(self) -> list[str]:
         """Get list of currently loaded models."""
-        pm = self._get_process_manager()
+        try:
+            pm = self._get_process_manager()
+        except RuntimeError:
+            return []
         return pm.get_running_models()
 
     async def get_model_status(self, model_name: str) -> dict:
         """Get detailed status of a model."""
-        pm = self._get_process_manager()
         mm = self._get_model_manager()
 
         model = await mm.get_model(model_name)
         if not model:
             return {"status": "not_found"}
 
-        proc = pm.get_process(model_name)
+        try:
+            pm = self._get_process_manager()
+            proc = pm.get_process(model_name)
+        except RuntimeError:
+            proc = None
+        effective_config = self._build_effective_runtime_config(model, proc)
+        last_event = self._model_events.get(model_name, {})
 
         return {
             "name": model_name,
@@ -404,4 +653,11 @@ class AutoLoader:
             "memory_mb": proc.memory_mb if proc else 0,
             "request_count": proc.request_count if proc else 0,
             "last_request_at": proc.last_request_at.isoformat() if proc and proc.last_request_at else None,
+            "server_type": proc.server_type if proc else model.get("engine_type", "llama"),
+            "last_transition_reason": proc.last_transition_reason if proc else last_event.get("reason"),
+            "reload_count": proc.reload_count if proc else 0,
+            "effective_config": proc.effective_config if proc and proc.effective_config else effective_config,
+            "supports_request_defaults": effective_config["supports_request_defaults"],
+            "unsupported_saved_defaults": effective_config["unsupported_saved_defaults"],
+            "last_event": last_event,
         }

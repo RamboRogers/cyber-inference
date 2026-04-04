@@ -8,9 +8,9 @@ Provides:
 """
 
 import logging
+from collections.abc import Callable
 from functools import lru_cache
 from pathlib import Path
-from typing import Optional
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -22,9 +22,22 @@ from cyber_inference.models.db_models import Configuration
 
 logger = get_logger(__name__)
 
-CONFIG_DB_CASTS = {
+
+def _parse_bool(value: object) -> bool:
+    """Parse bool-like config values from DB/env writes."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+ConfigCaster = Callable[[object], object] | type[int] | type[float] | type[str]
+
+CONFIG_DB_CASTS: dict[str, ConfigCaster] = {
     "default_context_size": int,
     "max_context_size": int,
+    "model_idle_unload_enabled": _parse_bool,
     "model_idle_timeout": int,
     "max_loaded_models": int,
     "max_memory_percent": float,
@@ -65,6 +78,10 @@ class Settings(BaseSettings):
     # Model management
     default_context_size: int = Field(default=8192, description="Default context size for models")
     max_context_size: int = Field(default=32768, description="Maximum allowed context size")
+    model_idle_unload_enabled: bool = Field(
+        default=False,
+        description="Whether idle timer unloading is enabled",
+    )
     model_idle_timeout: int = Field(default=300, description="Seconds before unloading idle model")
     max_loaded_models: int = Field(default=1, description="Maximum number of simultaneously loaded models")
 
@@ -74,17 +91,17 @@ class Settings(BaseSettings):
 
     # llama.cpp settings
     llama_server_base_port: int = Field(default=8338, description="Base port for llama.cpp servers")
-    llama_threads: Optional[int] = Field(default=None, description="Number of threads (auto if None)")
+    llama_threads: int | None = Field(default=None, description="Number of threads (auto if None)")
     llama_gpu_layers: int = Field(default=-1, description="GPU layers (-1 for auto)")
 
     # Security
-    admin_password: Optional[str] = Field(default=None, description="Admin password (optional)")
+    admin_password: str | None = Field(default=None, description="Admin password (optional)")
     jwt_secret: str = Field(default="cyber-inference-secret-change-me", description="JWT secret key")
     jwt_algorithm: str = Field(default="HS256", description="JWT algorithm")
     jwt_expiry_hours: int = Field(default=24, description="JWT token expiry in hours")
 
     # HuggingFace
-    hf_token: Optional[str] = Field(default=None, description="HuggingFace API token")
+    hf_token: str | None = Field(default=None, description="HuggingFace API token")
 
     @property
     def database_path(self) -> Path:
@@ -127,7 +144,7 @@ class Settings(BaseSettings):
             logger.debug(f"Ensured directory exists: {directory}")
 
 
-@lru_cache()
+@lru_cache
 def get_settings() -> Settings:
     """
     Get cached settings instance.
@@ -138,7 +155,7 @@ def get_settings() -> Settings:
     settings = Settings()
     settings.ensure_directories()
 
-    logger.debug(f"Settings loaded:")
+    logger.debug("Settings loaded:")
     logger.debug(f"  Host: {settings.host}")
     logger.debug(f"  Port: {settings.port}")
     logger.debug(f"  Data dir: {settings.data_dir}")

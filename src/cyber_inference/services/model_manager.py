@@ -9,17 +9,18 @@ Handles:
 """
 
 import asyncio
-import os
 import re
 import shutil
+import time
+import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import AsyncGenerator, Optional
+from typing import Optional
 
 import httpx
-from huggingface_hub import HfApi, hf_hub_download, list_repo_files, snapshot_download
+from huggingface_hub import HfApi, hf_hub_url, list_repo_files, snapshot_download
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from tqdm.auto import tqdm as base_tqdm
 
 from cyber_inference.core.config import get_settings
 from cyber_inference.core.database import get_db_session
@@ -361,6 +362,11 @@ class ModelManager:
         return new_repo_id, new_filename
 
     @staticmethod
+    def _new_download_id() -> str:
+        """Create a unique download session identifier."""
+        return f"dl-{uuid.uuid4().hex}"
+
+    @staticmethod
     def _extract_model_base_name(filename: str) -> str:
         """
         Extract the base model name by removing quantization suffixes.
@@ -507,6 +513,7 @@ class ModelManager:
         repo_files: Optional[list[str]] = None,
         mmproj_filename: Optional[str] = None,
         force: bool = False,
+        download_id: str | None = None,
     ) -> Optional[Path]:
         """
         Download the mmproj file for a multimodal model.
@@ -546,26 +553,118 @@ class ModelManager:
 
         logger.info(f"  Downloading mmproj: {mmproj_filename}")
         try:
-            downloaded_path = await asyncio.to_thread(
-                hf_hub_download,
+            expected_size = None
+            try:
+                repo_tree = await asyncio.to_thread(
+                    self._hf_api.list_repo_tree,
+                    repo_id,
+                    recursive=True,
+                )
+                for item in repo_tree:
+                    if getattr(item, "path", None) == mmproj_filename:
+                        expected_size = getattr(item, "size", None)
+                        break
+            except Exception:
+                pass
+
+            downloaded_path = await self._download_file_with_progress(
                 repo_id=repo_id,
                 filename=mmproj_filename,
-                local_dir=self.models_dir,
-                local_dir_use_symlinks=False,
-                token=self._hf_token,
+                local_path=local_path,
+                expected_size=expected_size,
+                status_label="Downloading mmproj",
+                download_id=download_id,
+                phase="downloading_mmproj",
             )
-            downloaded_path = Path(downloaded_path)
-            local_path.parent.mkdir(parents=True, exist_ok=True)
-            if downloaded_path != local_path:
-                if local_path.exists():
-                    local_path.unlink()
-                downloaded_path.rename(local_path)
-                logger.info(f"  Aligned mmproj filename to: {local_path.name}")
             logger.info(f"[success]mmproj download complete: {local_path}[/success]")
-            return local_path
+            return Path(downloaded_path)
         except Exception as e:
             logger.warning(f"[warning]mmproj download failed: {e}[/warning]")
             return None
+
+    async def _download_file_with_progress(
+        self,
+        repo_id: str,
+        filename: str,
+        local_path: Path,
+        expected_size: int | None = None,
+        status_label: str = "Downloading file",
+        download_id: str | None = None,
+        phase: str = "downloading",
+    ) -> Path:
+        """Stream a repo file download while emitting smooth GUI progress updates."""
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = local_path.with_suffix(f"{local_path.suffix}.part")
+        if temp_path.exists():
+            temp_path.unlink()
+
+        url = hf_hub_url(
+            repo_id=repo_id,
+            filename=filename,
+            endpoint=self._hf_api.endpoint,
+        )
+        headers = {"user-agent": "cyber-inference/0.1.0"}
+        if self._hf_token:
+            headers["authorization"] = f"Bearer {self._hf_token}"
+
+        last_notified_progress = -1.0
+        last_notify_ts = 0.0
+        started_at = time.monotonic()
+
+        async with httpx.AsyncClient(timeout=None, follow_redirects=True) as client:
+            async with client.stream("GET", url, headers=headers) as response:
+                response.raise_for_status()
+                total_bytes = expected_size or int(response.headers.get("content-length") or 0) or None
+                downloaded_bytes = 0
+                await self._notify_progress(
+                    repo_id,
+                    filename,
+                    0,
+                    "downloading",
+                    message=f"{status_label}…",
+                    downloaded_bytes=0,
+                    total_bytes=total_bytes,
+                    download_id=download_id,
+                    phase=phase,
+                )
+                with temp_path.open("wb") as handle:
+                    async for chunk in response.aiter_bytes(chunk_size=1024 * 1024):
+                        if not chunk:
+                            continue
+                        handle.write(chunk)
+                        downloaded_bytes += len(chunk)
+                        now = time.monotonic()
+                        progress = (
+                            min(100.0, (downloaded_bytes / total_bytes) * 100.0)
+                            if total_bytes
+                            else 0.0
+                        )
+                        if (
+                            total_bytes is None
+                            or progress - last_notified_progress >= 1.0
+                            or now - last_notify_ts >= 0.5
+                        ):
+                            elapsed = max(now - started_at, 0.001)
+                            bytes_per_second = downloaded_bytes / elapsed
+                            await self._notify_progress(
+                                repo_id,
+                                filename,
+                                progress,
+                                "downloading",
+                                message=status_label,
+                                downloaded_bytes=downloaded_bytes,
+                                total_bytes=total_bytes,
+                                bytes_per_second=bytes_per_second,
+                                download_id=download_id,
+                                phase=phase,
+                            )
+                            last_notified_progress = progress
+                            last_notify_ts = now
+
+        if local_path.exists():
+            local_path.unlink()
+        temp_path.rename(local_path)
+        return local_path
 
     async def search_models(
         self,
@@ -696,12 +795,6 @@ class ModelManager:
             model_files = []
             mmproj_files = []
 
-            # Check if this is a whisper.cpp repo (contains ggml-*.bin files)
-            is_whisper_repo = any(
-                f.startswith("ggml-") and f.endswith(".bin")
-                for f in file_sizes.keys()
-            )
-
             for filename, size in file_sizes.items():
                 # Support both GGUF files and whisper.cpp bin files
                 is_gguf = filename.endswith(".gguf")
@@ -783,6 +876,7 @@ class ModelManager:
         filename: Optional[str] = None,
         mmproj_filename: Optional[str] = None,
         force: bool = False,
+        download_id: str | None = None,
     ) -> Path:
         """
         Download a model from HuggingFace.
@@ -797,6 +891,7 @@ class ModelManager:
             Path to downloaded model file
         """
         repo_id = repo_id.strip()
+        download_id = download_id or self._new_download_id()
         filename = filename.strip() if filename else None
         mmproj_filename = mmproj_filename.strip() if mmproj_filename else None
         parsed = self._split_repo_and_filename(repo_id, filename)
@@ -826,8 +921,21 @@ class ModelManager:
 
             logger.info(f"  Auto-selected file: {filename}")
 
+        files = await self.list_repo_files(repo_id, files=repo_files)
+        selected_file = next((file for file in files if file["filename"] == filename), None)
+        expected_size = selected_file["size_bytes"] if selected_file else None
+
         # Notify download starting
-        await self._notify_progress(repo_id, filename, 0, "starting")
+        await self._notify_progress(
+            repo_id,
+            filename,
+            0,
+            "starting",
+            message="Preparing download…",
+            total_bytes=expected_size,
+            download_id=download_id,
+            phase="preparing",
+        )
 
         # Check if already downloaded
         local_path = self.models_dir / filename
@@ -839,14 +947,25 @@ class ModelManager:
                 repo_id, local_path,
                 repo_files=repo_files,
                 mmproj_filename=mmproj_filename,
-                force=force
+                force=force,
+                download_id=download_id,
             )
 
             # Ensure it's registered in DB with mmproj_path
             await self._register_model(repo_id, filename, local_path, mmproj_path=mmproj_path)
 
             # Notify complete
-            await self._notify_progress(repo_id, filename, 100, "complete")
+            await self._notify_progress(
+                repo_id,
+                filename,
+                100,
+                "complete",
+                message="Model already downloaded — registration complete.",
+                downloaded_bytes=expected_size,
+                total_bytes=expected_size,
+                download_id=download_id,
+                phase="complete",
+            )
 
             return local_path
 
@@ -854,41 +973,15 @@ class ModelManager:
         logger.info(f"  Downloading to: {local_path}")
 
         try:
-            # Create a progress tracker
-            last_progress = [0]  # Use list to allow modification in nested function
-
-            def progress_callback(current: int, total: int) -> None:
-                if total > 0:
-                    progress = int((current / total) * 100)
-                    # Only log every 10%
-                    if progress >= last_progress[0] + 10:
-                        last_progress[0] = progress
-                        logger.info(f"  Download progress: {progress}%")
-                        # Schedule async notification
-                        try:
-                            asyncio.get_event_loop().create_task(
-                                self._notify_progress(repo_id, filename, progress, "downloading")
-                            )
-                        except RuntimeError:
-                            pass  # No event loop available
-
-            # Notify downloading
-            await self._notify_progress(repo_id, filename, 5, "downloading")
-
-            # Use huggingface_hub for download with progress
-            downloaded_path = await asyncio.to_thread(
-                hf_hub_download,
+            await self._download_file_with_progress(
                 repo_id=repo_id,
                 filename=filename,
-                local_dir=self.models_dir,
-                local_dir_use_symlinks=False,
-                token=self._hf_token,
+                local_path=local_path,
+                expected_size=expected_size,
+                status_label="Downloading model",
+                download_id=download_id,
+                phase="downloading_model",
             )
-
-            # Move to expected location if needed
-            downloaded_path = Path(downloaded_path)
-            if downloaded_path != local_path:
-                downloaded_path.rename(local_path)
 
             logger.info(f"[success]Download complete: {local_path}[/success]")
 
@@ -897,14 +990,36 @@ class ModelManager:
                 repo_id, local_path,
                 repo_files=repo_files,
                 mmproj_filename=mmproj_filename,
-                force=force
+                force=force,
+                download_id=download_id,
             )
 
             # Register in database with mmproj_path
+            await self._notify_progress(
+                repo_id,
+                filename,
+                100,
+                "registering",
+                message="Finalizing model registration…",
+                downloaded_bytes=expected_size,
+                total_bytes=expected_size,
+                download_id=download_id,
+                phase="registering",
+            )
             await self._register_model(repo_id, filename, local_path, mmproj_path=mmproj_path)
 
             # Notify complete
-            await self._notify_progress(repo_id, filename, 100, "complete")
+            await self._notify_progress(
+                repo_id,
+                filename,
+                100,
+                "complete",
+                message="Download complete.",
+                downloaded_bytes=expected_size,
+                total_bytes=expected_size,
+                download_id=download_id,
+                phase="complete",
+            )
 
             return local_path
 
@@ -918,7 +1033,15 @@ class ModelManager:
                 except Exception as cleanup_err:
                     logger.warning(f"  Could not clean up partial file: {cleanup_err}")
             # Notify error
-            await self._notify_progress(repo_id, filename, 0, "error", str(e))
+            await self._notify_progress(
+                repo_id,
+                filename,
+                0,
+                "error",
+                str(e),
+                download_id=download_id,
+                phase="error",
+            )
             raise
 
     async def _notify_progress(
@@ -928,11 +1051,33 @@ class ModelManager:
         progress: float,
         status: str,
         error: Optional[str] = None,
+        message: Optional[str] = None,
+        downloaded_bytes: int | None = None,
+        total_bytes: int | None = None,
+        bytes_per_second: float | None = None,
+        download_id: str | None = None,
+        phase: str | None = None,
+        items_complete: int | None = None,
+        items_total: int | None = None,
     ) -> None:
         """Send download progress notification via WebSocket."""
         try:
             from cyber_inference.api.websocket import notify_download_progress
-            await notify_download_progress(repo_id, filename, progress, status, error)
+            await notify_download_progress(
+                repo_id,
+                filename,
+                progress,
+                status,
+                error,
+                message=message,
+                downloaded_bytes=downloaded_bytes,
+                total_bytes=total_bytes,
+                bytes_per_second=bytes_per_second,
+                download_id=download_id,
+                phase=phase,
+                items_complete=items_complete,
+                items_total=items_total,
+            )
         except Exception as e:
             logger.debug(f"Could not send progress notification: {e}")
 
@@ -1312,7 +1457,7 @@ class ModelManager:
                 if db_model:
                     await session.delete(db_model)
                     await session.commit()
-                    logger.info(f"  Deleted database record")
+                    logger.info("  Deleted database record")
 
         logger.info(f"[success]Model deleted: {name}[/success]")
         return True
@@ -1349,8 +1494,6 @@ class ModelManager:
         if file_path.suffix not in (".gguf", ".bin"):
             raise ValueError("Model file must be a .gguf or .bin file")
 
-        model_name = name or file_path.stem
-
         return await self._register_model(
             repo_id="local",
             filename=file_path.name,
@@ -1374,6 +1517,7 @@ class ModelManager:
         self,
         repo_id: str,
         force: bool = False,
+        download_id: str | None = None,
     ) -> Path:
         """
         Download a HuggingFace model for use with the transformers engine.
@@ -1389,6 +1533,7 @@ class ModelManager:
             Path to the downloaded model directory
         """
         repo_id = repo_id.strip()
+        download_id = download_id or self._new_download_id()
         model_name = self._sanitize_repo_name(repo_id)
 
         settings = get_settings()
@@ -1401,7 +1546,15 @@ class ModelManager:
         logger.info(f"  Target directory: {local_dir}")
 
         # Notify download starting
-        await self._notify_progress(repo_id, model_name, 0, "starting")
+        await self._notify_progress(
+            repo_id,
+            model_name,
+            0,
+            "starting",
+            message="Preparing transformers download…",
+            download_id=download_id,
+            phase="preparing",
+        )
 
         # Check if already downloaded
         if local_dir.exists() and (local_dir / "config.json").exists() and not force:
@@ -1413,13 +1566,60 @@ class ModelManager:
                 engine_type="transformers",
                 model_name_override=model_name,
             )
-            await self._notify_progress(repo_id, model_name, 100, "complete")
+            await self._notify_progress(
+                repo_id,
+                model_name,
+                100,
+                "complete",
+                message="Transformers model already downloaded — registration complete.",
+                download_id=download_id,
+                phase="complete",
+            )
             return local_dir
 
         # Download with progress tracking
-        await self._notify_progress(repo_id, model_name, 5, "downloading")
+        await self._notify_progress(
+            repo_id,
+            model_name,
+            5,
+            "downloading",
+            message="Resolving repository snapshot…",
+            download_id=download_id,
+            phase="resolving_repository",
+        )
 
         try:
+            loop = asyncio.get_running_loop()
+
+            class SnapshotProgress(base_tqdm):
+                def update(self, n=1):
+                    super().update(n)
+                    total = int(self.total or 0)
+                    completed = int(self.n)
+                    progress = min(95.0, 10.0 + ((completed / total) * 80.0)) if total else 10.0
+                    message = (
+                        f"Downloading repository files ({completed}/{total})…"
+                        if total
+                        else "Downloading repository files…"
+                    )
+                    loop.call_soon_threadsafe(
+                        lambda: asyncio.create_task(
+                            self_owner._notify_progress(
+                                repo_id,
+                                model_name,
+                                progress,
+                                "downloading",
+                                message=message,
+                                download_id=download_id,
+                                phase="downloading_repository",
+                                items_complete=completed if total else None,
+                                items_total=total if total else None,
+                            )
+                        )
+                    )
+
+            self_owner = self
+
             def _do_download() -> str:
                 """Run snapshot_download in a thread."""
                 return snapshot_download(
@@ -1427,6 +1627,7 @@ class ModelManager:
                     local_dir=str(local_dir),
                     local_dir_use_symlinks=False,
                     token=self._hf_token,
+                    tqdm_class=SnapshotProgress,
                 )
 
             # Run the download in a thread to avoid blocking
@@ -1434,6 +1635,15 @@ class ModelManager:
 
             logger.info(f"[success]Transformers model download complete: {local_dir}[/success]")
 
+            await self._notify_progress(
+                repo_id,
+                model_name,
+                97,
+                "registering",
+                message="Finalizing transformers model registration…",
+                download_id=download_id,
+                phase="registering",
+            )
             # Register in database
             await self._register_model(
                 repo_id=repo_id,
@@ -1444,7 +1654,15 @@ class ModelManager:
             )
 
             # Notify complete
-            await self._notify_progress(repo_id, model_name, 100, "complete")
+            await self._notify_progress(
+                repo_id,
+                model_name,
+                100,
+                "complete",
+                message="Transformers model download complete.",
+                download_id=download_id,
+                phase="complete",
+            )
 
             return local_dir
 
@@ -1457,5 +1675,13 @@ class ModelManager:
                     logger.info(f"  Cleaned up partial download: {local_dir}")
                 except Exception as cleanup_err:
                     logger.warning(f"  Could not clean up: {cleanup_err}")
-            await self._notify_progress(repo_id, model_name, 0, "error", str(e))
+            await self._notify_progress(
+                repo_id,
+                model_name,
+                0,
+                "error",
+                str(e),
+                download_id=download_id,
+                phase="error",
+            )
             raise

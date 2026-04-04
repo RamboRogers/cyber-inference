@@ -9,7 +9,7 @@ Provides request/response models for:
 
 from datetime import datetime
 from enum import Enum
-from typing import Any, Optional, Union
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -45,8 +45,8 @@ class SessionStatus(str, Enum):
 class ChatContentPart(BaseModel):
     """Structured chat content part (text, image, etc.)."""
     type: str = Field(..., description="Content part type (text, image_url, etc.)")
-    text: Optional[str] = Field(None, description="Text content")
-    image_url: Optional[Union[str, dict[str, Any]]] = Field(
+    text: str | None = Field(None, description="Text content")
+    image_url: str | dict[str, Any] | None = Field(
         None, description="Image payload (url or base64)"
     )
 
@@ -56,10 +56,10 @@ class ChatContentPart(BaseModel):
 class ChatMessage(BaseModel):
     """Chat message in a conversation."""
     role: str = Field(..., description="Role of the message author (system, user, assistant)")
-    content: Union[str, list[ChatContentPart], dict[str, Any]] = Field(
+    content: str | list[ChatContentPart] | dict[str, Any] = Field(
         ..., description="Content of the message"
     )
-    name: Optional[str] = Field(None, description="Optional name of the author")
+    name: str | None = Field(None, description="Optional name of the author")
 
 
 class ChatCompletionRequest(BaseModel):
@@ -68,20 +68,22 @@ class ChatCompletionRequest(BaseModel):
     messages: list[ChatMessage] = Field(..., description="List of messages in the conversation")
     temperature: float = Field(0.7, ge=0.0, le=2.0, description="Sampling temperature")
     top_p: float = Field(1.0, ge=0.0, le=1.0, description="Nucleus sampling probability")
+    top_k: int | None = Field(None, ge=0, description="Top-k sampling")
     n: int = Field(1, ge=1, le=10, description="Number of completions to generate")
     stream: bool = Field(False, description="Whether to stream the response")
-    stop: Optional[Union[str, list[str]]] = Field(None, description="Stop sequences")
-    max_tokens: Optional[int] = Field(None, description="Maximum tokens to generate")
+    stop: str | list[str] | None = Field(None, description="Stop sequences")
+    max_tokens: int | None = Field(None, description="Maximum tokens to generate")
+    repeat_penalty: float | None = Field(None, ge=0.0, description="Repeat penalty")
     presence_penalty: float = Field(0.0, ge=-2.0, le=2.0)
     frequency_penalty: float = Field(0.0, ge=-2.0, le=2.0)
-    user: Optional[str] = Field(None, description="User identifier")
+    user: str | None = Field(None, description="User identifier")
 
 
 class ChatCompletionChoice(BaseModel):
     """A single choice in a chat completion response."""
     index: int
     message: ChatMessage
-    finish_reason: Optional[str] = None
+    finish_reason: str | None = None
 
 
 class CompletionUsage(BaseModel):
@@ -113,13 +115,15 @@ class ChatCompletionChunk(BaseModel):
 class CompletionRequest(BaseModel):
     """Request for text completion (POST /v1/completions)."""
     model: str = Field(..., description="Model to use")
-    prompt: Union[str, list[str]] = Field(..., description="Prompt(s) to complete")
-    max_tokens: Optional[int] = Field(None, description="Maximum tokens to generate")
+    prompt: str | list[str] = Field(..., description="Prompt(s) to complete")
+    max_tokens: int | None = Field(None, description="Maximum tokens to generate")
     temperature: float = Field(0.7, ge=0.0, le=2.0)
     top_p: float = Field(1.0, ge=0.0, le=1.0)
+    top_k: int | None = Field(None, ge=0)
+    repeat_penalty: float | None = Field(None, ge=0.0)
     n: int = Field(1, ge=1, le=10)
     stream: bool = Field(False)
-    stop: Optional[Union[str, list[str]]] = Field(None)
+    stop: str | list[str] | None = Field(None)
     echo: bool = Field(False, description="Echo the prompt in the response")
 
 
@@ -127,7 +131,7 @@ class CompletionChoice(BaseModel):
     """A single choice in a completion response."""
     text: str
     index: int
-    finish_reason: Optional[str] = None
+    finish_reason: str | None = None
 
 
 class CompletionResponse(BaseModel):
@@ -143,7 +147,7 @@ class CompletionResponse(BaseModel):
 class EmbeddingRequest(BaseModel):
     """Request for embeddings (POST /v1/embeddings)."""
     model: str = Field(..., description="Model to use")
-    input: Union[str, list[str]] = Field(..., description="Text(s) to embed")
+    input: str | list[str] = Field(..., description="Text(s) to embed")
     encoding_format: str = Field("float", description="Encoding format (float or base64)")
 
 
@@ -169,8 +173,8 @@ class ModelInfo(BaseModel):
     created: int
     owned_by: str = "cyber-inference"
     permission: list[dict] = Field(default_factory=list)
-    root: Optional[str] = None
-    parent: Optional[str] = None
+    root: str | None = None
+    parent: str | None = None
 
 
 class ModelsResponse(BaseModel):
@@ -185,20 +189,21 @@ class ModelsResponse(BaseModel):
 
 class ModelCreate(BaseModel):
     """Request to register a new model."""
-    name: Optional[str] = Field(None, description="Unique model name (auto-generated if not provided)")
-    hf_repo_id: Optional[str] = Field(None, description="HuggingFace repository ID")
-    hf_filename: Optional[str] = Field(None, description="Specific filename to download")
-    hf_mmproj_filename: Optional[str] = Field(None, description="Specific mmproj filename to download for vision models")
+    name: str | None = Field(None, description="Unique model name (auto-generated if not provided)")
+    hf_repo_id: str | None = Field(None, description="HuggingFace repository ID")
+    hf_filename: str | None = Field(None, description="Specific filename to download")
+    hf_mmproj_filename: str | None = Field(None, description="Specific mmproj filename to download for vision models")
+    download_id: str | None = Field(None, description="Client-generated download session identifier")
     model_type: ModelType = Field(ModelType.CHAT, description="Type of model")
     context_length: int = Field(4096, description="Context length")
 
 
 class ModelUpdate(BaseModel):
     """Request to update a model."""
-    name: Optional[str] = None
-    is_enabled: Optional[bool] = None
-    context_length: Optional[int] = None
-    model_type: Optional[ModelType] = None
+    name: str | None = None
+    is_enabled: bool | None = None
+    context_length: int | None = None
+    model_type: ModelType | None = None
 
 
 class ModelResponse(BaseModel):
@@ -207,18 +212,18 @@ class ModelResponse(BaseModel):
     name: str
     filename: str
     file_path: str
-    hf_repo_id: Optional[str]
+    hf_repo_id: str | None
     size_bytes: int
-    quantization: Optional[str]
+    quantization: str | None
     context_length: int
-    model_type: Optional[str]
-    engine_type: Optional[str] = "llama"
-    mmproj_path: Optional[str] = None
+    model_type: str | None
+    engine_type: str | None = "llama"
+    mmproj_path: str | None = None
     is_downloaded: bool
     is_enabled: bool
     download_progress: float
     created_at: datetime
-    last_used_at: Optional[datetime]
+    last_used_at: datetime | None
 
     class Config:
         from_attributes = True
@@ -228,7 +233,7 @@ class RepoFileInfo(BaseModel):
     """Information about a file in a HuggingFace repository."""
     filename: str
     size_bytes: int
-    quantization: Optional[str] = None
+    quantization: str | None = None
     is_mmproj: bool = False
 
 
@@ -238,8 +243,8 @@ class RepoFilesResponse(BaseModel):
     model_files: list[RepoFileInfo] = Field(default_factory=list, description="Main model GGUF files")
     mmproj_files: list[RepoFileInfo] = Field(default_factory=list, description="mmproj files for vision models")
     is_multimodal: bool = Field(False, description="Whether repo contains vision/multimodal model files")
-    suggested_model: Optional[str] = Field(None, description="Auto-suggested model file to download")
-    suggested_mmproj: Optional[str] = Field(None, description="Auto-suggested mmproj file for selected model")
+    suggested_model: str | None = Field(None, description="Auto-suggested model file to download")
+    suggested_mmproj: str | None = Field(None, description="Auto-suggested mmproj file for selected model")
 
 
 class ModelSessionResponse(BaseModel):
@@ -248,14 +253,18 @@ class ModelSessionResponse(BaseModel):
     model_id: int
     model_name: str
     port: int
-    pid: Optional[int]
+    pid: int | None
     status: str
     memory_mb: float
     gpu_memory_mb: float
     context_size: int
     started_at: datetime
-    last_request_at: Optional[datetime]
+    last_request_at: datetime | None
     request_count: int
+    server_type: str | None = None
+    last_transition_reason: str | None = None
+    reload_count: int = 0
+    effective_config: dict[str, Any] | None = None
 
     class Config:
         from_attributes = True
@@ -264,8 +273,8 @@ class ModelSessionResponse(BaseModel):
 class LoadModelRequest(BaseModel):
     """Request to load a model."""
     model_name: str = Field(..., description="Name of the model to load")
-    context_size: Optional[int] = Field(None, description="Context size override")
-    gpu_layers: Optional[int] = Field(None, description="GPU layers override")
+    context_size: int | None = Field(None, description="Context size override")
+    gpu_layers: int | None = Field(None, description="GPU layers override")
 
 
 class SystemResourcesResponse(BaseModel):
@@ -276,10 +285,10 @@ class SystemResourcesResponse(BaseModel):
     total_memory_gb: float
     available_memory_gb: float
     memory_percent: float
-    gpu_info: Optional[str]
-    gpu_memory_total_gb: Optional[float]
-    gpu_memory_used_gb: Optional[float]
-    gpu_memory_note: Optional[str] = None
+    gpu_info: str | None
+    gpu_memory_total_gb: float | None
+    gpu_memory_used_gb: float | None
+    gpu_memory_note: str | None = None
 
 
 class ConfigurationResponse(BaseModel):
@@ -287,13 +296,18 @@ class ConfigurationResponse(BaseModel):
     key: str
     value: Any
     value_type: str
-    description: Optional[str]
+    description: str | None
+    applied_live: bool = False
+    reload_triggered: bool = False
+    reloaded_models: list[str] = Field(default_factory=list)
+    restart_required: bool = False
+    message: str | None = None
 
 
 class ConfigurationUpdate(BaseModel):
     """Request to update configuration."""
     value: Any
-    description: Optional[str] = None
+    description: str | None = None
 
 
 class AdminLoginRequest(BaseModel):
@@ -315,8 +329,8 @@ class AdminLoginResponse(BaseModel):
 class TranscriptionRequest(BaseModel):
     """Request for audio transcription (POST /v1/audio/transcriptions)."""
     model: str = Field(..., description="Model to use for transcription")
-    language: Optional[str] = Field(None, description="Language of the audio (ISO-639-1 code)")
-    prompt: Optional[str] = Field(None, description="Optional prompt to guide transcription")
+    language: str | None = Field(None, description="Language of the audio (ISO-639-1 code)")
+    prompt: str | None = Field(None, description="Optional prompt to guide transcription")
     response_format: str = Field("json", description="Response format: json, text, srt, verbose_json, vtt")
     temperature: float = Field(0.0, ge=0.0, le=1.0, description="Sampling temperature")
 
@@ -339,18 +353,18 @@ class TranscriptionResponse(BaseModel):
     """Response from transcription endpoint."""
     text: str
     task: str = "transcribe"
-    language: Optional[str] = None
-    duration: Optional[float] = None
-    segments: Optional[list[TranscriptionSegment]] = None
+    language: str | None = None
+    duration: float | None = None
+    segments: list[TranscriptionSegment] | None = None
 
 
 class TranslationResponse(BaseModel):
     """Response from translation endpoint (audio to English text)."""
     text: str
     task: str = "translate"
-    language: Optional[str] = None
-    duration: Optional[float] = None
-    segments: Optional[list[TranscriptionSegment]] = None
+    language: str | None = None
+    duration: float | None = None
+    segments: list[TranscriptionSegment] | None = None
 
 
 # =============================================================================

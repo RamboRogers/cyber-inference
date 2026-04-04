@@ -413,7 +413,8 @@
             </button>
         </div>
         <div class="p-5 overflow-y-auto space-y-4">
-            <p class="text-xs text-gray-600 font-mono">Defaults applied when requests don't specify values. Blank = use global/request default.</p>
+            <p class="text-xs text-gray-600 font-mono">Defaults applied when requests don't specify values. Blank context = use the model's native max context on load when available, otherwise fall back to the global default.</p>
+            <div id="settingsRuntimeNote" class="rounded-lg border border-cyber-blue/20 bg-cyber-dark/50 px-3 py-2 text-xs font-mono text-gray-400 whitespace-pre-line hidden"></div>
 
             <!-- Context Size (full width - most important) -->
             <div>
@@ -624,8 +625,10 @@
                 <div class="cyber-progress h-3 rounded-full overflow-hidden">
                     <div id="progressBar" class="cyber-progress-bar h-full rounded-full transition-all duration-300" style="width: 0%"></div>
                 </div>
+                <div id="downloadTransferInfo" class="mt-2 text-xs font-mono text-gray-500 hidden"></div>
+                <div id="downloadFeed" class="mt-3 hidden max-h-32 overflow-y-auto rounded-lg border border-cyber-gray/40 bg-cyber-dark/40 p-3 text-xs font-mono text-gray-400 space-y-1"></div>
                 <p class="text-xs text-gray-500 mt-2 font-mono">
-                    Note: Large models may take several minutes to download.
+                    Note: Large models may take several minutes to download. The modal tracks one active foreground download at a time.
                 </p>
             </div>
 
@@ -651,6 +654,8 @@
     // WebSocket for progress updates
     let statusWs = null;
     let downloadInProgress = false;
+    let currentDownloadKey = null;
+    let lastDownloadFeedSignature = null;
 
     // Store fetched repo data
     let repoData = null;
@@ -730,42 +735,114 @@
         };
     }
 
+    function formatTransferBytes(bytes) {
+        if (bytes == null || Number.isNaN(bytes)) return '—';
+        return formatBytes(bytes);
+    }
+
+    function appendDownloadFeed(message, signature = message) {
+        const feedEl = document.getElementById('downloadFeed');
+        if (!feedEl || !message) return;
+        if (signature === lastDownloadFeedSignature) return;
+        lastDownloadFeedSignature = signature;
+        feedEl.classList.remove('hidden');
+
+        const entry = document.createElement('div');
+        entry.className = 'text-gray-400';
+        const ts = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        entry.textContent = `[${ts}] ${message}`;
+        feedEl.prepend(entry);
+
+        while (feedEl.children.length > 10) {
+            feedEl.removeChild(feedEl.lastChild);
+        }
+    }
+
+    function newDownloadId() {
+        if (window.crypto?.randomUUID) {
+            return window.crypto.randomUUID();
+        }
+        return `download-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    }
+
     function handleDownloadProgress(data) {
+        if (
+            currentDownloadKey
+            && data.download_id
+            && data.download_id !== currentDownloadKey.downloadId
+        ) {
+            return;
+        }
+
         const progressEl = document.getElementById('downloadProgress');
         const percentEl = document.getElementById('progressPercent');
         const barEl = document.getElementById('progressBar');
         const statusEl = document.getElementById('downloadStatus');
+        const transferEl = document.getElementById('downloadTransferInfo');
 
         if (!progressEl) return;
 
         // Show progress bar
         progressEl.classList.remove('hidden');
+        if (currentDownloadKey) {
+            currentDownloadKey.sawEvent = true;
+        }
 
         // Update progress
         percentEl.textContent = `${Math.round(data.progress)}%`;
         barEl.style.width = `${data.progress}%`;
 
         // Update status text
+        const phase = data.phase || data.status;
         if (statusEl) {
-            if (data.status === 'starting') {
-                statusEl.textContent = 'Starting download...';
-            } else if (data.status === 'downloading') {
-                statusEl.textContent = 'Downloading...';
-            } else if (data.status === 'complete') {
-                statusEl.textContent = 'Download complete!';
-            } else if (data.status === 'error') {
-                statusEl.textContent = `Error: ${data.error || 'Unknown error'}`;
+            statusEl.textContent = data.message
+                || (phase === 'preparing' ? 'Preparing download...'
+                : phase === 'resolving_repository' ? 'Resolving repository contents...'
+                : phase === 'downloading_model' ? 'Downloading model...'
+                : phase === 'downloading_mmproj' ? 'Downloading mmproj...'
+                : phase === 'downloading_repository' ? 'Downloading repository files...'
+                : phase === 'registering' ? 'Finalizing download...'
+                : phase === 'complete' ? 'Download complete!'
+                : phase === 'error' ? `Error: ${data.error || 'Unknown error'}`
+                : 'Downloading...');
+        }
+
+        if (transferEl) {
+            const downloaded = data.downloaded_bytes;
+            const total = data.total_bytes;
+            const speed = data.bytes_per_second;
+            const itemsComplete = data.items_complete;
+            const itemsTotal = data.items_total;
+            if (downloaded != null || total != null || speed != null || itemsComplete != null || itemsTotal != null) {
+                const speedText = speed ? `${formatTransferBytes(speed)}/s` : '—';
+                if (downloaded != null || total != null) {
+                    transferEl.textContent = `${formatTransferBytes(downloaded)} / ${formatTransferBytes(total)} • ${speedText}`;
+                } else {
+                    transferEl.textContent = `${itemsComplete ?? 0} / ${itemsTotal ?? '—'} files • staged progress`;
+                }
+                transferEl.classList.remove('hidden');
             }
         }
 
+        appendDownloadFeed(
+            data.message || statusEl?.textContent || 'Download update',
+            `${data.download_id || data.repo_id}:${phase}:${Math.round(data.progress)}:${data.message || ''}`,
+        );
+
         // Handle completion
         if (data.status === 'complete') {
+            if (currentDownloadKey) {
+                currentDownloadKey.completed = true;
+            }
             setTimeout(() => {
                 closeDownloadModal();
                 location.reload();
             }, 1500);
         } else if (data.status === 'error') {
             downloadInProgress = false;
+            if (currentDownloadKey) {
+                currentDownloadKey.completed = true;
+            }
             barEl.classList.add('bg-red-500');
         }
     }
@@ -793,6 +870,10 @@
         document.getElementById('downloadProgress').classList.add('hidden');
         document.getElementById('progressBar').style.width = '0%';
         document.getElementById('progressBar').classList.remove('bg-red-500');
+        document.getElementById('downloadFeed').innerHTML = '';
+        document.getElementById('downloadFeed').classList.add('hidden');
+        document.getElementById('downloadTransferInfo').textContent = '';
+        document.getElementById('downloadTransferInfo').classList.add('hidden');
 
         // Reset file selection UI
         document.getElementById('fileSelectionSection').classList.add('hidden');
@@ -803,6 +884,8 @@
 
         repoData = null;
         downloadInProgress = false;
+        currentDownloadKey = null;
+        lastDownloadFeedSignature = null;
     }
 
     function downloadFromRepo(repoId) {
@@ -997,16 +1080,23 @@
         }
 
         const repoId = document.getElementById('repoId').value;
+        const downloadId = newDownloadId();
+        currentDownloadKey = { repoId, downloadId, sawEvent: false, completed: false };
+        lastDownloadFeedSignature = null;
 
         downloadInProgress = true;
         document.getElementById('downloadProgress').classList.remove('hidden');
         document.getElementById('progressPercent').textContent = '0%';
         document.getElementById('progressBar').style.width = '0%';
+        document.getElementById('downloadFeed').innerHTML = '';
+        document.getElementById('downloadTransferInfo').textContent = '';
+        document.getElementById('downloadTransferInfo').classList.add('hidden');
 
         const statusEl = document.getElementById('downloadStatus');
         if (statusEl) {
             statusEl.textContent = 'Initiating download...';
         }
+        appendDownloadFeed('Initiating download request…', 'init');
 
         try {
             let endpoint, requestBody;
@@ -1016,6 +1106,7 @@
                 endpoint = '/admin/models/download-transformers';
                 requestBody = {
                     hf_repo_id: repoId,
+                    download_id: downloadId,
                 };
                 if (statusEl) {
                     statusEl.textContent = 'Downloading transformers model (this may take a while)...';
@@ -1037,6 +1128,7 @@
                     name: filename ? filename.replace('.gguf', '') : null,
                     hf_repo_id: repoId,
                     hf_filename: filename || null,
+                    download_id: downloadId,
                 };
 
                 if (mmprojFilename) {
@@ -1053,15 +1145,28 @@
             });
 
             if (response.ok) {
-                document.getElementById('progressPercent').textContent = '100%';
-                document.getElementById('progressBar').style.width = '100%';
-                if (statusEl) {
-                    statusEl.textContent = 'Download complete!';
-                }
+                appendDownloadFeed('Server accepted the download. Waiting for transfer updates…', 'accepted');
                 setTimeout(() => {
-                    closeDownloadModal();
-                    location.reload();
-                }, 1000);
+                    if (!currentDownloadKey || currentDownloadKey.completed) {
+                        return;
+                    }
+                    if (!currentDownloadKey.sawEvent) {
+                        document.getElementById('progressPercent').textContent = '100%';
+                        document.getElementById('progressBar').style.width = '100%';
+                        if (statusEl) {
+                            statusEl.textContent = 'Download completed. Live progress updates were unavailable.';
+                        }
+                        appendDownloadFeed(
+                            'Download completed, but the live progress feed was unavailable or delayed.',
+                            'fallback-complete',
+                        );
+                        currentDownloadKey.completed = true;
+                        setTimeout(() => {
+                            closeDownloadModal();
+                            location.reload();
+                        }, 1500);
+                    }
+                }, 800);
             } else {
                 downloadInProgress = false;
                 let errorMsg = 'Unknown error';
@@ -1073,12 +1178,14 @@
                 }
                 alert('Download failed: ' + errorMsg);
                 document.getElementById('downloadProgress').classList.add('hidden');
+                currentDownloadKey = null;
             }
         } catch (error) {
             downloadInProgress = false;
             console.error('Error:', error);
             alert('Download failed: ' + error.message);
             document.getElementById('downloadProgress').classList.add('hidden');
+            currentDownloadKey = null;
         }
     });
 
@@ -1240,6 +1347,49 @@
 
     let settingsModelName = null;
 
+    function renderSettingsRuntime(runtime) {
+        const runtimeNote = document.getElementById('settingsRuntimeNote');
+        if (!runtimeNote) return;
+
+        if (!runtime) {
+            runtimeNote.classList.add('hidden');
+            runtimeNote.textContent = '';
+            return;
+        }
+
+        const parts = [];
+        if (runtime.is_loaded) {
+            parts.push(`live: ${runtime.status}`);
+        } else {
+            parts.push('live: not loaded');
+        }
+
+        const liveCtx = runtime.effective_config?.launch_config?.context_size;
+        if (liveCtx) {
+            parts.push(`ctx ${liveCtx}`);
+        }
+        const contextSource = runtime.effective_config?.launch_config?.context_source;
+        if (contextSource === 'model_native_max') {
+            parts.push('using native max ctx');
+        } else if (contextSource === 'configured_default') {
+            parts.push('using configured ctx');
+        } else if (contextSource === 'load_override') {
+            parts.push('using load override ctx');
+        }
+
+        if (runtime.last_transition_reason) {
+            parts.push(`last change: ${runtime.last_transition_reason.replace(/_/g, ' ')}`);
+        }
+
+        let text = parts.join(' • ');
+        if (runtime.unsupported_saved_defaults?.length) {
+            text += `\nunsupported for ${runtime.server_type}: ${runtime.unsupported_saved_defaults.join(', ')}`;
+        }
+
+        runtimeNote.textContent = text;
+        runtimeNote.classList.remove('hidden');
+    }
+
     async function openSettingsModal(modelName, nativeContextLength) {
         settingsModelName = modelName;
         document.getElementById('settingsModelName').textContent = modelName;
@@ -1263,9 +1413,11 @@
                 document.getElementById('settingsTopK').value = data.default_top_k ?? '';
                 document.getElementById('settingsMaxTokens').value = data.default_max_tokens ?? '';
                 document.getElementById('settingsRepeatPenalty').value = data.default_repeat_penalty ?? '';
+                renderSettingsRuntime(data.runtime);
             }
         } catch (e) {
             console.error('Error fetching model config:', e);
+            renderSettingsRuntime(null);
         }
 
         document.getElementById('settingsModal').classList.remove('hidden');
@@ -1276,6 +1428,7 @@
         document.getElementById('settingsModal').classList.add('hidden');
         document.getElementById('settingsModal').classList.remove('flex');
         settingsModelName = null;
+        renderSettingsRuntime(null);
     }
 
     function resetSettings() {
@@ -1318,9 +1471,11 @@
             });
 
             if (response.ok) {
-                closeSettingsModal();
-                // Reload to reflect any context_length badge changes
-                location.reload();
+                const data = await response.json();
+                renderSettingsRuntime(data.runtime);
+                btn.textContent = data.reload_triggered ? 'Saved • Reloading…' : 'Saved';
+                btn.disabled = true;
+                setTimeout(() => location.reload(), 900);
             } else {
                 let errorMsg = 'Unknown error';
                 try {

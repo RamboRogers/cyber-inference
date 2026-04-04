@@ -10,18 +10,15 @@ Provides management endpoints for:
 """
 
 from datetime import datetime, timedelta
-from typing import Optional
 
-import bcrypt
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import jwt
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from cyber_inference.core.auth import verify_admin_token_value
-from cyber_inference.core.config import get_settings
-from cyber_inference.core.database import get_db, get_db_session
+from cyber_inference.core.config import CONFIG_DB_CASTS, get_settings
+from cyber_inference.core.database import get_db_session
 from cyber_inference.core.logging import get_logger
 from cyber_inference.models.db_models import Configuration, Model
 from cyber_inference.models.schemas import (
@@ -33,7 +30,6 @@ from cyber_inference.models.schemas import (
     ModelCreate,
     ModelResponse,
     ModelSessionResponse,
-    ModelUpdate,
     RepoFileInfo,
     RepoFilesResponse,
     SystemResourcesResponse,
@@ -54,7 +50,7 @@ def _get_auto_loader() -> AutoLoader:
 
 
 async def verify_admin_token(
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ) -> bool:
     """
     Verify admin authentication token.
@@ -136,8 +132,8 @@ async def get_status(
     """
     logger.debug("GET /admin/status")
 
-    from cyber_inference.main import get_process_manager, get_resource_monitor
     from cyber_inference import __version__
+    from cyber_inference.main import get_process_manager, get_resource_monitor
 
     pm = get_process_manager()
     rm = get_resource_monitor()
@@ -336,6 +332,7 @@ async def download_model(
             repo_id=request.hf_repo_id,
             filename=request.hf_filename,
             mmproj_filename=request.hf_mmproj_filename,
+            download_id=request.download_id,
         )
 
         # Auto-generate model name if not provided
@@ -437,6 +434,7 @@ async def download_transformers_model(
         path = await mm.download_transformers_model(
             repo_id=request.hf_repo_id,
             force=False,
+            download_id=request.download_id,
         )
 
         model_name = mm._sanitize_repo_name(request.hf_repo_id)
@@ -526,7 +524,7 @@ async def delete_model(
 @router.post("/models/{model_name:path}/load")
 async def load_model(
     model_name: str,
-    request: Optional[LoadModelRequest] = None,
+    request: LoadModelRequest | None = None,
     _: bool = Depends(verify_admin_token),
 ) -> ModelSessionResponse:
     """
@@ -537,7 +535,11 @@ async def load_model(
     auto_loader = _get_auto_loader()
 
     try:
-        url = await auto_loader.load_model(model_name)
+        await auto_loader.load_model(
+            model_name,
+            context_size_override=request.context_size if request else None,
+            gpu_layers_override=request.gpu_layers if request else None,
+        )
         status_info = await auto_loader.get_model_status(model_name)
 
         return ModelSessionResponse(
@@ -549,10 +551,14 @@ async def load_model(
             status=status_info.get("status", "unknown"),
             memory_mb=status_info.get("memory_mb", 0),
             gpu_memory_mb=0,
-            context_size=4096,
+            context_size=status_info.get("effective_config", {}).get("launch_config", {}).get("context_size", 4096),
             started_at=datetime.now(),
             last_request_at=None,
             request_count=status_info.get("request_count", 0),
+            server_type=status_info.get("server_type"),
+            last_transition_reason=status_info.get("last_transition_reason"),
+            reload_count=status_info.get("reload_count", 0),
+            effective_config=status_info.get("effective_config"),
         )
 
     except Exception as e:
@@ -590,6 +596,7 @@ async def get_model_config(
         model = result.scalar_one_or_none()
         if not model:
             raise HTTPException(status_code=404, detail=f"Model not found: {model_name}")
+        status_info = await _get_auto_loader().get_model_status(model_name)
         return {
             "model": model_name,
             "context_length": model.context_length,
@@ -599,6 +606,7 @@ async def get_model_config(
             "default_top_k": model.default_top_k,
             "default_max_tokens": model.default_max_tokens,
             "default_repeat_penalty": model.default_repeat_penalty,
+            "runtime": status_info,
         }
 
 
@@ -640,6 +648,7 @@ async def update_model_config(
         await session.commit()
         logger.info(f"[success]Updated config for {model_name}[/success]")
 
+        runtime = await _get_auto_loader().reconcile_model_config_change(model_name)
         return {
             "model": model_name,
             "default_context_size": model.default_context_size,
@@ -648,6 +657,9 @@ async def update_model_config(
             "default_top_k": model.default_top_k,
             "default_max_tokens": model.default_max_tokens,
             "default_repeat_penalty": model.default_repeat_penalty,
+            "runtime": runtime,
+            "reload_triggered": runtime.get("reload_triggered", False),
+            "message": runtime.get("message"),
         }
 
 
@@ -679,6 +691,10 @@ async def list_sessions(
             started_at=p.started_at,
             last_request_at=p.last_request_at,
             request_count=p.request_count,
+            server_type=p.server_type,
+            last_transition_reason=p.last_transition_reason,
+            reload_count=p.reload_count,
+            effective_config=p.effective_config or None,
         )
         for p in processes
     ]
@@ -701,11 +717,26 @@ async def get_config(
         "log_level": settings.log_level,
         "default_context_size": settings.default_context_size,
         "max_context_size": settings.max_context_size,
+        "model_idle_unload_enabled": settings.model_idle_unload_enabled,
         "model_idle_timeout": settings.model_idle_timeout,
         "max_loaded_models": settings.max_loaded_models,
         "max_memory_percent": settings.max_memory_percent,
         "llama_gpu_layers": settings.llama_gpu_layers,
         "admin_password_set": settings.admin_password is not None,
+        "live_apply_keys": [
+            "default_context_size",
+            "max_context_size",
+            "model_idle_unload_enabled",
+            "model_idle_timeout",
+            "max_loaded_models",
+            "max_memory_percent",
+            "llama_gpu_layers",
+        ],
+        "reload_on_save_keys": [
+            "default_context_size",
+            "llama_gpu_layers",
+        ],
+        "restart_only_keys": ["host", "port", "log_level"],
     }
 
 
@@ -727,24 +758,75 @@ async def update_config(
         config = result.scalar_one_or_none()
 
         if config:
-            config.value = str(update.value)
+            config.value = "" if key == "admin_password" and update.value is None else str(update.value)
             if update.description:
                 config.description = update.description
         else:
             config = Configuration(
                 key=key,
-                value=str(update.value),
+                value="" if key == "admin_password" and update.value is None else str(update.value),
                 description=update.description,
             )
             session.add(config)
 
         await session.commit()
 
+        typed_value = update.value
+        cast_fn = CONFIG_DB_CASTS.get(key)
+        if cast_fn is not None and update.value is not None:
+            typed_value = cast_fn(update.value)
+        if key == "admin_password" and isinstance(typed_value, str) and not typed_value.strip():
+            typed_value = None
+
+        settings = get_settings()
+        if hasattr(settings, key):
+            setattr(settings, key, typed_value)
+
+        auto_loader = _get_auto_loader()
+        runtime_change = {
+            "applied_live": False,
+            "reload_triggered": False,
+            "reloaded_models": [],
+            "restart_required": True,
+            "message": None,
+        }
+        if key in CONFIG_DB_CASTS:
+            if key == "admin_password":
+                runtime_change = {
+                    "applied_live": True,
+                    "reload_triggered": False,
+                    "reloaded_models": [],
+                    "restart_required": False,
+                    "message": "Admin setting applied live.",
+                }
+            else:
+                runtime_change = await auto_loader.reconcile_global_config_change(key)
+                runtime_change["message"] = (
+                    "Settings saved and running models reloaded."
+                    if runtime_change["reload_triggered"]
+                    else "Settings saved and applied live."
+                )
+
+        reloaded_models = runtime_change["reloaded_models"]
+
         return ConfigurationResponse(
             key=config.key,
-            value=update.value,
+            value=typed_value,
             value_type=config.value_type,
             description=config.description,
+            applied_live=bool(runtime_change["applied_live"]),
+            reload_triggered=bool(runtime_change["reload_triggered"]),
+            reloaded_models=(
+                [str(name) for name in reloaded_models]
+                if isinstance(reloaded_models, list)
+                else []
+            ),
+            restart_required=bool(runtime_change["restart_required"]),
+            message=(
+                str(runtime_change["message"])
+                if runtime_change["message"] is not None
+                else None
+            ),
         )
 
 
@@ -758,8 +840,8 @@ async def shutdown_server(
     logger.warning("[warning]POST /admin/shutdown - Initiating shutdown[/warning]")
 
     import asyncio
-    import signal
     import os
+    import signal
 
     # Schedule shutdown after response
     async def delayed_shutdown():

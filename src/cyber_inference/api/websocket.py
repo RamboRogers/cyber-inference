@@ -13,11 +13,14 @@ import logging
 import re
 from collections import deque
 from datetime import datetime
-from typing import Optional
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from cyber_inference.core.auth import extract_bearer_token, is_admin_password_set, verify_admin_token_value
+from cyber_inference.core.auth import (
+    extract_bearer_token,
+    is_admin_password_set,
+    verify_admin_token_value,
+)
 from cyber_inference.core.logging import get_logger
 
 # Regex to strip Rich markup tags like [info], [/info], [highlight], etc.
@@ -244,7 +247,7 @@ async def websocket_status(websocket: WebSocket) -> None:
             _status_clients.remove(websocket)
 
 
-async def notify_model_event(event_type: str, model_name: str, details: Optional[dict] = None) -> None:
+async def notify_model_event(event_type: str, model_name: str, details: dict | None = None) -> None:
     """
     Notify connected clients of a model event.
 
@@ -263,12 +266,66 @@ async def notify_model_event(event_type: str, model_name: str, details: Optional
     await _broadcast_status(event)
 
 
+def build_download_progress_event(
+    repo_id: str,
+    filename: str,
+    progress: float,
+    status: str = "downloading",
+    error: str | None = None,
+    message: str | None = None,
+    downloaded_bytes: int | None = None,
+    total_bytes: int | None = None,
+    bytes_per_second: float | None = None,
+    download_id: str | None = None,
+    phase: str | None = None,
+    items_complete: int | None = None,
+    items_total: int | None = None,
+) -> dict:
+    """Build a normalized download progress event payload."""
+    event = {
+        "type": "download_progress",
+        "timestamp": datetime.now().isoformat(),
+        "repo_id": repo_id,
+        "filename": filename,
+        "progress": progress,
+        "status": status,
+        "phase": phase or status,
+    }
+
+    if error:
+        event["error"] = error
+    if message:
+        event["message"] = message
+    if downloaded_bytes is not None:
+        event["downloaded_bytes"] = downloaded_bytes
+    if total_bytes is not None:
+        event["total_bytes"] = total_bytes
+    if bytes_per_second is not None:
+        event["bytes_per_second"] = bytes_per_second
+    if download_id:
+        event["download_id"] = download_id
+    if items_complete is not None:
+        event["items_complete"] = items_complete
+    if items_total is not None:
+        event["items_total"] = items_total
+
+    return event
+
+
 async def notify_download_progress(
     repo_id: str,
     filename: str,
     progress: float,
     status: str = "downloading",
-    error: Optional[str] = None,
+    error: str | None = None,
+    message: str | None = None,
+    downloaded_bytes: int | None = None,
+    total_bytes: int | None = None,
+    bytes_per_second: float | None = None,
+    download_id: str | None = None,
+    phase: str | None = None,
+    items_complete: int | None = None,
+    items_total: int | None = None,
 ) -> None:
     """
     Notify connected clients of download progress.
@@ -280,16 +337,20 @@ async def notify_download_progress(
         status: Status string (downloading, complete, error)
         error: Error message if status is error
     """
-    event = {
-        "type": "download_progress",
-        "timestamp": datetime.now().isoformat(),
-        "repo_id": repo_id,
-        "filename": filename,
-        "progress": progress,
-        "status": status,
-    }
-
-    if error:
-        event["error"] = error
+    event = build_download_progress_event(
+        repo_id=repo_id,
+        filename=filename,
+        progress=progress,
+        status=status,
+        error=error,
+        message=message,
+        downloaded_bytes=downloaded_bytes,
+        total_bytes=total_bytes,
+        bytes_per_second=bytes_per_second,
+        download_id=download_id,
+        phase=phase,
+        items_complete=items_complete,
+        items_total=items_total,
+    )
 
     await _broadcast_status(event)

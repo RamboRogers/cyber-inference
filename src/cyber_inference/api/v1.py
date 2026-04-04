@@ -17,10 +17,10 @@ import re
 import tempfile
 import time
 import uuid
+from collections.abc import AsyncGenerator
 from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
-from typing import AsyncGenerator, Optional
 
 import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
@@ -31,18 +31,18 @@ from sse_starlette.sse import EventSourceResponse
 from cyber_inference.core.database import get_db
 from cyber_inference.core.logging import get_logger
 from cyber_inference.models.schemas import (
+    ChatCompletionChoice,
     ChatCompletionRequest,
     ChatCompletionResponse,
-    ChatCompletionChoice,
     ChatMessage,
+    CompletionChoice,
     CompletionRequest,
     CompletionResponse,
-    CompletionChoice,
     CompletionUsage,
     EmbeddingRequest,
     EmbeddingResponse,
-    ModelsResponse,
     ModelInfo,
+    ModelsResponse,
     TranscriptionResponse,
     TranscriptionSegment,
 )
@@ -53,7 +53,7 @@ logger = get_logger(__name__)
 router = APIRouter()
 
 # Global auto-loader instance (initialized in main.py lifespan)
-_auto_loader: Optional[AutoLoader] = None
+_auto_loader: AutoLoader | None = None
 
 
 def get_auto_loader() -> AutoLoader:
@@ -298,32 +298,23 @@ class _StreamNormalizer:
         return _SPECIAL_TOKEN_RE.sub("", text)
 
 
-async def _apply_model_defaults(request, model_name: str) -> None:
+async def _apply_model_defaults(request, model_name: str, server_type: str) -> None:
     """Apply per-model inference defaults for fields not explicitly set in the request.
 
     Uses Pydantic v2's model_fields_set to distinguish between explicit values
     and schema defaults, so user-provided values are never overridden.
     """
     auto_loader = get_auto_loader()
-    model_info = await auto_loader.get_model_info(model_name)
-    if not model_info:
+    request_defaults = await auto_loader.get_request_defaults(model_name, server_type)
+    if not request_defaults:
         return
 
-    field_map = {
-        "temperature": "default_temperature",
-        "top_p": "default_top_p",
-        "max_tokens": "default_max_tokens",
-    }
-    # These fields only exist on ChatCompletionRequest
-    if hasattr(request, "frequency_penalty"):
-        field_map["frequency_penalty"] = "default_repeat_penalty"
-
     explicitly_set = request.model_fields_set
-    for request_field, model_key in field_map.items():
+    for request_field, value in request_defaults.items():
+        if not hasattr(request, request_field):
+            continue
         if request_field not in explicitly_set:
-            value = model_info.get(model_key)
-            if value is not None:
-                setattr(request, request_field, value)
+            setattr(request, request_field, value)
 
 
 @router.get("/models")
@@ -399,11 +390,9 @@ async def chat_completions(
 
     logger.debug(f"  Server URL: {server_url}")
 
-    # Apply per-model inference defaults for fields not explicitly set
-    await _apply_model_defaults(request, request.model)
-
     # Determine server type for engine-specific behavior
     server_type = _get_server_type(request.model)
+    await _apply_model_defaults(request, request.model, server_type)
 
     # Prepare request for the inference server
     token_limit = request.max_tokens or 512
@@ -421,6 +410,10 @@ async def chat_completions(
         "max_tokens": token_limit,
         "stream": request.stream,
     }
+    if request.top_k is not None and server_type != "transformers":
+        llama_request["top_k"] = request.top_k
+    if request.repeat_penalty is not None and server_type != "transformers":
+        llama_request["repeat_penalty"] = request.repeat_penalty
 
     # n_predict is llama.cpp-specific, not used by transformers
     if server_type != "transformers":
@@ -467,6 +460,7 @@ async def chat_completions(
             message=ChatMessage(
                 role=choice.get("message", {}).get("role", "assistant"),
                 content=_normalize_channel_markers(raw_content),
+                name=None,
             ),
             finish_reason=choice.get("finish_reason"),
         ))
@@ -633,11 +627,9 @@ async def completions(
         logger.error(f"[error]Failed to load model: {e}[/error]")
         raise HTTPException(status_code=503, detail=f"Failed to load model: {e}")
 
-    # Apply per-model inference defaults for fields not explicitly set
-    await _apply_model_defaults(request, request.model)
-
     # Determine server type for engine-specific behavior
     server_type = _get_server_type(request.model)
+    await _apply_model_defaults(request, request.model, server_type)
 
     # Prepare request
     prompt = request.prompt if isinstance(request.prompt, str) else request.prompt[0]
@@ -662,6 +654,10 @@ async def completions(
             "n_predict": token_limit,
             "stream": request.stream,
         }
+        if request.top_k is not None:
+            llama_request["top_k"] = request.top_k
+        if request.repeat_penalty is not None:
+            llama_request["repeat_penalty"] = request.repeat_penalty
 
     if request.stop:
         llama_request["stop"] = request.stop if isinstance(request.stop, list) else [request.stop]
@@ -919,8 +915,8 @@ async def embeddings(
 async def transcriptions(
     file: UploadFile = File(..., description="Audio file to transcribe"),
     model: str = Form(..., description="Model to use for transcription"),
-    language: Optional[str] = Form(None, description="Language of the audio (ISO-639-1)"),
-    prompt: Optional[str] = Form(None, description="Optional prompt to guide transcription"),
+    language: str | None = Form(None, description="Language of the audio (ISO-639-1)"),
+    prompt: str | None = Form(None, description="Optional prompt to guide transcription"),
     response_format: str = Form("json", description="Format: json, text, verbose_json, srt, vtt"),
     temperature: float = Form(0.0, ge=0.0, le=1.0, description="Sampling temperature"),
 ):
@@ -1076,7 +1072,7 @@ async def transcriptions(
 async def translations(
     file: UploadFile = File(..., description="Audio file to translate"),
     model: str = Form(..., description="Model to use for translation"),
-    prompt: Optional[str] = Form(None, description="Optional prompt to guide translation"),
+    prompt: str | None = Form(None, description="Optional prompt to guide translation"),
     response_format: str = Form("json", description="Format: json, text, verbose_json, srt, vtt"),
     temperature: float = Form(0.0, ge=0.0, le=1.0, description="Sampling temperature"),
 ):

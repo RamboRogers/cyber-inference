@@ -9,12 +9,11 @@ Serves the HTML templates for:
 """
 
 from pathlib import Path
-from typing import Optional
+from urllib.parse import quote
 
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
-from urllib.parse import quote
 
 from cyber_inference import __version__
 from cyber_inference.core.auth import extract_bearer_token, verify_admin_token_value
@@ -32,6 +31,7 @@ templates = Jinja2Templates(directory=_templates_dir) if _templates_dir.exists()
 _CONFIG_UI_LABELS = {
     "default_context_size": "Default Context Size",
     "max_context_size": "Max Context Size",
+    "model_idle_unload_enabled": "Idle Unload Timer",
     "model_idle_timeout": "Idle Timeout (seconds)",
     "max_loaded_models": "Max Loaded Models",
     "max_memory_percent": "Max Memory Usage (%)",
@@ -84,7 +84,7 @@ async def _require_admin(request: Request) -> RedirectResponse | None:
 
 
 @router.get("/", response_class=HTMLResponse)
-async def dashboard(request: Request) -> HTMLResponse:
+async def dashboard(request: Request) -> Response:
     """
     Main dashboard page.
 
@@ -166,7 +166,7 @@ async def dashboard(request: Request) -> HTMLResponse:
 
 
 @router.get("/models", response_class=HTMLResponse)
-async def models_page(request: Request) -> HTMLResponse:
+async def models_page(request: Request) -> Response:
     """
     Models management page.
 
@@ -185,8 +185,8 @@ async def models_page(request: Request) -> HTMLResponse:
         return HTMLResponse(content="Templates not found", status_code=500)
 
     try:
-        from cyber_inference.services.model_manager import ModelManager
         from cyber_inference.api.v1 import get_auto_loader
+        from cyber_inference.services.model_manager import ModelManager
 
         mm = ModelManager()
         auto_loader = get_auto_loader()
@@ -219,7 +219,7 @@ async def models_page(request: Request) -> HTMLResponse:
 
 
 @router.get("/settings", response_class=HTMLResponse)
-async def settings_page(request: Request) -> HTMLResponse:
+async def settings_page(request: Request) -> Response:
     """
     Settings page.
 
@@ -240,20 +240,21 @@ async def settings_page(request: Request) -> HTMLResponse:
     settings = get_settings()
     overrides = await load_db_config_overrides()
 
-    runtime_settings = {
+    runtime_settings: dict[str, object] = {
         "default_context_size": settings.default_context_size,
         "max_context_size": settings.max_context_size,
+        "model_idle_unload_enabled": settings.model_idle_unload_enabled,
         "model_idle_timeout": settings.model_idle_timeout,
         "max_loaded_models": settings.max_loaded_models,
         "max_memory_percent": settings.max_memory_percent,
         "llama_gpu_layers": settings.llama_gpu_layers,
     }
-    saved_settings = dict(runtime_settings)
+    saved_settings: dict[str, object] = dict(runtime_settings)
     for key, value in overrides.items():
         if key in saved_settings:
             saved_settings[key] = value
 
-    pending_restart_items = []
+    pending_restart_items: list[dict[str, object]] = []
     for key, saved_value in overrides.items():
         if key == "admin_password":
             current_value = settings.admin_password
@@ -274,15 +275,15 @@ async def settings_page(request: Request) -> HTMLResponse:
             )
             continue
 
-        current_value = runtime_settings.get(key)
-        if current_value is None:
+        runtime_value: object = runtime_settings.get(key)
+        if runtime_value is None:
             continue
-        if saved_value != current_value:
+        if saved_value != runtime_value:
             pending_restart_items.append(
                 {
                     "key": key,
                     "label": _CONFIG_UI_LABELS.get(key, key.replace("_", " ").title()),
-                    "current": current_value,
+                    "current": runtime_value,
                     "saved": saved_value,
                 }
             )
@@ -296,6 +297,7 @@ async def settings_page(request: Request) -> HTMLResponse:
             "log_level": settings.log_level,
             "default_context_size": saved_settings["default_context_size"],
             "max_context_size": saved_settings["max_context_size"],
+            "model_idle_unload_enabled": saved_settings["model_idle_unload_enabled"],
             "model_idle_timeout": saved_settings["model_idle_timeout"],
             "max_loaded_models": saved_settings["max_loaded_models"],
             "max_memory_percent": saved_settings["max_memory_percent"],
@@ -308,7 +310,7 @@ async def settings_page(request: Request) -> HTMLResponse:
 
 
 @router.get("/logs", response_class=HTMLResponse)
-async def logs_page(request: Request) -> HTMLResponse:
+async def logs_page(request: Request) -> Response:
     """
     Real-time logs page.
 
@@ -335,7 +337,7 @@ async def logs_page(request: Request) -> HTMLResponse:
 
 
 @router.get("/api-docs", response_class=HTMLResponse)
-async def api_docs_page(request: Request) -> HTMLResponse:
+async def api_docs_page(request: Request) -> Response:
     """
     API documentation page.
     """
@@ -357,7 +359,7 @@ async def api_docs_page(request: Request) -> HTMLResponse:
 
 
 @router.get("/login", response_class=HTMLResponse)
-async def login_page(request: Request) -> HTMLResponse:
+async def login_page(request: Request) -> Response:
     """
     Admin login page.
     """

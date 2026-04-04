@@ -8,9 +8,8 @@ Tests cover:
 - Process manager (mock)
 """
 
-import asyncio
-import platform
 import tempfile
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -92,9 +91,10 @@ class TestSettings:
 
         assert settings.host == "0.0.0.0"
         assert settings.port == 8337
-        assert settings.log_level == "DEBUG"
-        assert settings.default_context_size == 4096
-        assert settings.max_loaded_models == 3
+        assert settings.log_level == "INFO"
+        assert settings.default_context_size == 8192
+        assert settings.model_idle_unload_enabled is False
+        assert settings.max_loaded_models == 1
 
     def test_settings_from_env(self, monkeypatch):
         """Test settings from environment variables."""
@@ -247,3 +247,195 @@ class TestAutoLoader:
         await loader.stop()
         assert loader._running is False
 
+    @pytest.mark.asyncio
+    async def test_check_idle_models_is_disabled(self):
+        """Idle timeout checks should be disabled by the resident-model policy."""
+        from cyber_inference.services.auto_loader import AutoLoader
+        from cyber_inference.services.process_manager import LlamaProcess
+
+        proc = LlamaProcess(
+            model_name="demo",
+            model_path=Path("/tmp/demo.gguf"),
+            port=9000,
+            status="running",
+            started_at=datetime.now() - timedelta(minutes=20),
+            last_request_at=datetime.now() - timedelta(minutes=20),
+        )
+        process_manager = MagicMock()
+        process_manager.get_all_processes.return_value = [proc]
+
+        loader = AutoLoader(process_manager=process_manager)
+        loader.unload_model = AsyncMock()
+
+        await loader._check_idle_models()
+
+        loader.unload_model.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_check_idle_models_unloads_when_enabled(self):
+        """Idle timeout checks should still work when the GUI option is enabled."""
+        from cyber_inference.services.auto_loader import AutoLoader
+        from cyber_inference.services.process_manager import LlamaProcess
+
+        proc = LlamaProcess(
+            model_name="demo",
+            model_path=Path("/tmp/demo.gguf"),
+            port=9000,
+            status="running",
+            started_at=datetime.now() - timedelta(minutes=20),
+            last_request_at=datetime.now() - timedelta(minutes=20),
+        )
+        process_manager = MagicMock()
+        process_manager.get_all_processes.return_value = [proc]
+
+        loader = AutoLoader(process_manager=process_manager)
+        loader._idle_unload_enabled = True
+        loader.unload_model = AsyncMock()
+
+        await loader._check_idle_models()
+
+        loader.unload_model.assert_awaited_once_with("demo", reason="idle_timeout")
+
+    @pytest.mark.asyncio
+    async def test_get_request_defaults_respects_backend_support(self):
+        """Only backend-supported saved defaults should be exposed as request defaults."""
+        from cyber_inference.services.auto_loader import AutoLoader
+
+        loader = AutoLoader()
+        loader.get_model_info = AsyncMock(
+            return_value={
+                "name": "demo",
+                "engine_type": "transformers",
+                "default_temperature": 0.4,
+                "default_top_p": 0.8,
+                "default_top_k": 32,
+                "default_max_tokens": 256,
+                "default_repeat_penalty": 1.15,
+            }
+        )
+
+        defaults = await loader.get_request_defaults("demo", "transformers")
+
+        assert defaults == {
+            "temperature": 0.4,
+            "top_p": 0.8,
+            "max_tokens": 256,
+        }
+
+    @pytest.mark.asyncio
+    async def test_reconcile_global_config_change_reloads_running_llama_models(self):
+        """Live runtime reconciliation should reload only affected llama models."""
+        from cyber_inference.services.auto_loader import AutoLoader
+        from cyber_inference.services.process_manager import LlamaProcess
+
+        llama_proc = LlamaProcess(
+            model_name="llama-model",
+            model_path=Path("/tmp/llama.gguf"),
+            port=9001,
+            status="running",
+            server_type="llama",
+        )
+        transformers_proc = LlamaProcess(
+            model_name="transformer-model",
+            model_path=Path("/tmp/transformers"),
+            port=9002,
+            status="running",
+            server_type="transformers",
+        )
+
+        process_manager = MagicMock()
+        process_manager.get_all_processes.return_value = [llama_proc, transformers_proc]
+
+        loader = AutoLoader(process_manager=process_manager)
+        loader.reload_model = AsyncMock(return_value={"reload_triggered": True})
+
+        result = await loader.reconcile_global_config_change("default_context_size")
+
+        loader.reload_model.assert_awaited_once_with(
+            "llama-model",
+            reason="global_config:default_context_size",
+        )
+        assert result["reload_triggered"] is True
+        assert result["reloaded_models"] == ["llama-model"]
+
+    @pytest.mark.asyncio
+    async def test_reconcile_global_toggle_updates_runtime_without_reload(self):
+        """Idle-timer toggle changes should apply live without forcing reloads."""
+        from cyber_inference.services.auto_loader import AutoLoader
+
+        loader = AutoLoader()
+        loader.refresh_runtime_settings = MagicMock(
+            return_value={
+                "idle_timeout": 300,
+                "idle_unload_enabled": True,
+                "max_loaded_models": 1,
+                "max_memory_percent": 80.0,
+            }
+        )
+
+        result = await loader.reconcile_global_config_change("model_idle_unload_enabled")
+
+        assert result["applied_live"] is True
+        assert result["reload_triggered"] is False
+        assert result["restart_required"] is False
+
+    @pytest.mark.asyncio
+    async def test_load_model_prefers_native_context_when_no_override(self):
+        """A model's detected native context should beat the low global default."""
+        from cyber_inference.services.auto_loader import AutoLoader
+
+        process_manager = MagicMock()
+        process_manager.start_server = AsyncMock(
+            return_value=MagicMock(
+                status="running",
+                port=9338,
+                server_type="llama",
+                effective_config={},
+            )
+        )
+        model_manager = MagicMock()
+        model_manager.get_model = AsyncMock(
+            return_value={
+                "name": "demo",
+                "engine_type": "llama",
+                "context_length": 131072,
+                "default_context_size": None,
+                "model_type": "chat",
+                "mmproj_path": None,
+                "hf_repo_id": "demo/repo",
+            }
+        )
+        model_manager.get_model_path = AsyncMock(return_value=Path("/tmp/demo.gguf"))
+        model_manager.update_last_used = AsyncMock()
+
+        loader = AutoLoader(process_manager=process_manager, model_manager=model_manager)
+
+        await loader.load_model("demo")
+
+        assert process_manager.start_server.await_args.kwargs["context_size"] == 131072
+
+
+class TestDownloadProgressEvents:
+    """Tests for download progress event shaping."""
+
+    def test_build_download_progress_event_includes_session_and_phase(self):
+        """Download progress events should expose the session envelope and phase fields."""
+        from cyber_inference.api.websocket import build_download_progress_event
+
+        event = build_download_progress_event(
+            repo_id="demo/repo",
+            filename="demo.gguf",
+            progress=42.0,
+            status="downloading",
+            message="Downloading model",
+            download_id="download-123",
+            phase="downloading_model",
+            downloaded_bytes=420,
+            total_bytes=1000,
+        )
+
+        assert event["repo_id"] == "demo/repo"
+        assert event["download_id"] == "download-123"
+        assert event["phase"] == "downloading_model"
+        assert event["message"] == "Downloading model"
+        assert event["downloaded_bytes"] == 420

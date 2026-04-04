@@ -9,26 +9,24 @@ This module initializes and configures the FastAPI application with:
 - Lifespan management for startup/shutdown
 """
 
-import os
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncGenerator
 
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from cyber_inference import __version__
+from cyber_inference.api.websocket import setup_log_handler
 from cyber_inference.core.auth import extract_bearer_token, verify_admin_token_value
 from cyber_inference.core.config import apply_db_config_overrides, get_settings
 from cyber_inference.core.database import init_database
 from cyber_inference.core.logging import get_logger, setup_logging
+from cyber_inference.services.auto_loader import AutoLoader
 from cyber_inference.services.process_manager import ProcessManager
 from cyber_inference.services.resource_monitor import ResourceMonitor
-from cyber_inference.services.auto_loader import AutoLoader
-from cyber_inference.api.websocket import setup_log_handler
 
 logger = get_logger(__name__)
 
@@ -86,11 +84,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         resource_monitor=resource_monitor,
     )
     await auto_loader.start()
-    logger.info(f"[success]Auto-loader started (idle timeout: {settings.model_idle_timeout}s)[/success]")
+    logger.info(
+        "[success]Auto-loader started "
+        "(resident models stay loaded until capacity or memory pressure requires eviction)[/success]"
+    )
 
     # Log system info
     sys_info = await resource_monitor.get_system_info()
-    logger.info(f"[info]System Information:[/info]")
+    logger.info("[info]System Information:[/info]")
     logger.info(f"  Platform: {sys_info['platform']}")
     logger.info(f"  CPU Cores: {sys_info['cpu_count']}")
     logger.info(f"  Total RAM: {sys_info['total_memory_gb']:.1f} GB")
@@ -164,10 +165,10 @@ templates = Jinja2Templates(directory=_templates_dir) if _templates_dir.exists()
 
 
 # Import and include routers
-from cyber_inference.api.v1 import router as v1_router
-from cyber_inference.api.admin import router as admin_router
-from cyber_inference.api.web import router as web_router
-from cyber_inference.api.websocket import router as ws_router
+from cyber_inference.api.admin import router as admin_router  # noqa: E402
+from cyber_inference.api.v1 import router as v1_router  # noqa: E402
+from cyber_inference.api.web import router as web_router  # noqa: E402
+from cyber_inference.api.websocket import router as ws_router  # noqa: E402
 
 app.include_router(v1_router, prefix="/v1", tags=["OpenAI API"])
 app.include_router(admin_router, prefix="/admin", tags=["Admin"])
