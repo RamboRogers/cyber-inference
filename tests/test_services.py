@@ -509,7 +509,93 @@ class TestAutoLoader:
 
         assert proc.effective_config["launch_config"]["jinja_enabled"] is True
         assert proc.effective_config["tool_calling"]["status"] == "supported"
-        assert proc.effective_config["tool_calling"]["source"] == "detected"
+        assert proc.effective_config["tool_calling"]["source"] == "detected_runtime"
+
+    @pytest.mark.asyncio
+    async def test_load_model_promotes_qwen35_family_metadata_to_supported(self):
+        """Qwen 3.5 GGUF tool markers should be enough when runtime exposes a chat template."""
+        from cyber_inference.services.auto_loader import AutoLoader
+
+        process_manager = MagicMock()
+        proc = MagicMock(status="running", port=9338, server_type="llama", effective_config={})
+        process_manager.start_server = AsyncMock(return_value=proc)
+        process_manager.get_server_props = AsyncMock(
+            return_value={"chat_template": "{% for message in messages %}<tool_call>{% endfor %}"}
+        )
+        model_manager = MagicMock()
+        model_manager.get_model = AsyncMock(
+            return_value={
+                "name": "Qwen3.5-35B-A3B-MXFP4_MOE",
+                "engine_type": "llama",
+                "context_length": 131072,
+                "default_context_size": None,
+                "model_type": "chat",
+                "mmproj_path": None,
+                "hf_repo_id": "unsloth/Qwen3.5-35B-A3B-GGUF",
+                "tool_template_mode": None,
+                "tool_template_name": None,
+                "tool_template_path": None,
+                "tool_jinja_enabled": None,
+                "gguf_has_chat_template": True,
+                "gguf_has_tool_call_tokens": True,
+                "gguf_has_tool_response_tokens": True,
+                "gguf_has_response_schema_tool_calls": False,
+                "gguf_has_gemma4_tool_parser": False,
+                "gguf_architecture": "qwen3moe",
+            }
+        )
+        model_manager.get_model_path = AsyncMock(return_value=Path("/tmp/demo.gguf"))
+        model_manager.update_last_used = AsyncMock()
+
+        loader = AutoLoader(process_manager=process_manager, model_manager=model_manager)
+
+        await loader.load_model("Qwen3.5-35B-A3B-MXFP4_MOE")
+
+        assert proc.effective_config["tool_calling"]["status"] == "supported"
+        assert proc.effective_config["tool_calling"]["source"] == "detected_family_metadata"
+
+    @pytest.mark.asyncio
+    async def test_load_model_promotes_gemma4_family_metadata_to_supported(self):
+        """Gemma 4 GGUF tool markers should be enough when runtime exposes a chat template."""
+        from cyber_inference.services.auto_loader import AutoLoader
+
+        process_manager = MagicMock()
+        proc = MagicMock(status="running", port=9338, server_type="llama", effective_config={})
+        process_manager.start_server = AsyncMock(return_value=proc)
+        process_manager.get_server_props = AsyncMock(
+            return_value={"chat_template": "{% if tools %}<|tool_call>{% endif %}"}
+        )
+        model_manager = MagicMock()
+        model_manager.get_model = AsyncMock(
+            return_value={
+                "name": "gemma-4-27b-it",
+                "engine_type": "llama",
+                "context_length": 131072,
+                "default_context_size": None,
+                "model_type": "chat",
+                "mmproj_path": None,
+                "hf_repo_id": "google/gemma-4-27b-it-gguf",
+                "tool_template_mode": None,
+                "tool_template_name": None,
+                "tool_template_path": None,
+                "tool_jinja_enabled": None,
+                "gguf_has_chat_template": True,
+                "gguf_has_tool_call_tokens": True,
+                "gguf_has_tool_response_tokens": False,
+                "gguf_has_response_schema_tool_calls": True,
+                "gguf_has_gemma4_tool_parser": True,
+                "gguf_architecture": "gemma4",
+            }
+        )
+        model_manager.get_model_path = AsyncMock(return_value=Path("/tmp/demo.gguf"))
+        model_manager.update_last_used = AsyncMock()
+
+        loader = AutoLoader(process_manager=process_manager, model_manager=model_manager)
+
+        await loader.load_model("gemma-4-27b-it")
+
+        assert proc.effective_config["tool_calling"]["status"] == "supported"
+        assert proc.effective_config["tool_calling"]["source"] == "detected_family_metadata"
 
     @pytest.mark.asyncio
     async def test_load_model_marks_probe_failures_without_failing_chat_load(self):

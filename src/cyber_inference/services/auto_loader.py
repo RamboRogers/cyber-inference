@@ -71,6 +71,16 @@ def _parse_optional_bool(value: object) -> bool | None:
     return bool(value)
 
 
+def _normalize_family_hint(model_name: str, repo_id: str) -> str | None:
+    """Return a curated family hint for metadata-backed tool detection."""
+    identity = f"{model_name} {repo_id}".lower()
+    if "qwen3.5" in identity or "qwen3_5" in identity or "qwen-3.5" in identity:
+        return "qwen3.5"
+    if "gemma-4" in identity or "gemma4" in identity or "gemma 4" in identity:
+        return "gemma4"
+    return None
+
+
 class AutoLoader:
     """
     Manages automatic model loading and unloading.
@@ -502,6 +512,35 @@ class AutoLoader:
         }
         return launch_config, tool_calling
 
+    def _detect_family_tool_support(self, model_info: dict[str, Any]) -> str | None:
+        """Return the curated model family name when local metadata strongly implies tool support."""
+        family_hint = _normalize_family_hint(
+            str(model_info.get("name") or ""),
+            str(model_info.get("hf_repo_id") or ""),
+        )
+        if family_hint == "qwen3.5":
+            if (
+                model_info.get("gguf_has_chat_template")
+                and model_info.get("gguf_has_tool_call_tokens")
+                and model_info.get("gguf_has_tool_response_tokens")
+            ):
+                return family_hint
+            return None
+
+        if family_hint == "gemma4":
+            if model_info.get("gguf_has_chat_template") and (
+                model_info.get("gguf_has_response_schema_tool_calls")
+                or model_info.get("gguf_has_gemma4_tool_parser")
+                or (
+                    model_info.get("gguf_has_tool_call_tokens")
+                    and model_info.get("gguf_has_tool_response_tokens")
+                )
+            ):
+                return family_hint
+            return None
+
+        return None
+
     @staticmethod
     def _find_nested_value(payload: object, key: str) -> object | None:
         """Search nested dict/list payloads for a key."""
@@ -523,6 +562,7 @@ class AutoLoader:
         self,
         proc: LlamaProcess,
         effective_config: dict[str, Any],
+        model_info: dict[str, Any],
     ) -> dict[str, Any]:
         """Probe a running llama server once and cache its tool-calling state."""
         launch_config = effective_config.get("launch_config", {})
@@ -576,7 +616,19 @@ class AutoLoader:
         if template_tool_use:
             return {
                 "status": "supported",
-                "source": "detected",
+                "source": "detected_runtime",
+                "template_source": "native_metadata",
+                "warnings": warnings,
+            }
+
+        family_support = self._detect_family_tool_support(model_info)
+        if chat_template and family_support:
+            warnings.append(
+                f"Tool calling enabled from {family_support} GGUF metadata markers plus runtime chat template."
+            )
+            return {
+                "status": "supported",
+                "source": "detected_family_metadata",
                 "template_source": "native_metadata",
                 "warnings": warnings,
             }
@@ -587,7 +639,7 @@ class AutoLoader:
             )
             return {
                 "status": "unknown",
-                "source": "detected",
+                "source": "detected_runtime",
                 "template_source": "native_metadata",
                 "warnings": warnings,
             }
@@ -796,6 +848,7 @@ class AutoLoader:
             effective_config["tool_calling"] = await self._probe_tool_calling_capability(
                 proc,
                 effective_config,
+                model_info,
             )
 
         # Update last used

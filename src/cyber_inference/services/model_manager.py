@@ -15,7 +15,7 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any
 
 import httpx
 from huggingface_hub import HfApi, hf_hub_url, list_repo_files, snapshot_download
@@ -29,6 +29,9 @@ from cyber_inference.models.db_models import Model
 
 logger = get_logger(__name__)
 
+GGUF_STRING_TYPE = 8
+GGUF_ARRAY_TYPE = 9
+
 
 class ModelManager:
     """
@@ -38,7 +41,7 @@ class ModelManager:
     and maintains local database of available models.
     """
 
-    def __init__(self, models_dir: Optional[Path] = None):
+    def __init__(self, models_dir: Path | None = None):
         """
         Initialize the model manager.
 
@@ -57,7 +60,7 @@ class ModelManager:
         logger.debug(f"  HuggingFace token: {'configured' if self._hf_token else 'not set'}")
 
     @staticmethod
-    def _read_gguf_context_length(file_path: Path) -> Optional[int]:
+    def _read_gguf_metadata_summary(file_path: Path) -> dict[str, Any] | None:
         def read_exact(handle, size: int) -> bytes:
             data = handle.read(size)
             if len(data) != size:
@@ -112,9 +115,6 @@ class ModelManager:
             11: 8,  # INT64
             12: 8,  # FLOAT64
         }
-        GGUF_STRING = 8
-        GGUF_ARRAY = 9
-
         context_keys = {
             "llama.context_length",
             "context_length",
@@ -132,7 +132,7 @@ class ModelManager:
             return False
 
         def skip_array(handle, elem_type: int, length: int) -> None:
-            if elem_type == GGUF_STRING:
+            if elem_type == GGUF_STRING_TYPE:
                 for _ in range(length):
                     skip_string(handle)
                 return
@@ -142,10 +142,10 @@ class ModelManager:
             read_exact(handle, elem_size * length)
 
         def skip_value(handle, value_type: int) -> None:
-            if value_type == GGUF_STRING:
+            if value_type == GGUF_STRING_TYPE:
                 skip_string(handle)
                 return
-            if value_type == GGUF_ARRAY:
+            if value_type == GGUF_ARRAY_TYPE:
                 elem_type = read_u32(handle)
                 length = read_u64(handle)
                 skip_array(handle, elem_type, length)
@@ -155,7 +155,7 @@ class ModelManager:
                 raise ValueError("Unknown GGUF value type")
             read_exact(handle, size)
 
-        def read_numeric_value(handle, value_type: int) -> Optional[int]:
+        def read_numeric_value(handle, value_type: int) -> int | None:
             if value_type == 0:
                 return read_u8(handle)
             if value_type == 1:
@@ -174,12 +174,12 @@ class ModelManager:
                 return read_u64(handle)
             if value_type == 11:
                 return read_i64(handle)
-            if value_type == GGUF_STRING:
-                value = read_string(handle)
-                if value.isdigit():
-                    return int(value)
+            if value_type == GGUF_STRING_TYPE:
+                string_value = read_string(handle)
+                if string_value.isdigit():
+                    return int(string_value)
                 return None
-            if value_type == GGUF_ARRAY:
+            if value_type == GGUF_ARRAY_TYPE:
                 elem_type = read_u32(handle)
                 length = read_u64(handle)
                 if length == 1:
@@ -190,9 +190,9 @@ class ModelManager:
             return None
 
         def select_context_length(
-            architecture: Optional[str],
+            architecture: str | None,
             candidates: dict[str, int],
-        ) -> Optional[int]:
+        ) -> int | None:
             if not candidates:
                 return None
 
@@ -226,6 +226,31 @@ class ModelManager:
 
             return None
 
+        def summarize_tool_metadata(
+            architecture: str | None,
+            chat_template: str | None,
+            response_schema: str | None,
+        ) -> dict[str, Any]:
+            chat_template_lower = chat_template.lower() if chat_template else ""
+            response_schema_lower = response_schema.lower() if response_schema else ""
+            return {
+                "architecture": architecture,
+                "context_length": select_context_length(architecture, candidates),
+                "has_chat_template": bool(chat_template),
+                "has_tool_call_tokens": any(
+                    marker in chat_template_lower
+                    for marker in ("<tool_call", "<|tool_call", "</tool_call>", "</|tool_call|>")
+                ),
+                "has_tool_response_tokens": any(
+                    marker in chat_template_lower
+                    for marker in ("<tool_response", "<|tool_response", "</tool_response>", "</|tool_response|>")
+                ),
+                "has_response_schema_tool_calls": "tool_calls" in response_schema_lower,
+                "has_gemma4_tool_parser": "gemma4-tool-call" in (
+                    f"{chat_template_lower}\n{response_schema_lower}"
+                ),
+            }
+
         try:
             with file_path.open("rb") as handle:
                 magic = read_exact(handle, 4)
@@ -238,6 +263,8 @@ class ModelManager:
 
                 architecture = None
                 candidates: dict[str, int] = {}
+                chat_template: str | None = None
+                response_schema: str | None = None
 
                 for _ in range(kv_count):
                     key = read_string(handle)
@@ -245,7 +272,7 @@ class ModelManager:
                     value_type = read_u32(handle)
 
                     if key_lower == "general.architecture":
-                        if value_type == GGUF_STRING:
+                        if value_type == GGUF_STRING_TYPE:
                             architecture = read_string(handle).lower()
                         else:
                             skip_value(handle, value_type)
@@ -257,17 +284,35 @@ class ModelManager:
                             candidates[key_lower] = int(value)
                         continue
 
+                    if key_lower.endswith("chat_template") and value_type == GGUF_STRING_TYPE:
+                        string_value = read_string(handle)
+                        if string_value and chat_template is None:
+                            chat_template = string_value
+                        continue
+
+                    if key_lower.endswith("response_schema") and value_type == GGUF_STRING_TYPE:
+                        string_value = read_string(handle)
+                        if string_value and response_schema is None:
+                            response_schema = string_value
+                        continue
+
                     skip_value(handle, value_type)
 
-                return select_context_length(architecture, candidates)
+                return summarize_tool_metadata(architecture, chat_template, response_schema)
         except Exception as e:
             logger.debug(f"Failed to read GGUF metadata from {file_path.name}: {e}")
             return None
 
         return None
 
+    @classmethod
+    def _read_gguf_context_length(cls, file_path: Path) -> int | None:
+        summary = cls._read_gguf_metadata_summary(file_path)
+        context_length = summary.get("context_length") if summary else None
+        return int(context_length) if isinstance(context_length, int) else None
+
     @staticmethod
-    def _read_transformers_context_length(model_dir: Path) -> Optional[int]:
+    def _read_transformers_context_length(model_dir: Path) -> int | None:
         """Read context length from a HuggingFace transformers model's config.json."""
         config_path = model_dir / "config.json"
         if not config_path.exists():
@@ -303,7 +348,7 @@ class ModelManager:
         return None
 
     @staticmethod
-    def _detect_vlm_from_config(model_dir: Path) -> Optional[str]:
+    def _detect_vlm_from_config(model_dir: Path) -> str | None:
         """Detect VLM model type from config.json architectures/vision_config."""
         config_path = model_dir / "config.json"
         if not config_path.exists():
@@ -328,8 +373,8 @@ class ModelManager:
     @staticmethod
     def _split_repo_and_filename(
         repo_id: str,
-        filename: Optional[str],
-    ) -> tuple[str, Optional[str]]:
+        filename: str | None,
+    ) -> tuple[str, str | None]:
         if filename:
             return repo_id, filename
 
@@ -392,7 +437,7 @@ class ModelManager:
         return stem
 
     @staticmethod
-    def _extract_quant_suffix(filename: str) -> Optional[str]:
+    def _extract_quant_suffix(filename: str) -> str | None:
         """
         Extract the quantization suffix from a filename.
 
@@ -411,7 +456,7 @@ class ModelManager:
         return None
 
     @staticmethod
-    def _select_mmproj_file(files: list[str], model_filename: str) -> Optional[str]:
+    def _select_mmproj_file(files: list[str], model_filename: str) -> str | None:
         """
         Select the appropriate mmproj file for a model.
 
@@ -427,7 +472,7 @@ class ModelManager:
         def basename(path: str) -> str:
             return Path(path).name
 
-        def pick_by_quant_preference(candidates: list[str], model_quant: Optional[str]) -> Optional[str]:
+        def pick_by_quant_preference(candidates: list[str], model_quant: str | None) -> str | None:
             """Pick from candidates preferring matching quant or default order."""
             if not candidates:
                 return None
@@ -510,11 +555,11 @@ class ModelManager:
         self,
         repo_id: str,
         model_path: Path,
-        repo_files: Optional[list[str]] = None,
-        mmproj_filename: Optional[str] = None,
+        repo_files: list[str] | None = None,
+        mmproj_filename: str | None = None,
         force: bool = False,
         download_id: str | None = None,
-    ) -> Optional[Path]:
+    ) -> Path | None:
         """
         Download the mmproj file for a multimodal model.
 
@@ -711,7 +756,7 @@ class ModelManager:
             logger.error(f"[error]HuggingFace search failed: {e}[/error]")
             raise
 
-    async def list_repo_files(self, repo_id: str, files: Optional[list[str]] = None) -> list[dict]:
+    async def list_repo_files(self, repo_id: str, files: list[str] | None = None) -> list[dict]:
         """
         List GGUF files in a HuggingFace repository.
 
@@ -857,7 +902,7 @@ class ModelManager:
             logger.error(f"[error]Failed to list repo files: {e}[/error]")
             raise
 
-    def get_suggested_mmproj(self, model_filename: str, mmproj_files: list[str]) -> Optional[str]:
+    def get_suggested_mmproj(self, model_filename: str, mmproj_files: list[str]) -> str | None:
         """
         Get the suggested mmproj file for a given model filename.
 
@@ -873,8 +918,8 @@ class ModelManager:
     async def download_model(
         self,
         repo_id: str,
-        filename: Optional[str] = None,
-        mmproj_filename: Optional[str] = None,
+        filename: str | None = None,
+        mmproj_filename: str | None = None,
         force: bool = False,
         download_id: str | None = None,
     ) -> Path:
@@ -1050,8 +1095,8 @@ class ModelManager:
         filename: str,
         progress: float,
         status: str,
-        error: Optional[str] = None,
-        message: Optional[str] = None,
+        error: str | None = None,
+        message: str | None = None,
         downloaded_bytes: int | None = None,
         total_bytes: int | None = None,
         bytes_per_second: float | None = None,
@@ -1086,9 +1131,9 @@ class ModelManager:
         repo_id: str,
         filename: str,
         file_path: Path,
-        mmproj_path: Optional[Path] = None,
-        engine_type: Optional[str] = None,
-        model_name_override: Optional[str] = None,
+        mmproj_path: Path | None = None,
+        engine_type: str | None = None,
+        model_name_override: str | None = None,
     ) -> Model:
         """Register a model in the database.
 
@@ -1258,15 +1303,20 @@ class ModelManager:
 
             updated = False
             for model in db_models:
+                metadata_summary: dict[str, Any] = {}
                 # Backfill context_length for models that still have the 4096 default
-                if model.file_path and (model.context_length is None or model.context_length == 4096):
+                if model.file_path:
                     file_path = Path(model.file_path)
-                    context_length = None
                     if file_path.exists() and file_path.suffix == ".gguf":
-                        context_length = self._read_gguf_context_length(file_path)
+                        metadata_summary = self._read_gguf_metadata_summary(file_path) or {}
                     elif file_path.is_dir():
                         context_length = self._read_transformers_context_length(file_path)
-                    if context_length and context_length != model.context_length:
+                        metadata_summary = {"context_length": context_length}
+                    else:
+                        metadata_summary = {}
+
+                    context_length = metadata_summary.get("context_length")
+                    if isinstance(context_length, int) and context_length != model.context_length:
                         model.context_length = context_length
                         updated = True
 
@@ -1296,6 +1346,12 @@ class ModelManager:
                     "tool_template_name": model.tool_template_name,
                     "tool_template_path": model.tool_template_path,
                     "tool_jinja_enabled": model.tool_jinja_enabled,
+                    "gguf_has_chat_template": bool(metadata_summary.get("has_chat_template")),
+                    "gguf_has_tool_call_tokens": bool(metadata_summary.get("has_tool_call_tokens")),
+                    "gguf_has_tool_response_tokens": bool(metadata_summary.get("has_tool_response_tokens")),
+                    "gguf_has_response_schema_tool_calls": bool(metadata_summary.get("has_response_schema_tool_calls")),
+                    "gguf_has_gemma4_tool_parser": bool(metadata_summary.get("has_gemma4_tool_parser")),
+                    "gguf_architecture": metadata_summary.get("architecture"),
                 })
 
             if updated:
@@ -1310,7 +1366,8 @@ class ModelManager:
             if file_path.suffix == ".gguf" and self._is_mmproj_file(file_path.name):
                 continue
             if file_path.name not in registered_files:
-                context_length = self._read_gguf_context_length(file_path)
+                metadata_summary = self._read_gguf_metadata_summary(file_path) or {}
+                context_length = metadata_summary.get("context_length")
                 # Try to find associated mmproj file
                 mmproj_path = None
                 potential_mmproj = file_path.parent / f"mmproj-{file_path.stem}.gguf"
@@ -1343,6 +1400,12 @@ class ModelManager:
                     "tool_template_name": None,
                     "tool_template_path": None,
                     "tool_jinja_enabled": None,
+                    "gguf_has_chat_template": bool(metadata_summary.get("has_chat_template")),
+                    "gguf_has_tool_call_tokens": bool(metadata_summary.get("has_tool_call_tokens")),
+                    "gguf_has_tool_response_tokens": bool(metadata_summary.get("has_tool_response_tokens")),
+                    "gguf_has_response_schema_tool_calls": bool(metadata_summary.get("has_response_schema_tool_calls")),
+                    "gguf_has_gemma4_tool_parser": bool(metadata_summary.get("has_gemma4_tool_parser")),
+                    "gguf_architecture": metadata_summary.get("architecture"),
                 })
 
         # Scan for unregistered transformers models (directories in models/transformers/)
@@ -1388,12 +1451,18 @@ class ModelManager:
                         "tool_template_name": None,
                         "tool_template_path": None,
                         "tool_jinja_enabled": None,
+                        "gguf_has_chat_template": False,
+                        "gguf_has_tool_call_tokens": False,
+                        "gguf_has_tool_response_tokens": False,
+                        "gguf_has_response_schema_tool_calls": False,
+                        "gguf_has_gemma4_tool_parser": False,
+                        "gguf_architecture": None,
                     })
 
         logger.debug(f"Found {len(models)} models")
         return models
 
-    async def get_model(self, name: str) -> Optional[dict]:
+    async def get_model(self, name: str) -> dict | None:
         """
         Get model by name.
 
@@ -1409,7 +1478,7 @@ class ModelManager:
                 return model
         return None
 
-    async def get_model_path(self, name: str) -> Optional[Path]:
+    async def get_model_path(self, name: str) -> Path | None:
         """
         Get the file path for a model.
 
@@ -1488,7 +1557,7 @@ class ModelManager:
     async def register_local_model(
         self,
         file_path: Path,
-        name: Optional[str] = None,
+        name: str | None = None,
     ) -> Model:
         """
         Register a local GGUF file that was manually added.
