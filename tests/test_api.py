@@ -449,7 +449,7 @@ async def test_chat_completions_forwards_tool_payload_and_preserves_tool_calls()
 
 @pytest.mark.asyncio
 async def test_chat_completions_normalizes_image_parts_for_llama():
-    """llama-backed multimodal requests should use the more compatible image part shape."""
+    """llama-backed multimodal requests should use typed parts when the server supports them."""
     from cyber_inference.api.v1 import chat_completions
 
     captured_request = {}
@@ -475,6 +475,18 @@ async def test_chat_completions_normalizes_image_parts_for_llama():
 
         async def __aexit__(self, exc_type, exc, tb):
             return False
+
+        async def get(self, url):
+            class PropsResponse:
+                status_code = 200
+
+                def raise_for_status(self):
+                    return None
+
+                def json(self):
+                    return {"chat_template_caps": {"supports_typed_content": True}}
+
+            return PropsResponse()
 
         async def post(self, url, json):
             captured_request["url"] = url
@@ -509,6 +521,90 @@ async def test_chat_completions_normalizes_image_parts_for_llama():
     content = captured_request["json"]["messages"][0]["content"]
     assert content[0] == {"type": "text", "text": "What color is this?"}
     assert content[1] == {"type": "image", "url": "https://example.com/demo.png"}
+    assert response.choices[0].message.content == "green"
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_falls_back_to_legacy_image_data_when_llama_typed_content_disabled():
+    """Older llama.cpp builds should receive legacy image_data payloads."""
+    from cyber_inference.api.v1 import chat_completions
+
+    captured_request = {}
+
+    class DummyResponse:
+        status_code = 200
+        text = ""
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "choices": [
+                    {"message": {"role": "assistant", "content": "green"}, "finish_reason": "stop"}
+                ],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            }
+
+    class DummyClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url):
+            class PropsResponse:
+                status_code = 200
+
+                def raise_for_status(self):
+                    return None
+
+                def json(self):
+                    return {"chat_template_caps": {"supports_typed_content": False}}
+
+            return PropsResponse()
+
+        async def post(self, url, json):
+            captured_request["url"] = url
+            captured_request["json"] = json
+            return DummyResponse()
+
+    auto_loader = MagicMock()
+    auto_loader.ensure_model_loaded = AsyncMock(return_value="http://127.0.0.1:9999")
+    auto_loader.get_request_defaults = AsyncMock(return_value={})
+    auto_loader.record_request = AsyncMock()
+
+    request = ChatCompletionRequest(
+        model="demo-vlm",
+        messages=[
+            ChatMessage(
+                role="user",
+                content=[
+                    {"type": "text", "text": "What color is this?"},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB"
+                        },
+                    },
+                ],
+            )
+        ],
+    )
+
+    with (
+        patch("cyber_inference.api.v1.get_auto_loader", return_value=auto_loader),
+        patch("cyber_inference.api.v1._get_server_type", return_value="llama"),
+        patch("cyber_inference.api.v1.httpx.AsyncClient", return_value=DummyClient()),
+    ):
+        response = await chat_completions(request, MagicMock())
+
+    payload = captured_request["json"]
+    assert payload["messages"][0]["content"] == (
+        "What color is this?\n<|vision_start|><|image_pad|><|vision_end|>"
+    )
+    assert payload["image_data"] == [{"id": 1, "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB"}]
     assert response.choices[0].message.content == "green"
 
 
@@ -932,6 +1028,130 @@ async def test_web_models_page_shows_vision_badge_for_mmproj_models():
 
     assert response.status_code == 200
     assert re.search(r"demo-vlm[\s\S]{0,1500}title=\"Vision enabled\"", response.text)
+
+
+@pytest.mark.asyncio
+async def test_chat_page_renders_iframe_for_loaded_llama_model():
+    auto_loader = MagicMock()
+    auto_loader.ensure_model_loaded = AsyncMock(return_value="http://127.0.0.1:9999")
+    auto_loader.get_model_status = AsyncMock(
+        return_value={
+            "server_type": "llama",
+            "status": "running",
+            "is_loaded": True,
+        }
+    )
+
+    with patch("cyber_inference.api.v1.get_auto_loader", return_value=auto_loader):
+        async with make_test_client() as client:
+            response = await client.get("/chat/demo-model")
+
+    assert response.status_code == 200
+    assert '/chat/demo-model/ui/' in response.text
+    assert "demo-model" in response.text
+
+
+@pytest.mark.asyncio
+async def test_chat_ui_proxy_passes_through_upstream_html():
+    class DummyResponse:
+        status_code = 200
+        content = b"<html><body>llama ui</body></html>"
+        headers = {"content-type": "text/html; charset=utf-8"}
+
+    class DummyClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def request(self, method, url, content, headers):
+            assert method == "GET"
+            assert url == "http://127.0.0.1:9999/"
+            return DummyResponse()
+
+    auto_loader = MagicMock()
+    auto_loader.ensure_model_loaded = AsyncMock(return_value="http://127.0.0.1:9999")
+    auto_loader.get_model_status = AsyncMock(
+        return_value={
+            "server_type": "llama",
+            "status": "running",
+            "is_loaded": True,
+        }
+    )
+
+    with (
+        patch("cyber_inference.api.v1.get_auto_loader", return_value=auto_loader),
+        patch("cyber_inference.api.web.httpx.AsyncClient", return_value=DummyClient()),
+    ):
+        async with make_test_client() as client:
+            response = await client.get("/chat/demo-model/ui/")
+
+    assert response.status_code == 200
+    assert "llama ui" in response.text
+
+
+@pytest.mark.asyncio
+async def test_chat_ui_proxy_passes_through_post_requests():
+    class DummyResponse:
+        status_code = 200
+        content = b'{"ok":true}'
+        headers = {"content-type": "application/json"}
+
+    class DummyClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def request(self, method, url, content, headers):
+            assert method == "POST"
+            assert url == "http://127.0.0.1:9999/v1/chat/completions"
+            assert content
+            return DummyResponse()
+
+    auto_loader = MagicMock()
+    auto_loader.ensure_model_loaded = AsyncMock(return_value="http://127.0.0.1:9999")
+    auto_loader.get_model_status = AsyncMock(
+        return_value={
+            "server_type": "llama",
+            "status": "running",
+            "is_loaded": True,
+        }
+    )
+
+    with (
+        patch("cyber_inference.api.v1.get_auto_loader", return_value=auto_loader),
+        patch("cyber_inference.api.web.httpx.AsyncClient", return_value=DummyClient()),
+    ):
+        async with make_test_client() as client:
+            response = await client.post(
+                "/chat/demo-model/ui/v1/chat/completions",
+                json={"messages": [{"role": "user", "content": "hi"}]},
+            )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+
+
+@pytest.mark.asyncio
+async def test_chat_page_rejects_non_llama_models():
+    auto_loader = MagicMock()
+    auto_loader.ensure_model_loaded = AsyncMock(return_value="http://127.0.0.1:9999")
+    auto_loader.get_model_status = AsyncMock(
+        return_value={
+            "server_type": "transformers",
+            "status": "running",
+            "is_loaded": True,
+        }
+    )
+
+    with patch("cyber_inference.api.v1.get_auto_loader", return_value=auto_loader):
+        async with make_test_client() as client:
+            response = await client.get("/chat/demo-model")
+
+    assert response.status_code == 400
 
 
 @pytest.mark.asyncio

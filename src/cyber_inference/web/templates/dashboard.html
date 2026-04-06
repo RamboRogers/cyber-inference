@@ -191,6 +191,14 @@
                         <span class="px-1.5 py-0.5 rounded bg-cyber-neon/20 text-cyber-neon">llama.cpp</span>
                         {% endif %}
                     </div>
+                    {% if m_type == 'llama' %}
+                    <div class="mt-3">
+                        <a href="/chat/{{ (model.name if model is mapping else model) | urlencode }}"
+                           class="cyber-btn inline-flex items-center px-3 py-1.5 rounded-lg font-mono text-xs">
+                            Open Chat
+                        </a>
+                    </div>
+                    {% endif %}
                 </div>
                 {% endfor %}
             </div>

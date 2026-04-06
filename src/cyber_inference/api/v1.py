@@ -53,6 +53,8 @@ logger = get_logger(__name__)
 
 router = APIRouter()
 
+_LLAMA_IMAGE_PLACEHOLDER = "<|vision_start|><|image_pad|><|vision_end|>"
+
 # Global auto-loader instance (initialized in main.py lifespan)
 _auto_loader: AutoLoader | None = None
 
@@ -151,6 +153,106 @@ def _normalize_content_part(part, server_type: str = "llama"):
     return data
 
 
+def _message_content_has_image(content) -> bool:
+    if not isinstance(content, list):
+        return False
+    for part in content:
+        if hasattr(part, "model_dump"):
+            data = part.model_dump(exclude_none=True)
+        elif isinstance(part, dict):
+            data = part
+        else:
+            continue
+        part_type = data.get("type")
+        if part_type in {"image", "image_url", "input_image"}:
+            return True
+    return False
+
+
+def _request_uses_image_content(messages: list[ChatMessage]) -> bool:
+    return any(_message_content_has_image(message.content) for message in messages)
+
+
+def _extract_image_url(image_value) -> str | None:
+    normalized = _normalize_image_url_value(image_value)
+    if isinstance(normalized, dict):
+        value = (
+            normalized.get("url")
+            or normalized.get("image")
+            or normalized.get("path")
+            or normalized.get("base64")
+        )
+        return value if isinstance(value, str) else None
+    return normalized if isinstance(normalized, str) else None
+
+
+def _data_url_to_base64(url: str) -> str:
+    if url.startswith("data:") and "," in url:
+        return url.split(",", 1)[1]
+    return url
+
+
+def _serialize_message_content_legacy_llama(content):
+    if isinstance(content, list):
+        rendered_parts: list[str] = []
+        for part in content:
+            if hasattr(part, "model_dump"):
+                data = part.model_dump(exclude_none=True)
+            elif isinstance(part, dict):
+                data = dict(part)
+            else:
+                if isinstance(part, str):
+                    rendered_parts.append(part)
+                continue
+
+            part_type = data.get("type")
+            if part_type in {"text", "input_text"} and isinstance(data.get("text"), str):
+                rendered_parts.append(data["text"])
+            elif part_type in {"image", "image_url", "input_image"}:
+                rendered_parts.append(_LLAMA_IMAGE_PLACEHOLDER)
+            elif isinstance(data.get("text"), str):
+                rendered_parts.append(data["text"])
+        return "\n".join(part for part in rendered_parts if part)
+    return content
+
+
+def _extract_legacy_image_data(messages: list[ChatMessage]) -> list[dict[str, object]]:
+    image_data: list[dict[str, object]] = []
+    image_id = 1
+    for message in messages:
+        content = message.content
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if hasattr(part, "model_dump"):
+                data = part.model_dump(exclude_none=True)
+            elif isinstance(part, dict):
+                data = dict(part)
+            else:
+                continue
+
+            part_type = data.get("type")
+            if part_type not in {"image", "image_url", "input_image"}:
+                continue
+
+            image_url = _extract_image_url(
+                data.get("image_url")
+                or data.get("url")
+                or data.get("image")
+                or data.get("path")
+                or data.get("base64")
+            )
+            if image_url is None:
+                continue
+
+            image_data.append({
+                "id": image_id,
+                "data": _data_url_to_base64(image_url),
+            })
+            image_id += 1
+    return image_data
+
+
 def _serialize_message_content(content, server_type: str):
     if isinstance(content, list):
         return [_normalize_content_part(part, server_type=server_type) for part in content]
@@ -167,6 +269,22 @@ def _serialize_message_content(content, server_type: str):
         return content
 
     return content
+
+
+async def _llama_supports_typed_content(server_url: str) -> bool:
+    props_url = f"{server_url}/props"
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        response = await client.get(props_url)
+        response.raise_for_status()
+        payload = response.json()
+
+    if not isinstance(payload, dict):
+        return True
+
+    chat_template_caps = payload.get("chat_template_caps")
+    if not isinstance(chat_template_caps, dict):
+        return True
+    return bool(chat_template_caps.get("supports_typed_content", True))
 
 
 async def init_auto_loader(auto_loader: AutoLoader) -> None:
@@ -497,6 +615,12 @@ async def chat_completions(
     server_type = _get_server_type(request.model)
     await _apply_model_defaults(request, request.model, server_type)
     await _validate_tool_calling_request(request, request.model, server_type)
+    use_legacy_llama_images = False
+    if server_type == "llama" and _request_uses_image_content(request.messages):
+        try:
+            use_legacy_llama_images = not await _llama_supports_typed_content(server_url)
+        except httpx.HTTPError as exc:
+            logger.warning(f"[warning]Could not read llama /props for typed-content support: {exc}[/warning]")
 
     # Prepare request for the inference server
     token_limit = request.max_tokens or 512
@@ -504,7 +628,11 @@ async def chat_completions(
         "messages": [
             {
                 "role": m.role,
-                "content": _serialize_message_content(m.content, server_type),
+                "content": (
+                    _serialize_message_content_legacy_llama(m.content)
+                    if use_legacy_llama_images
+                    else _serialize_message_content(m.content, server_type)
+                ),
                 **({"name": m.name} if m.name else {}),
                 **({"tool_calls": m.tool_calls} if m.tool_calls else {}),
                 **({"tool_call_id": m.tool_call_id} if m.tool_call_id else {}),
@@ -533,6 +661,10 @@ async def chat_completions(
         llama_request["tool_choice"] = request.tool_choice
     if request.parallel_tool_calls is not None:
         llama_request["parallel_tool_calls"] = request.parallel_tool_calls
+    if use_legacy_llama_images:
+        image_data = _extract_legacy_image_data(request.messages)
+        if image_data:
+            llama_request["image_data"] = image_data
 
     if request.stream:
         return EventSourceResponse(

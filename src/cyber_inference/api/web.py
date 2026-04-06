@@ -11,7 +11,8 @@ Serves the HTML templates for:
 from pathlib import Path
 from urllib.parse import quote
 
-from fastapi import APIRouter, Request
+import httpx
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 
@@ -57,6 +58,37 @@ def _build_next_url(request: Request) -> str:
     if request.url.query:
         path = f"{path}?{request.url.query}"
     return path
+
+
+def _copy_forward_headers(request: Request) -> dict[str, str]:
+    forwarded_headers: dict[str, str] = {}
+    for header_name in ("accept", "content-type", "origin", "referer", "user-agent"):
+        header_value = request.headers.get(header_name)
+        if header_value:
+            forwarded_headers[header_name] = header_value
+    return forwarded_headers
+
+
+def _copy_response_headers(response: httpx.Response) -> dict[str, str]:
+    proxied_headers: dict[str, str] = {}
+    for header_name in ("content-type", "cache-control", "etag", "last-modified"):
+        header_value = response.headers.get(header_name)
+        if header_value:
+            proxied_headers[header_name] = header_value
+    return proxied_headers
+
+
+async def _resolve_llama_chat_backend(model_name: str) -> tuple[str, dict]:
+    from cyber_inference.api.v1 import get_auto_loader
+
+    auto_loader = get_auto_loader()
+    server_url = await auto_loader.ensure_model_loaded(model_name)
+    status_info = await auto_loader.get_model_status(model_name)
+
+    if status_info.get("server_type") != "llama":
+        raise HTTPException(status_code=400, detail="Chat UI is only available for llama.cpp models.")
+
+    return server_url, status_info
 
 
 async def _require_admin(request: Request) -> RedirectResponse | None:
@@ -228,6 +260,58 @@ async def models_page(request: Request) -> Response:
         )
 
     return templates.TemplateResponse("models.html", context)
+
+
+@router.api_route(
+    "/chat/{model_name:path}/ui/{proxy_path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
+)
+async def llama_chat_ui_proxy(request: Request, model_name: str, proxy_path: str) -> Response:
+    """Proxy the llama.cpp built-in web UI under the Cyber-Inference origin."""
+    redirect = await _require_admin(request)
+    if redirect:
+        return redirect
+
+    server_url, _ = await _resolve_llama_chat_backend(model_name)
+    upstream_path = proxy_path or ""
+    upstream_url = f"{server_url}/{upstream_path}"
+    if request.url.query:
+        upstream_url = f"{upstream_url}?{request.url.query}"
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        upstream_response = await client.request(
+            request.method,
+            upstream_url,
+            content=await request.body(),
+            headers=_copy_forward_headers(request),
+        )
+
+    return Response(
+        content=upstream_response.content,
+        status_code=upstream_response.status_code,
+        headers=_copy_response_headers(upstream_response),
+    )
+
+
+@router.get("/chat/{model_name:path}", response_class=HTMLResponse)
+async def chat_page(request: Request, model_name: str) -> Response:
+    """GUI-hosted entry point for the llama.cpp chat interface."""
+    redirect = await _require_admin(request)
+    if redirect:
+        return redirect
+
+    if not templates:
+        return HTMLResponse(content="Templates not found", status_code=500)
+
+    _, status_info = await _resolve_llama_chat_backend(model_name)
+    context = _template_context(
+        request,
+        page="chat",
+        model_name=model_name,
+        chat_ui_path=f"/chat/{quote(model_name, safe='')}/ui/",
+        server_type=status_info.get("server_type", "llama"),
+    )
+    return templates.TemplateResponse("chat.html", context)
 
 
 @router.get("/settings", response_class=HTMLResponse)

@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+
+{% block title %}Chat | {{ model_name }}{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+    <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+        <div>
+            <h1 class="font-cyber text-3xl font-bold text-cyber-neon neon-text-subtle">
+                MODEL CHAT
+            </h1>
+            <p class="mt-1 text-gray-400 font-mono text-sm">
+                // {{ model_name }} via {{ server_type }}
+            </p>
+        </div>
+        <div class="flex items-center gap-3">
+            <a href="/models" class="cyber-btn px-4 py-2 rounded-lg font-mono text-sm">
+                Back to Models
+            </a>
+        </div>
+    </div>
+
+    <div class="cyber-card rounded-xl overflow-hidden">
+        <div class="px-6 py-4 border-b border-cyber-neon/20 flex items-center justify-between">
+            <div class="font-mono text-sm text-gray-300 truncate" title="{{ model_name }}">
+                {{ model_name }}
+            </div>
+            <span class="px-2 py-1 text-xs font-mono rounded bg-cyber-neon/20 text-cyber-neon border border-cyber-neon/30">
+                llama.cpp
+            </span>
+        </div>
+        <div class="p-0">
+            <iframe
+                src="{{ chat_ui_path }}"
+                title="Chat UI for {{ model_name }}"
+                class="block w-full h-[75vh] border-0 bg-cyber-black"
+            ></iframe>
+        </div>
+    </div>
+</div>
+{% endblock %}

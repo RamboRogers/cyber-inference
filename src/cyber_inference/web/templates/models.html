@@ -104,6 +104,12 @@
                                 class="flex-1 cyber-btn cyber-btn-danger px-4 py-2 rounded-lg font-mono text-sm">
                             Unload
                         </button>
+                        {% if model.server_type == 'llama' %}
+                        <a href="/chat/{{ model.name | urlencode }}"
+                           class="flex-1 cyber-btn px-4 py-2 rounded-lg font-mono text-sm text-center">
+                            Chat
+                        </a>
+                        {% endif %}
                         {% else %}
                         <button onclick="loadModel('{{ model.name }}')"
                                 class="flex-1 cyber-btn px-4 py-2 rounded-lg font-mono text-sm">
