@@ -373,11 +373,10 @@ class ProcessManager:
             cmd.extend(["--mmproj", str(mmproj_path)])
 
         launch_config = launch_config or {}
-        jinja_enabled = bool(launch_config.get("jinja_enabled"))
         template_name = launch_config.get("tool_template_name")
         template_path = launch_config.get("tool_template_path")
 
-        if not embedding and jinja_enabled:
+        if not embedding:
             cmd.append("--jinja")
             if template_name:
                 cmd.extend(["--chat-template", str(template_name)])

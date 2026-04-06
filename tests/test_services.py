@@ -243,7 +243,6 @@ class TestProcessManager:
             False,
             None,
             {
-                "jinja_enabled": True,
                 "tool_template_path": str(template_path),
             },
         )
@@ -270,9 +269,7 @@ class TestProcessManager:
             8,
             False,
             mmproj_path,
-            {
-                "jinja_enabled": True,
-            },
+            {},
         )
 
         assert "--mmproj" in cmd
@@ -296,7 +293,6 @@ class TestProcessManager:
             True,
             None,
             {
-                "jinja_enabled": True,
                 "tool_template_name": "chatml",
             },
         )
@@ -304,6 +300,27 @@ class TestProcessManager:
         assert "--embedding" in cmd
         assert "--jinja" not in cmd
         assert "--chat-template" not in cmd
+
+    def test_build_llama_server_command_jinja_always_enabled(self, temp_dirs):
+        """--jinja should always be passed for non-embedding models, even without launch_config."""
+        from cyber_inference.services.process_manager import ProcessManager
+
+        models_dir, bin_dir = temp_dirs
+        pm = ProcessManager(models_dir=models_dir, bin_dir=bin_dir)
+
+        cmd = pm._build_llama_server_command(
+            Path("/tmp/llama-server"),
+            Path("/tmp/demo.gguf"),
+            9338,
+            8192,
+            -1,
+            8,
+            False,
+            None,
+            {},
+        )
+
+        assert "--jinja" in cmd
 
 
 class TestAutoLoader:
