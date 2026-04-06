@@ -41,6 +41,7 @@ from cyber_inference.models.schemas import (
     CompletionUsage,
     EmbeddingRequest,
     EmbeddingResponse,
+    ModelCapabilities,
     ModelInfo,
     ModelsResponse,
     TranscriptionResponse,
@@ -95,7 +96,42 @@ def _normalize_image_url_value(value):
     return value
 
 
-def _normalize_content_part(part):
+def _normalize_llama_content_part(data: dict):
+    """Use a llama-server-compatible multimodal content shape."""
+    part_type = data.get("type")
+
+    if part_type in {"image_url", "input_image"}:
+        image_value = _normalize_image_url_value(
+            data.get("image_url")
+            or data.get("url")
+            or data.get("image")
+            or data.get("path")
+            or data.get("base64")
+        )
+        if isinstance(image_value, dict):
+            image_value = (
+                image_value.get("url")
+                or image_value.get("image")
+                or image_value.get("path")
+                or image_value.get("base64")
+            )
+        normalized = {"type": "image"}
+        if image_value is not None:
+            normalized["url"] = image_value if isinstance(image_value, str) else str(image_value)
+        return normalized
+
+    if part_type == "image" and "image_url" in data and "url" not in data:
+        image_value = _normalize_image_url_value(data["image_url"])
+        if isinstance(image_value, dict):
+            image_value = image_value.get("url")
+        if isinstance(image_value, str):
+            data["url"] = image_value
+        data.pop("image_url", None)
+
+    return data
+
+
+def _normalize_content_part(part, server_type: str = "llama"):
     if hasattr(part, "model_dump"):
         data = part.model_dump(exclude_none=True)
     elif isinstance(part, dict):
@@ -110,22 +146,24 @@ def _normalize_content_part(part):
             data["image_url"] = {"url": image_value}
         else:
             data["image_url"] = image_value
+    if server_type == "llama":
+        return _normalize_llama_content_part(data)
     return data
 
 
-def _serialize_message_content(content):
+def _serialize_message_content(content, server_type: str):
     if isinstance(content, list):
-        return [_normalize_content_part(part) for part in content]
+        return [_normalize_content_part(part, server_type=server_type) for part in content]
 
     if hasattr(content, "model_dump"):
-        data = _normalize_content_part(content)
+        data = _normalize_content_part(content, server_type=server_type)
         if isinstance(data, dict) and "type" in data:
             return [data]
         return data
 
     if isinstance(content, dict):
         if "type" in content:
-            return [_normalize_content_part(content)]
+            return [_normalize_content_part(content, server_type=server_type)]
         return content
 
     return content
@@ -365,6 +403,29 @@ async def _validate_tool_calling_request(
         raise HTTPException(status_code=400, detail=detail)
 
 
+def _build_model_info(model: dict, status_info: dict) -> ModelInfo:
+    effective_config = status_info.get("effective_config", {})
+    tool_info = effective_config.get("tool_calling", {})
+    tool_status = tool_info.get("status", "unsupported")
+
+    capabilities = ModelCapabilities(
+        vision=bool(model.get("mmproj_path") or model.get("is_vlm")),
+        tool_calling=str(tool_status),
+        embedding=model.get("model_type") == "embedding",
+        transcription=model.get("model_type") == "transcription",
+    )
+
+    return ModelInfo(
+        id=model["name"],
+        created=int(datetime.now().timestamp()),
+        owned_by="cyber-inference",
+        server_type=status_info.get("server_type"),
+        is_loaded=status_info.get("is_loaded"),
+        status=status_info.get("status"),
+        capabilities=capabilities,
+    )
+
+
 @router.get("/models")
 async def list_models(db: AsyncSession = Depends(get_db)) -> ModelsResponse:
     """
@@ -379,11 +440,8 @@ async def list_models(db: AsyncSession = Depends(get_db)) -> ModelsResponse:
 
     model_list = []
     for model in models:
-        model_list.append(ModelInfo(
-            id=model["name"],
-            created=int(datetime.now().timestamp()),
-            owned_by="cyber-inference",
-        ))
+        status_info = await auto_loader.get_model_status(model["name"])
+        model_list.append(_build_model_info(model, status_info))
 
     logger.info(f"[success]Returning {len(model_list)} models[/success]")
 
@@ -402,11 +460,8 @@ async def get_model(model_id: str) -> ModelInfo:
         logger.warning(f"[warning]Model not found: {model_id}[/warning]")
         raise HTTPException(status_code=404, detail=f"Model not found: {model_id}")
 
-    return ModelInfo(
-        id=model["name"],
-        created=int(datetime.now().timestamp()),
-        owned_by="cyber-inference",
-    )
+    status_info = await auto_loader.get_model_status(model_id)
+    return _build_model_info(model, status_info)
 
 
 @router.post("/chat/completions", response_model=None)
@@ -449,7 +504,7 @@ async def chat_completions(
         "messages": [
             {
                 "role": m.role,
-                "content": _serialize_message_content(m.content),
+                "content": _serialize_message_content(m.content, server_type),
                 **({"name": m.name} if m.name else {}),
                 **({"tool_calls": m.tool_calls} if m.tool_calls else {}),
                 **({"tool_call_id": m.tool_call_id} if m.tool_call_id else {}),

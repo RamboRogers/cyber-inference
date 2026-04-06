@@ -78,6 +78,16 @@
                                     {{ model.context_length }} ctx
                                 </span>
                                 {% endif %}
+                                {% if model.supports_vision %}
+                                <span class="px-2 py-1 text-xs font-mono rounded bg-cyber-pink/10 text-cyber-pink border border-cyber-pink/30" title="Vision enabled">
+                                    Vision
+                                </span>
+                                {% endif %}
+                                {% if model.supports_tools %}
+                                <span class="px-2 py-1 text-xs font-mono rounded bg-cyber-yellow/10 text-cyber-yellow border border-cyber-yellow/30" title="Tool calling enabled">
+                                    Tools
+                                </span>
+                                {% endif %}
                             </div>
                         </div>
                     </div>

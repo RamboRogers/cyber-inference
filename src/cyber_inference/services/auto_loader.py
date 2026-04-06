@@ -697,10 +697,22 @@ class AutoLoader:
             "context_source": context_source,
             "gpu_layers": proc.gpu_layers if proc else (settings.llama_gpu_layers if server_type == "llama" else None),
         }
+        vision_enabled = bool(model_info.get("mmproj_path") or model_info.get("is_vlm"))
+        vision_source = (
+            "mmproj"
+            if model_info.get("mmproj_path")
+            else "transformers_config"
+            if model_info.get("is_vlm")
+            else "none"
+        )
         launch_config.update(tool_launch_config)
         return {
             "server_type": server_type,
             "launch_config": launch_config,
+            "vision": {
+                "enabled": vision_enabled,
+                "source": vision_source,
+            },
             "tool_calling": tool_calling,
             "request_defaults": effective_request_defaults,
             "unsupported_saved_defaults": unsupported_saved_defaults,

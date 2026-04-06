@@ -176,6 +176,14 @@ class EmbeddingResponse(BaseModel):
     usage: dict
 
 
+class ModelCapabilities(BaseModel):
+    """Simple capability metadata for a model."""
+    vision: bool = False
+    tool_calling: str = "unsupported"
+    embedding: bool = False
+    transcription: bool = False
+
+
 class ModelInfo(BaseModel):
     """Model information for /v1/models endpoint."""
     id: str
@@ -185,6 +193,10 @@ class ModelInfo(BaseModel):
     permission: list[dict] = Field(default_factory=list)
     root: str | None = None
     parent: str | None = None
+    server_type: str | None = None
+    is_loaded: bool | None = None
+    status: str | None = None
+    capabilities: ModelCapabilities | None = None
 
 
 class ModelsResponse(BaseModel):

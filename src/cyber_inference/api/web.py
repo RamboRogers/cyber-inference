@@ -194,9 +194,21 @@ async def models_page(request: Request) -> Response:
         models = await mm.list_models()
         loaded = await auto_loader.get_loaded_models()
 
-        # Add loaded status to each model
+        # Add runtime and simple capability status to each model.
         for model in models:
-            model["is_loaded"] = model["name"] in loaded
+            status_info = await auto_loader.get_model_status(model["name"])
+            effective_config = status_info.get("effective_config", {})
+            tool_info = effective_config.get("tool_calling", {})
+            vision_info = effective_config.get("vision", {})
+
+            model["is_loaded"] = bool(status_info.get("is_loaded", model["name"] in loaded))
+            model["status"] = status_info.get("status", "not_loaded")
+            model["server_type"] = status_info.get("server_type", model.get("engine_type", "llama"))
+            model["supports_tools"] = tool_info.get("status") == "supported"
+            model["tool_calling_status"] = tool_info.get("status", "unknown")
+            model["supports_vision"] = bool(
+                vision_info.get("enabled") or model.get("mmproj_path") or model.get("is_vlm")
+            )
 
         context = _template_context(
             request,

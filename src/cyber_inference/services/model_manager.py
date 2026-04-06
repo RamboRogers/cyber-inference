@@ -1320,6 +1320,11 @@ class ModelManager:
                         model.context_length = context_length
                         updated = True
 
+                engine_type = model.engine_type or "llama"
+                is_vlm = bool(model.mmproj_path)
+                if engine_type == "transformers":
+                    is_vlm = self._detect_vlm_from_config(Path(model.file_path)) == "vlm"
+
                 models.append({
                     "id": model.id,
                     "name": model.name,
@@ -1330,8 +1335,9 @@ class ModelManager:
                     "quantization": model.quantization,
                     "context_length": model.context_length,
                     "model_type": model.model_type,
-                    "engine_type": model.engine_type or "llama",
+                    "engine_type": engine_type,
                     "mmproj_path": model.mmproj_path,
+                    "is_vlm": is_vlm,
                     "is_downloaded": model.is_downloaded,
                     "is_enabled": model.is_enabled,
                     "last_used_at": model.last_used_at,
@@ -1386,6 +1392,7 @@ class ModelManager:
                     "model_type": None,
                     "engine_type": "llama",
                     "mmproj_path": mmproj_path,
+                    "is_vlm": bool(mmproj_path),
                     "is_downloaded": True,
                     "is_enabled": True,
                     "last_used_at": None,
@@ -1425,6 +1432,7 @@ class ModelManager:
                         f.stat().st_size for f in model_dir.rglob("*") if f.is_file()
                     )
                     ctx_len = self._read_transformers_context_length(model_dir) or 4096
+                    is_vlm = self._detect_vlm_from_config(model_dir) == "vlm"
                     models.append({
                         "id": None,
                         "name": dir_name,
@@ -1437,6 +1445,7 @@ class ModelManager:
                         "model_type": None,
                         "engine_type": "transformers",
                         "mmproj_path": None,
+                        "is_vlm": is_vlm,
                         "is_downloaded": True,
                         "is_enabled": True,
                         "last_used_at": None,

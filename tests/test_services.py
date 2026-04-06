@@ -252,6 +252,33 @@ class TestProcessManager:
         assert "--chat-template-file" in cmd
         assert str(template_path) in cmd
 
+    def test_build_llama_server_command_includes_mmproj_for_vision_chat(self, temp_dirs):
+        """Vision GGUF launches should include both mmproj and jinja chat handling."""
+        from cyber_inference.services.process_manager import ProcessManager
+
+        models_dir, bin_dir = temp_dirs
+        pm = ProcessManager(models_dir=models_dir, bin_dir=bin_dir)
+        mmproj_path = models_dir / "mmproj-demo.gguf"
+        mmproj_path.write_text("mmproj")
+
+        cmd = pm._build_llama_server_command(
+            Path("/tmp/llama-server"),
+            Path("/tmp/demo.gguf"),
+            9338,
+            8192,
+            -1,
+            8,
+            False,
+            mmproj_path,
+            {
+                "jinja_enabled": True,
+            },
+        )
+
+        assert "--mmproj" in cmd
+        assert str(mmproj_path) in cmd
+        assert "--jinja" in cmd
+
     def test_build_llama_server_command_skips_tool_flags_for_embeddings(self, temp_dirs):
         """Embedding launches should keep embedding mode and skip chat tool flags."""
         from cyber_inference.services.process_manager import ProcessManager

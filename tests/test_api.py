@@ -9,6 +9,7 @@ Tests cover:
 """
 
 import json
+import re
 from contextlib import asynccontextmanager
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -65,6 +66,53 @@ async def test_v1_models_endpoint():
         app.dependency_overrides.clear()
 
 
+@pytest.mark.asyncio
+async def test_v1_models_endpoint_includes_runtime_and_capabilities():
+    """The model list should expose loaded state and simple capability metadata."""
+    async def override_get_db():
+        yield MagicMock()
+
+    auto_loader = MagicMock()
+    auto_loader.list_available_models = AsyncMock(
+        return_value=[
+            {
+                "name": "demo-vlm",
+                "engine_type": "llama",
+                "model_type": "chat",
+                "mmproj_path": "/tmp/mmproj-demo.gguf",
+                "is_vlm": True,
+            }
+        ]
+    )
+    auto_loader.get_model_status = AsyncMock(
+        return_value={
+            "is_loaded": True,
+            "status": "running",
+            "server_type": "llama",
+            "effective_config": {
+                "tool_calling": {"status": "supported"},
+                "vision": {"enabled": True},
+            },
+        }
+    )
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        with patch("cyber_inference.api.v1.get_auto_loader", return_value=auto_loader):
+            async with make_test_client() as client:
+                response = await client.get("/v1/models")
+
+        assert response.status_code == 200
+        payload = response.json()
+        model = payload["data"][0]
+        assert model["id"] == "demo-vlm"
+        assert model["is_loaded"] is True
+        assert model["status"] == "running"
+        assert model["server_type"] == "llama"
+        assert model["capabilities"]["vision"] is True
+        assert model["capabilities"]["tool_calling"] == "supported"
+    finally:
+        app.dependency_overrides.clear()
 @pytest.mark.asyncio
 async def test_v1_chat_completions_no_model():
     """Test chat completions with non-existent model."""
@@ -397,6 +445,71 @@ async def test_chat_completions_forwards_tool_payload_and_preserves_tool_calls()
     assert response.choices[0].message.content is None
     assert response.choices[0].message.tool_calls[0]["id"] == "call_1"
     assert response.choices[0].finish_reason == "tool_calls"
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_normalizes_image_parts_for_llama():
+    """llama-backed multimodal requests should use the more compatible image part shape."""
+    from cyber_inference.api.v1 import chat_completions
+
+    captured_request = {}
+
+    class DummyResponse:
+        status_code = 200
+        text = ""
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "choices": [
+                    {"message": {"role": "assistant", "content": "green"}, "finish_reason": "stop"}
+                ],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            }
+
+    class DummyClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, json):
+            captured_request["url"] = url
+            captured_request["json"] = json
+            return DummyResponse()
+
+    auto_loader = MagicMock()
+    auto_loader.ensure_model_loaded = AsyncMock(return_value="http://127.0.0.1:9999")
+    auto_loader.get_request_defaults = AsyncMock(return_value={})
+    auto_loader.record_request = AsyncMock()
+
+    request = ChatCompletionRequest(
+        model="demo-vlm",
+        messages=[
+            ChatMessage(
+                role="user",
+                content=[
+                    {"type": "text", "text": "What color is this?"},
+                    {"type": "image_url", "image_url": {"url": "https://example.com/demo.png"}},
+                ],
+            )
+        ],
+    )
+
+    with (
+        patch("cyber_inference.api.v1.get_auto_loader", return_value=auto_loader),
+        patch("cyber_inference.api.v1._get_server_type", return_value="llama"),
+        patch("cyber_inference.api.v1.httpx.AsyncClient", return_value=DummyClient()),
+    ):
+        response = await chat_completions(request, MagicMock())
+
+    content = captured_request["json"]["messages"][0]["content"]
+    assert content[0] == {"type": "text", "text": "What color is this?"}
+    assert content[1] == {"type": "image", "url": "https://example.com/demo.png"}
+    assert response.choices[0].message.content == "green"
 
 
 @pytest.mark.asyncio
@@ -776,6 +889,49 @@ async def test_web_models_page():
 
         assert response.status_code == 200
         assert "text/html" in response.headers.get("content-type", "")
+
+
+@pytest.mark.asyncio
+async def test_web_models_page_shows_vision_badge_for_mmproj_models():
+    """Installed models with mmproj should advertise Vision in the UI even when unloaded."""
+    model_manager = MagicMock()
+    model_manager.list_models = AsyncMock(
+        return_value=[
+            {
+                "name": "demo-vlm",
+                "engine_type": "llama",
+                "quantization": "q4_k_m",
+                "size_bytes": 1024,
+                "context_length": 8192,
+                "hf_repo_id": "demo/repo",
+                "mmproj_path": "/tmp/mmproj-demo.gguf",
+                "is_vlm": True,
+            }
+        ]
+    )
+    auto_loader = MagicMock()
+    auto_loader.get_loaded_models = AsyncMock(return_value=[])
+    auto_loader.get_model_status = AsyncMock(
+        return_value={
+            "is_loaded": False,
+            "status": "not_loaded",
+            "server_type": "llama",
+            "effective_config": {
+                "tool_calling": {"status": "unknown"},
+                "vision": {"enabled": True},
+            },
+        }
+    )
+
+    with (
+        patch("cyber_inference.api.v1.get_auto_loader", return_value=auto_loader),
+        patch("cyber_inference.services.model_manager.ModelManager", return_value=model_manager),
+    ):
+        async with make_test_client() as client:
+            response = await client.get("/models")
+
+    assert response.status_code == 200
+    assert re.search(r"demo-vlm[\s\S]{0,1500}title=\"Vision enabled\"", response.text)
 
 
 @pytest.mark.asyncio
