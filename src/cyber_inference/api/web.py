@@ -223,12 +223,13 @@ async def models_page(request: Request) -> Response:
         mm = ModelManager()
         auto_loader = get_auto_loader()
 
-        models = await mm.list_models()
+        models = await mm.list_models(include_file_metadata=False)
         loaded = await auto_loader.get_loaded_models()
+        model_statuses = await auto_loader.get_models_status(models)
 
         # Add runtime and simple capability status to each model.
         for model in models:
-            status_info = await auto_loader.get_model_status(model["name"])
+            status_info = model_statuses.get(model["name"], {"status": "not_loaded"})
             effective_config = status_info.get("effective_config", {})
             tool_info = effective_config.get("tool_calling", {})
             vision_info = effective_config.get("vision", {})

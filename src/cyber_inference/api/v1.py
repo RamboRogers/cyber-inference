@@ -554,11 +554,12 @@ async def list_models(db: AsyncSession = Depends(get_db)) -> ModelsResponse:
     logger.info("[info]GET /v1/models - Listing available models[/info]")
 
     auto_loader = get_auto_loader()
-    models = await auto_loader.list_available_models()
+    models = await auto_loader.list_available_models(include_file_metadata=False)
+    model_statuses = await auto_loader.get_models_status(models)
 
     model_list = []
     for model in models:
-        status_info = await auto_loader.get_model_status(model["name"])
+        status_info = model_statuses.get(model["name"], {"status": "not_loaded"})
         model_list.append(_build_model_info(model, status_info))
 
     logger.info(f"[success]Returning {len(model_list)} models[/success]")

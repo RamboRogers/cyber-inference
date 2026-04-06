@@ -41,6 +41,8 @@ class ModelManager:
     and maintains local database of available models.
     """
 
+    _gguf_metadata_cache: dict[str, tuple[int, int, dict[str, Any] | None]] = {}
+
     def __init__(self, models_dir: Path | None = None):
         """
         Initialize the model manager.
@@ -306,8 +308,30 @@ class ModelManager:
         return None
 
     @classmethod
-    def _read_gguf_context_length(cls, file_path: Path) -> int | None:
+    def _read_gguf_metadata_summary_cached(cls, file_path: Path) -> dict[str, Any] | None:
+        """Read GGUF metadata with a file-metadata cache."""
+        try:
+            stat = file_path.stat()
+        except OSError:
+            return None
+
+        cache_key = str(file_path)
+        cached = cls._gguf_metadata_cache.get(cache_key)
+        if cached and cached[0] == stat.st_mtime_ns and cached[1] == stat.st_size:
+            cached_summary = cached[2]
+            return dict(cached_summary) if isinstance(cached_summary, dict) else None
+
         summary = cls._read_gguf_metadata_summary(file_path)
+        cls._gguf_metadata_cache[cache_key] = (
+            stat.st_mtime_ns,
+            stat.st_size,
+            dict(summary) if isinstance(summary, dict) else None,
+        )
+        return summary
+
+    @classmethod
+    def _read_gguf_context_length(cls, file_path: Path) -> int | None:
+        summary = cls._read_gguf_metadata_summary_cached(file_path)
         context_length = summary.get("context_length") if summary else None
         return int(context_length) if isinstance(context_length, int) else None
 
@@ -1285,7 +1309,7 @@ class ModelManager:
                 logger.info(f"[success]Model registered: {model_name}{engine_label}[/success]")
             return model
 
-    async def list_models(self) -> list[dict]:
+    async def list_models(self, *, include_file_metadata: bool = True) -> list[dict]:
         """
         List all models (registered and local files).
 
@@ -1307,8 +1331,8 @@ class ModelManager:
                 # Backfill context_length for models that still have the 4096 default
                 if model.file_path:
                     file_path = Path(model.file_path)
-                    if file_path.exists() and file_path.suffix == ".gguf":
-                        metadata_summary = self._read_gguf_metadata_summary(file_path) or {}
+                    if include_file_metadata and file_path.exists() and file_path.suffix == ".gguf":
+                        metadata_summary = self._read_gguf_metadata_summary_cached(file_path) or {}
                     elif file_path.is_dir():
                         context_length = self._read_transformers_context_length(file_path)
                         metadata_summary = {"context_length": context_length}
@@ -1372,7 +1396,9 @@ class ModelManager:
             if file_path.suffix == ".gguf" and self._is_mmproj_file(file_path.name):
                 continue
             if file_path.name not in registered_files:
-                metadata_summary = self._read_gguf_metadata_summary(file_path) or {}
+                metadata_summary = (
+                    self._read_gguf_metadata_summary_cached(file_path) if include_file_metadata else {}
+                ) or {}
                 context_length = metadata_summary.get("context_length")
                 # Try to find associated mmproj file
                 mmproj_path = None
@@ -1481,7 +1507,7 @@ class ModelManager:
         Returns:
             Model information dict, or None if not found
         """
-        models = await self.list_models()
+        models = await self.list_models(include_file_metadata=True)
         for model in models:
             if model["name"] == name:
                 return model

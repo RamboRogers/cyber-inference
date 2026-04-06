@@ -3,8 +3,8 @@
 {% block title %}Chat | {{ model_name }}{% endblock %}
 
 {% block content %}
-<div class="space-y-6">
-    <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+<div class="flex min-h-[calc(100vh-10rem)] flex-col gap-4">
+    <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-4 shrink-0">
         <div>
             <h1 class="font-cyber text-3xl font-bold text-cyber-neon neon-text-subtle">
                 MODEL CHAT
@@ -20,7 +20,7 @@
         </div>
     </div>
 
-    <div class="cyber-card rounded-xl overflow-hidden">
+    <div class="cyber-card flex min-h-[600px] flex-1 flex-col rounded-xl overflow-hidden">
         <div class="px-6 py-4 border-b border-cyber-neon/20 flex items-center justify-between">
             <div class="font-mono text-sm text-gray-300 truncate" title="{{ model_name }}">
                 {{ model_name }}
@@ -29,11 +29,11 @@
                 llama.cpp
             </span>
         </div>
-        <div class="p-0">
+        <div class="flex-1 p-0">
             <iframe
                 src="{{ chat_ui_path }}"
                 title="Chat UI for {{ model_name }}"
-                class="block w-full h-[75vh] border-0 bg-cyber-black"
+                class="block h-full min-h-[600px] w-full border-0 bg-cyber-black"
             ></iframe>
         </div>
     </div>

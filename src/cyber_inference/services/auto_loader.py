@@ -963,10 +963,10 @@ class AutoLoader:
         pm = self._get_process_manager()
         await pm.update_request_stats(model_name, increment_count=False)
 
-    async def list_available_models(self) -> list[dict]:
+    async def list_available_models(self, *, include_file_metadata: bool = True) -> list[dict]:
         """List all available models (downloaded and enabled)."""
         mm = self._get_model_manager()
-        models = await mm.list_models()
+        models = await mm.list_models(include_file_metadata=include_file_metadata)
 
         return [
             m for m in models
@@ -999,6 +999,15 @@ class AutoLoader:
             proc = pm.get_process(model_name)
         except RuntimeError:
             proc = None
+        return self._build_model_status_payload(model, proc)
+
+    def _build_model_status_payload(
+        self,
+        model: dict[str, Any],
+        proc: LlamaProcess | None,
+    ) -> dict[str, Any]:
+        """Shape a model/runtime pair into the operator-facing status payload."""
+        model_name = str(model["name"])
         effective_config = self._build_effective_runtime_config(model, proc)
         last_event = self._model_events.get(model_name, {})
 
@@ -1019,4 +1028,20 @@ class AutoLoader:
             "supports_request_defaults": effective_config["supports_request_defaults"],
             "unsupported_saved_defaults": effective_config["unsupported_saved_defaults"],
             "last_event": last_event,
+        }
+
+    async def get_models_status(self, models: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        """Build status payloads for a list of models without re-listing per item."""
+        try:
+            pm = self._get_process_manager()
+            processes = {proc.model_name: proc for proc in pm.get_all_processes()}
+        except RuntimeError:
+            processes = {}
+
+        return {
+            str(model["name"]): self._build_model_status_payload(
+                model,
+                processes.get(str(model["name"])),
+            )
+            for model in models
         }

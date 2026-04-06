@@ -50,6 +50,7 @@ async def test_v1_models_endpoint():
 
     auto_loader = MagicMock()
     auto_loader.list_available_models = AsyncMock(return_value=[])
+    auto_loader.get_models_status = AsyncMock(return_value={})
 
     app.dependency_overrides[get_db] = override_get_db
     try:
@@ -84,15 +85,17 @@ async def test_v1_models_endpoint_includes_runtime_and_capabilities():
             }
         ]
     )
-    auto_loader.get_model_status = AsyncMock(
+    auto_loader.get_models_status = AsyncMock(
         return_value={
-            "is_loaded": True,
-            "status": "running",
-            "server_type": "llama",
-            "effective_config": {
-                "tool_calling": {"status": "supported"},
-                "vision": {"enabled": True},
-            },
+            "demo-vlm": {
+                "is_loaded": True,
+                "status": "running",
+                "server_type": "llama",
+                "effective_config": {
+                    "tool_calling": {"status": "supported"},
+                    "vision": {"enabled": True},
+                },
+            }
         }
     )
 
@@ -111,8 +114,11 @@ async def test_v1_models_endpoint_includes_runtime_and_capabilities():
         assert model["server_type"] == "llama"
         assert model["capabilities"]["vision"] is True
         assert model["capabilities"]["tool_calling"] == "supported"
+        auto_loader.get_models_status.assert_awaited_once()
     finally:
         app.dependency_overrides.clear()
+
+
 @pytest.mark.asyncio
 async def test_v1_chat_completions_no_model():
     """Test chat completions with non-existent model."""
@@ -1007,15 +1013,17 @@ async def test_web_models_page_shows_vision_badge_for_mmproj_models():
     )
     auto_loader = MagicMock()
     auto_loader.get_loaded_models = AsyncMock(return_value=[])
-    auto_loader.get_model_status = AsyncMock(
+    auto_loader.get_models_status = AsyncMock(
         return_value={
-            "is_loaded": False,
-            "status": "not_loaded",
-            "server_type": "llama",
-            "effective_config": {
-                "tool_calling": {"status": "unknown"},
-                "vision": {"enabled": True},
-            },
+            "demo-vlm": {
+                "is_loaded": False,
+                "status": "not_loaded",
+                "server_type": "llama",
+                "effective_config": {
+                    "tool_calling": {"status": "unknown"},
+                    "vision": {"enabled": True},
+                },
+            }
         }
     )
 
@@ -1028,6 +1036,7 @@ async def test_web_models_page_shows_vision_badge_for_mmproj_models():
 
     assert response.status_code == 200
     assert re.search(r"demo-vlm[\s\S]{0,1500}title=\"Vision enabled\"", response.text)
+    auto_loader.get_models_status.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -1049,6 +1058,7 @@ async def test_chat_page_renders_iframe_for_loaded_llama_model():
     assert response.status_code == 200
     assert '/chat/demo-model/ui/' in response.text
     assert "demo-model" in response.text
+    assert "min-h-[600px]" in response.text
 
 
 @pytest.mark.asyncio
