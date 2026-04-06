@@ -602,6 +602,7 @@ async def chat_completions(
     logger.debug(f"  Max tokens: {request.max_tokens}")
 
     auto_loader = get_auto_loader()
+    raw_payload = await http_request.json()
 
     # Ensure model is loaded
     try:
@@ -614,58 +615,44 @@ async def chat_completions(
 
     # Determine server type for engine-specific behavior
     server_type = _get_server_type(request.model)
-    await _apply_model_defaults(request, request.model, server_type)
-    await _validate_tool_calling_request(request, request.model, server_type)
-    use_legacy_llama_images = False
-    if server_type == "llama" and _request_uses_image_content(request.messages):
-        try:
-            use_legacy_llama_images = not await _llama_supports_typed_content(server_url)
-        except httpx.HTTPError as exc:
-            logger.warning(f"[warning]Could not read llama /props for typed-content support: {exc}[/warning]")
 
     # Prepare request for the inference server
-    token_limit = request.max_tokens or 512
-    llama_request = {
-        "messages": [
-            {
-                "role": m.role,
-                "content": (
-                    _serialize_message_content_legacy_llama(m.content)
-                    if use_legacy_llama_images
-                    else _serialize_message_content(m.content, server_type)
-                ),
-                **({"name": m.name} if m.name else {}),
-                **({"tool_calls": m.tool_calls} if m.tool_calls else {}),
-                **({"tool_call_id": m.tool_call_id} if m.tool_call_id else {}),
-            }
-            for m in request.messages
-        ],
-        "temperature": request.temperature,
-        "top_p": request.top_p,
-        "max_tokens": token_limit,
-        "stream": request.stream,
-    }
-    if request.top_k is not None and server_type != "transformers":
-        llama_request["top_k"] = request.top_k
-    if request.repeat_penalty is not None and server_type != "transformers":
-        llama_request["repeat_penalty"] = request.repeat_penalty
-
-    # n_predict is llama.cpp-specific, not used by transformers
-    if server_type != "transformers":
-        llama_request["n_predict"] = token_limit
-
-    if request.stop:
-        llama_request["stop"] = request.stop if isinstance(request.stop, list) else [request.stop]
-    if request.tools is not None:
-        llama_request["tools"] = request.tools
-    if request.tool_choice is not None:
-        llama_request["tool_choice"] = request.tool_choice
-    if request.parallel_tool_calls is not None:
-        llama_request["parallel_tool_calls"] = request.parallel_tool_calls
-    if use_legacy_llama_images:
-        image_data = _extract_legacy_image_data(request.messages)
-        if image_data:
-            llama_request["image_data"] = image_data
+    if server_type == "llama":
+        llama_request = dict(raw_payload) if isinstance(raw_payload, dict) else {}
+    else:
+        await _apply_model_defaults(request, request.model, server_type)
+        await _validate_tool_calling_request(request, request.model, server_type)
+        token_limit = request.max_tokens or 512
+        llama_request = {
+            "messages": [
+                {
+                    "role": m.role,
+                    "content": _serialize_message_content(m.content, server_type),
+                    **({"name": m.name} if m.name else {}),
+                    **({"tool_calls": m.tool_calls} if m.tool_calls else {}),
+                    **({"tool_call_id": m.tool_call_id} if m.tool_call_id else {}),
+                }
+                for m in request.messages
+            ],
+            "temperature": request.temperature,
+            "top_p": request.top_p,
+            "max_tokens": token_limit,
+            "stream": request.stream,
+        }
+        if request.top_k is not None and server_type != "transformers":
+            llama_request["top_k"] = request.top_k
+        if request.repeat_penalty is not None and server_type != "transformers":
+            llama_request["repeat_penalty"] = request.repeat_penalty
+        if server_type != "transformers":
+            llama_request["n_predict"] = token_limit
+        if request.stop:
+            llama_request["stop"] = request.stop if isinstance(request.stop, list) else [request.stop]
+        if request.tools is not None:
+            llama_request["tools"] = request.tools
+        if request.tool_choice is not None:
+            llama_request["tool_choice"] = request.tool_choice
+        if request.parallel_tool_calls is not None:
+            llama_request["parallel_tool_calls"] = request.parallel_tool_calls
 
     if request.stream:
         return EventSourceResponse(

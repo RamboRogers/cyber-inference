@@ -303,8 +303,8 @@ async def test_apply_model_defaults_uses_supported_saved_fields():
 
 
 @pytest.mark.asyncio
-async def test_chat_completions_forwards_top_k_and_repeat_penalty():
-    """The llama chat proxy should forward saved/request generation fields it claims to support."""
+async def test_chat_completions_llama_forwards_raw_request_payload():
+    """The public llama chat path should forward the caller payload without local shaping."""
     from cyber_inference.api.v1 import chat_completions
 
     captured_request = {}
@@ -341,26 +341,32 @@ async def test_chat_completions_forwards_top_k_and_repeat_penalty():
 
     auto_loader = MagicMock()
     auto_loader.ensure_model_loaded = AsyncMock(return_value="http://127.0.0.1:9999")
-    auto_loader.get_request_defaults = AsyncMock(
-        return_value={"top_k": 42, "repeat_penalty": 1.15}
-    )
     auto_loader.record_request = AsyncMock()
 
+    raw_payload = {
+        "model": "demo",
+        "messages": [{"role": "user", "content": "Hello"}],
+        "temperature": 0.25,
+        "top_k": 42,
+        "repeat_penalty": 1.15,
+        "max_tokens": 128,
+    }
     request = ChatCompletionRequest(
-        model="demo",
-        messages=[ChatMessage(role="user", content="Hello")],
+        **raw_payload,
     )
+    http_request = MagicMock()
+    http_request.json = AsyncMock(return_value=raw_payload)
 
     with (
         patch("cyber_inference.api.v1.get_auto_loader", return_value=auto_loader),
         patch("cyber_inference.api.v1._get_server_type", return_value="llama"),
         patch("cyber_inference.api.v1.httpx.AsyncClient", return_value=DummyClient()),
     ):
-        await chat_completions(request, MagicMock())
+        await chat_completions(request, http_request)
 
     assert captured_request["url"] == "http://127.0.0.1:9999/v1/chat/completions"
-    assert captured_request["json"]["top_k"] == 42
-    assert captured_request["json"]["repeat_penalty"] == 1.15
+    assert captured_request["json"] == raw_payload
+    assert "n_predict" not in captured_request["json"]
 
 
 @pytest.mark.asyncio
@@ -415,16 +421,12 @@ async def test_chat_completions_forwards_tool_payload_and_preserves_tool_calls()
 
     auto_loader = MagicMock()
     auto_loader.ensure_model_loaded = AsyncMock(return_value="http://127.0.0.1:9999")
-    auto_loader.get_request_defaults = AsyncMock(return_value={})
-    auto_loader.get_model_status = AsyncMock(
-        return_value={"effective_config": {"tool_calling": {"status": "supported"}}}
-    )
     auto_loader.record_request = AsyncMock()
 
-    request = ChatCompletionRequest(
-        model="demo",
-        messages=[ChatMessage(role="user", content="Hello")],
-        tools=[
+    raw_payload = {
+        "model": "demo",
+        "messages": [{"role": "user", "content": "Hello"}],
+        "tools": [
             {
                 "type": "function",
                 "function": {
@@ -434,18 +436,21 @@ async def test_chat_completions_forwards_tool_payload_and_preserves_tool_calls()
                 },
             }
         ],
-        tool_choice="auto",
-        parallel_tool_calls=True,
-    )
+        "tool_choice": "auto",
+        "parallel_tool_calls": True,
+    }
+    request = ChatCompletionRequest(**raw_payload)
+    http_request = MagicMock()
+    http_request.json = AsyncMock(return_value=raw_payload)
 
     with (
         patch("cyber_inference.api.v1.get_auto_loader", return_value=auto_loader),
         patch("cyber_inference.api.v1._get_server_type", return_value="llama"),
         patch("cyber_inference.api.v1.httpx.AsyncClient", return_value=DummyClient()),
     ):
-        response = await chat_completions(request, MagicMock())
+        response = await chat_completions(request, http_request)
 
-    assert captured_request["json"]["tools"] == request.tools
+    assert captured_request["json"]["tools"] == raw_payload["tools"]
     assert captured_request["json"]["tool_choice"] == "auto"
     assert captured_request["json"]["parallel_tool_calls"] is True
     assert response.choices[0].message.content is None
@@ -454,8 +459,8 @@ async def test_chat_completions_forwards_tool_payload_and_preserves_tool_calls()
 
 
 @pytest.mark.asyncio
-async def test_chat_completions_normalizes_image_parts_for_llama():
-    """llama-backed multimodal requests should use typed parts when the server supports them."""
+async def test_chat_completions_llama_preserves_image_payload_shape():
+    """The llama pass-through branch should preserve the caller's image payload shape."""
     from cyber_inference.api.v1 import chat_completions
 
     captured_request = {}
@@ -482,18 +487,6 @@ async def test_chat_completions_normalizes_image_parts_for_llama():
         async def __aexit__(self, exc_type, exc, tb):
             return False
 
-        async def get(self, url):
-            class PropsResponse:
-                status_code = 200
-
-                def raise_for_status(self):
-                    return None
-
-                def json(self):
-                    return {"chat_template_caps": {"supports_typed_content": True}}
-
-            return PropsResponse()
-
         async def post(self, url, json):
             captured_request["url"] = url
             captured_request["json"] = json
@@ -501,122 +494,39 @@ async def test_chat_completions_normalizes_image_parts_for_llama():
 
     auto_loader = MagicMock()
     auto_loader.ensure_model_loaded = AsyncMock(return_value="http://127.0.0.1:9999")
-    auto_loader.get_request_defaults = AsyncMock(return_value={})
     auto_loader.record_request = AsyncMock()
 
-    request = ChatCompletionRequest(
-        model="demo-vlm",
-        messages=[
-            ChatMessage(
-                role="user",
-                content=[
+    raw_payload = {
+        "model": "demo-vlm",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
                     {"type": "text", "text": "What color is this?"},
                     {"type": "image_url", "image_url": {"url": "https://example.com/demo.png"}},
                 ],
-            )
+            }
         ],
-    )
+    }
+    request = ChatCompletionRequest(**raw_payload)
+    http_request = MagicMock()
+    http_request.json = AsyncMock(return_value=raw_payload)
 
     with (
         patch("cyber_inference.api.v1.get_auto_loader", return_value=auto_loader),
         patch("cyber_inference.api.v1._get_server_type", return_value="llama"),
         patch("cyber_inference.api.v1.httpx.AsyncClient", return_value=DummyClient()),
     ):
-        response = await chat_completions(request, MagicMock())
+        response = await chat_completions(request, http_request)
 
     content = captured_request["json"]["messages"][0]["content"]
-    assert content[0] == {"type": "text", "text": "What color is this?"}
-    assert content[1] == {"type": "image", "url": "https://example.com/demo.png"}
+    assert content == raw_payload["messages"][0]["content"]
     assert response.choices[0].message.content == "green"
 
 
 @pytest.mark.asyncio
-async def test_chat_completions_falls_back_to_legacy_image_data_when_llama_typed_content_disabled():
-    """Older llama.cpp builds should receive legacy image_data payloads."""
-    from cyber_inference.api.v1 import chat_completions
-
-    captured_request = {}
-
-    class DummyResponse:
-        status_code = 200
-        text = ""
-
-        def raise_for_status(self):
-            return None
-
-        def json(self):
-            return {
-                "choices": [
-                    {"message": {"role": "assistant", "content": "green"}, "finish_reason": "stop"}
-                ],
-                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
-            }
-
-    class DummyClient:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-        async def get(self, url):
-            class PropsResponse:
-                status_code = 200
-
-                def raise_for_status(self):
-                    return None
-
-                def json(self):
-                    return {"chat_template_caps": {"supports_typed_content": False}}
-
-            return PropsResponse()
-
-        async def post(self, url, json):
-            captured_request["url"] = url
-            captured_request["json"] = json
-            return DummyResponse()
-
-    auto_loader = MagicMock()
-    auto_loader.ensure_model_loaded = AsyncMock(return_value="http://127.0.0.1:9999")
-    auto_loader.get_request_defaults = AsyncMock(return_value={})
-    auto_loader.record_request = AsyncMock()
-
-    request = ChatCompletionRequest(
-        model="demo-vlm",
-        messages=[
-            ChatMessage(
-                role="user",
-                content=[
-                    {"type": "text", "text": "What color is this?"},
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB"
-                        },
-                    },
-                ],
-            )
-        ],
-    )
-
-    with (
-        patch("cyber_inference.api.v1.get_auto_loader", return_value=auto_loader),
-        patch("cyber_inference.api.v1._get_server_type", return_value="llama"),
-        patch("cyber_inference.api.v1.httpx.AsyncClient", return_value=DummyClient()),
-    ):
-        response = await chat_completions(request, MagicMock())
-
-    payload = captured_request["json"]
-    assert payload["messages"][0]["content"] == (
-        "What color is this?\n<|vision_start|><|image_pad|><|vision_end|>"
-    )
-    assert payload["image_data"] == [{"id": 1, "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB"}]
-    assert response.choices[0].message.content == "green"
-
-
-@pytest.mark.asyncio
-async def test_chat_completions_rejects_tool_payload_when_capability_missing():
-    """Tool requests should fail loudly instead of silently degrading."""
+async def test_chat_completions_rejects_tool_payload_when_capability_missing_for_non_llama():
+    """Tool capability enforcement stays in place for non-llama branches."""
     from cyber_inference.api.v1 import chat_completions
 
     auto_loader = MagicMock()
@@ -641,13 +551,21 @@ async def test_chat_completions_rejects_tool_payload_when_capability_missing():
 
     with (
         patch("cyber_inference.api.v1.get_auto_loader", return_value=auto_loader),
-        patch("cyber_inference.api.v1._get_server_type", return_value="llama"),
+        patch("cyber_inference.api.v1._get_server_type", return_value="transformers"),
     ):
+        http_request = MagicMock()
+        http_request.json = AsyncMock(
+            return_value={
+                "model": "demo",
+                "messages": [{"role": "user", "content": "Hello"}],
+                "tools": [{"type": "function", "function": {"name": "lookup_weather"}}],
+            }
+        )
         with pytest.raises(HTTPException) as exc_info:
-            await chat_completions(request, MagicMock())
+                await chat_completions(request, http_request)
 
     assert exc_info.value.status_code == 400
-    assert "Tool calling is not available" in str(exc_info.value.detail)
+    assert "only available for llama-backed chat models" in str(exc_info.value.detail)
 
 
 @pytest.mark.asyncio
@@ -1058,7 +976,8 @@ async def test_chat_page_renders_iframe_for_loaded_llama_model():
     assert response.status_code == 200
     assert '/chat/demo-model/ui/' in response.text
     assert "demo-model" in response.text
-    assert "min-h-[600px]" in response.text
+    assert "chat-shell" in response.text
+    assert "chat-frame" in response.text
 
 
 @pytest.mark.asyncio
