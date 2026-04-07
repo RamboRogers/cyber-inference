@@ -678,6 +678,85 @@ class TestAutoLoader:
         assert proc.effective_config["tool_calling"]["warnings"]
 
     @pytest.mark.asyncio
+    async def test_load_model_detects_tools_for_unknown_family_with_chat_template(self):
+        """Models with a chat template but no recognized family or tool-use metadata should be supported."""
+        from cyber_inference.services.auto_loader import AutoLoader
+
+        process_manager = MagicMock()
+        proc = MagicMock(status="running", port=9338, server_type="llama", effective_config={})
+        process_manager.start_server = AsyncMock(return_value=proc)
+        process_manager.get_server_props = AsyncMock(
+            return_value={"chat_template": "{% for message in messages %}{{ message.content }}{% endfor %}"}
+        )
+        model_manager = MagicMock()
+        model_manager.get_model = AsyncMock(
+            return_value={
+                "name": "Qwopus-MoE-35B-A3B-Q4_K_M",
+                "engine_type": "llama",
+                "context_length": 131072,
+                "default_context_size": None,
+                "model_type": "chat",
+                "mmproj_path": None,
+                "hf_repo_id": "some/repo",
+                "tool_template_mode": None,
+                "tool_template_name": None,
+                "tool_template_path": None,
+                "tool_jinja_enabled": None,
+            }
+        )
+        model_manager.get_model_path = AsyncMock(return_value=Path("/tmp/demo.gguf"))
+        model_manager.update_last_used = AsyncMock()
+
+        loader = AutoLoader(process_manager=process_manager, model_manager=model_manager)
+        await loader.load_model("Qwopus-MoE-35B-A3B-Q4_K_M")
+
+        assert proc.effective_config["tool_calling"]["status"] == "supported"
+        assert proc.effective_config["tool_calling"]["source"] == "detected_runtime"
+
+    @pytest.mark.asyncio
+    async def test_load_model_detects_tools_ignoring_global_jinja_disable(self, monkeypatch):
+        """Tool detection should work even when LLAMA_ENABLE_JINJA is disabled globally."""
+        from cyber_inference.services.auto_loader import AutoLoader
+
+        monkeypatch.setenv("CYBER_INFERENCE_LLAMA_ENABLE_JINJA", "false")
+        reload_settings()
+
+        process_manager = MagicMock()
+        proc = MagicMock(status="running", port=9338, server_type="llama", effective_config={})
+        process_manager.start_server = AsyncMock(return_value=proc)
+        process_manager.get_server_props = AsyncMock(
+            return_value={"chat_template_tool_use": "builtin"}
+        )
+        model_manager = MagicMock()
+        model_manager.get_model = AsyncMock(
+            return_value={
+                "name": "demo",
+                "engine_type": "llama",
+                "context_length": 8192,
+                "default_context_size": None,
+                "model_type": "chat",
+                "mmproj_path": None,
+                "hf_repo_id": "demo/repo",
+                "tool_template_mode": None,
+                "tool_template_name": None,
+                "tool_template_path": None,
+                "tool_jinja_enabled": None,
+            }
+        )
+        model_manager.get_model_path = AsyncMock(return_value=Path("/tmp/demo.gguf"))
+        model_manager.update_last_used = AsyncMock()
+
+        try:
+            loader = AutoLoader(process_manager=process_manager, model_manager=model_manager)
+            await loader.load_model("demo")
+        finally:
+            monkeypatch.delenv("CYBER_INFERENCE_LLAMA_ENABLE_JINJA", raising=False)
+            reload_settings()
+
+        assert proc.effective_config["launch_config"]["jinja_enabled"] is True
+        assert proc.effective_config["tool_calling"]["status"] == "supported"
+
+    @pytest.mark.asyncio
     async def test_non_llama_load_ignores_global_jinja_disable(self, monkeypatch):
         """Disabling llama jinja globally should not break non-llama backends."""
         from cyber_inference.services.auto_loader import AutoLoader

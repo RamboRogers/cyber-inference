@@ -50,7 +50,6 @@ CONFIG_DB_CASTS: dict[str, ConfigCaster] = {
     "max_loaded_models": int,
     "max_memory_percent": float,
     "llama_gpu_layers": int,
-    "llama_enable_jinja": _parse_bool,
     "llama_tool_template": _parse_optional_str,
     "llama_tool_template_file": _parse_optional_str,
     "admin_password": _parse_optional_str,
@@ -104,7 +103,6 @@ class Settings(BaseSettings):
     llama_server_base_port: int = Field(default=8338, description="Base port for llama.cpp servers")
     llama_threads: int | None = Field(default=None, description="Number of threads (auto if None)")
     llama_gpu_layers: int = Field(default=-1, description="GPU layers (-1 for auto)")
-    llama_enable_jinja: bool = Field(default=True, description="Enable --jinja for llama chat models")
     llama_tool_template: str | None = Field(default=None, description="Global built-in chat template override")
     llama_tool_template_file: str | None = Field(
         default=None,

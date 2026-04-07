@@ -36,7 +36,6 @@ GLOBAL_RUNTIME_REFRESH_KEYS = {
     "max_loaded_models",
     "max_memory_percent",
     "llama_gpu_layers",
-    "llama_enable_jinja",
     "llama_tool_template",
     "llama_tool_template_file",
 }
@@ -44,7 +43,6 @@ GLOBAL_RUNTIME_REFRESH_KEYS = {
 GLOBAL_RELOAD_KEYS = {
     "default_context_size",
     "llama_gpu_layers",
-    "llama_enable_jinja",
     "llama_tool_template",
     "llama_tool_template_file",
 }
@@ -331,7 +329,6 @@ class AutoLoader:
             "idle_unload_enabled": self._idle_unload_enabled,
             "max_loaded_models": self._max_loaded,
             "max_memory_percent": self._max_memory_percent,
-            "llama_enable_jinja": settings.llama_enable_jinja,
             "llama_tool_template": settings.llama_tool_template,
             "llama_tool_template_file": settings.llama_tool_template_file,
         }
@@ -379,7 +376,6 @@ class AutoLoader:
         model_mode = _normalize_optional_string(model_info.get("tool_template_mode")) or "inherit"
         model_template_name = _normalize_optional_string(model_info.get("tool_template_name"))
         model_template_path = _normalize_optional_string(model_info.get("tool_template_path"))
-        model_jinja_enabled = _parse_optional_bool(model_info.get("tool_jinja_enabled"))
         global_template_name = _normalize_optional_string(settings.llama_tool_template)
         global_template_path = _normalize_optional_string(settings.llama_tool_template_file)
 
@@ -399,7 +395,6 @@ class AutoLoader:
             model_mode != "inherit"
             or model_template_name is not None
             or model_template_path is not None
-            or model_jinja_enabled is not None
         )
 
         if server_type != "llama" or is_embedding or is_transcription:
@@ -409,7 +404,6 @@ class AutoLoader:
                 or model_template_name is not None
                 or model_template_path is not None
                 or model_mode == "explicit"
-                or model_jinja_enabled is True
             )
             if unsupported_tool_request:
                 fail_or_warn(
@@ -436,7 +430,7 @@ class AutoLoader:
         chosen_path: str | None = None
         template_source = "none"
         capability_source = "assumed_none"
-        jinja_enabled = bool(settings.llama_enable_jinja)
+        jinja_enabled = True
 
         if model_mode == "disabled":
             jinja_enabled = False
@@ -446,23 +440,17 @@ class AutoLoader:
             chosen_path = model_template_path
             template_source = "model_override"
             capability_source = "configured"
-            jinja_enabled = True if model_jinja_enabled is None else bool(model_jinja_enabled)
             if not chosen_name and not chosen_path:
                 fail_or_warn(
                     f"Model {model_name} uses tool_template_mode=explicit but no template override is set."
                 )
         elif model_mode == "auto":
-            jinja_enabled = bool(settings.llama_enable_jinja if model_jinja_enabled is None else model_jinja_enabled)
             capability_source = "configured"
         elif explicit_model_override:
             chosen_name = model_template_name
             chosen_path = model_template_path
             template_source = "model_override" if (chosen_name or chosen_path) else "none"
             capability_source = "configured"
-            if model_jinja_enabled is None:
-                jinja_enabled = bool(settings.llama_enable_jinja or chosen_name or chosen_path)
-            else:
-                jinja_enabled = bool(model_jinja_enabled)
         elif global_template_name or global_template_path:
             chosen_name = global_template_name
             chosen_path = global_template_path
@@ -575,10 +563,10 @@ class AutoLoader:
             launch_config.get("tool_template_name") or launch_config.get("tool_template_path")
         )
 
-        if not launch_config.get("jinja_enabled"):
+        if current.get("status") == "unsupported" and current.get("source") == "configured":
             return {
                 "status": "unsupported",
-                "source": "configured" if explicit_template else "assumed_none",
+                "source": "configured",
                 "template_source": template_source,
                 "warnings": warnings,
             }
@@ -634,11 +622,8 @@ class AutoLoader:
             }
 
         if chat_template:
-            warnings.append(
-                "Runtime reports a chat template but not tool-use metadata; tool requests remain disabled."
-            )
             return {
-                "status": "unknown",
+                "status": "supported",
                 "source": "detected_runtime",
                 "template_source": "native_metadata",
                 "warnings": warnings,
