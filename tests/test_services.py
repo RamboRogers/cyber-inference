@@ -8,14 +8,21 @@ Tests cover:
 - Process manager (mock)
 """
 
+import sqlite3
 import tempfile
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.orm import sessionmaker
 
 from cyber_inference.core.config import Settings, get_settings, reload_settings
+from cyber_inference.core.database import Base, close_database, init_database
+from cyber_inference.models.db_models import Model
 from cyber_inference.services.resource_monitor import ResourceMonitor, SystemResources
 
 
@@ -161,6 +168,424 @@ class TestModelManager:
 
         assert manager.models_dir == temp_models_dir
         assert manager.models_dir.exists()
+
+    def test_parse_split_gguf_filename_preserves_canonical_quant_name(self):
+        """Split GGUF names should strip only the terminal shard suffix."""
+        from cyber_inference.services.model_manager import ModelManager
+
+        filename = "Qwen3.5-122B-A10B-MXFP4_MOE-00001-of-00003.gguf"
+        shard = ModelManager._parse_gguf_shard_filename(filename)
+
+        assert shard is not None
+        assert shard.index == 1
+        assert shard.total == 3
+        assert shard.is_primary is True
+        assert ModelManager._canonical_split_gguf_name(filename) == (
+            "Qwen3.5-122B-A10B-MXFP4_MOE"
+        )
+        assert ModelManager._parse_gguf_shard_filename("Model.00002-of-00003.gguf").index == 2
+        assert ModelManager._parse_gguf_shard_filename("Model_00003-of-00003.gguf").index == 3
+        assert ModelManager._parse_gguf_shard_filename("mmproj-00001-of-00002.gguf") is None
+
+    def test_group_gguf_model_files_consolidates_complete_shards(self):
+        """Complete split GGUF shard sets should appear as one logical file."""
+        from cyber_inference.services.model_manager import ModelManager
+
+        grouped = ModelManager._group_gguf_model_files(
+            [
+                {
+                    "filename": "Model-Q4_K_M-00002-of-00003.gguf",
+                    "size_bytes": 20,
+                    "quantization": None,
+                },
+                {
+                    "filename": "Model-Q4_K_M-00001-of-00003.gguf",
+                    "size_bytes": 10,
+                    "quantization": None,
+                },
+                {
+                    "filename": "Model-Q4_K_M-00003-of-00003.gguf",
+                    "size_bytes": 30,
+                    "quantization": None,
+                },
+                {
+                    "filename": "mmproj-Model-Q4_K_M.gguf",
+                    "size_bytes": 5,
+                    "quantization": None,
+                    "is_mmproj": True,
+                },
+            ]
+        )
+
+        model = next(item for item in grouped if item["is_split"])
+        assert model["filename"] == "Model-Q4_K_M-00001-of-00003.gguf"
+        assert model["primary_filename"] == "Model-Q4_K_M-00001-of-00003.gguf"
+        assert model["shard_count"] == 3
+        assert model["size_bytes"] == 60
+        assert model["shard_filenames"] == [
+            "Model-Q4_K_M-00001-of-00003.gguf",
+            "Model-Q4_K_M-00002-of-00003.gguf",
+            "Model-Q4_K_M-00003-of-00003.gguf",
+        ]
+        assert model["is_complete"] is True
+        assert model["quantization"] == "q4_k_m"
+
+    def test_group_gguf_model_files_marks_incomplete_groups(self):
+        """Incomplete split groups should stay logical and report missing shards."""
+        from cyber_inference.services.model_manager import ModelManager
+
+        grouped = ModelManager._group_gguf_model_files(
+            [
+                {
+                    "filename": "Model-Q4_K_M-00001-of-00003.gguf",
+                    "size_bytes": 10,
+                    "quantization": None,
+                },
+                {
+                    "filename": "Model-Q4_K_M-00003-of-00003.gguf",
+                    "size_bytes": 30,
+                    "quantization": None,
+                },
+            ]
+        )
+
+        assert len(grouped) == 1
+        assert grouped[0]["is_split"] is True
+        assert grouped[0]["is_complete"] is False
+        assert grouped[0]["missing_shard_filenames"] == [
+            "Model-Q4_K_M-00002-of-00003.gguf"
+        ]
+
+    def test_group_gguf_model_files_keeps_single_and_multiple_quant_groups(self):
+        """Single GGUFs and separate split quantizations should not be collapsed together."""
+        from cyber_inference.services.model_manager import ModelManager
+
+        grouped = ModelManager._group_gguf_model_files(
+            [
+                {"filename": "Single-Q8_0.gguf", "size_bytes": 8, "quantization": "q8_0"},
+                {"filename": "Model-Q4_K_M-00001-of-00002.gguf", "size_bytes": 10},
+                {"filename": "Model-Q4_K_M-00002-of-00002.gguf", "size_bytes": 20},
+                {"filename": "Model-Q8_0-00001-of-00002.gguf", "size_bytes": 30},
+                {"filename": "Model-Q8_0-00002-of-00002.gguf", "size_bytes": 40},
+                {"filename": "ggml-small.bin", "size_bytes": 5, "quantization": None},
+            ]
+        )
+
+        names = [item["filename"] for item in grouped]
+        assert names == [
+            "ggml-small.bin",
+            "Model-Q4_K_M-00001-of-00002.gguf",
+            "Model-Q8_0-00001-of-00002.gguf",
+            "Single-Q8_0.gguf",
+        ]
+        split_sizes = {item["filename"]: item["size_bytes"] for item in grouped if item["is_split"]}
+        assert split_sizes == {
+            "Model-Q4_K_M-00001-of-00002.gguf": 30,
+            "Model-Q8_0-00001-of-00002.gguf": 70,
+        }
+
+    @pytest.mark.asyncio
+    async def test_download_split_gguf_fetches_missing_and_wrong_sized_shards(
+        self,
+        temp_models_dir,
+    ):
+        """Split downloads should fetch missing shards and redownload wrong-sized shards."""
+        from cyber_inference.services.model_manager import ModelManager
+
+        manager = ModelManager(models_dir=temp_models_dir)
+        (temp_models_dir / "Model-Q4_K_M-00001-of-00003.gguf").write_bytes(b"1" * 10)
+        (temp_models_dir / "Model-Q4_K_M-00002-of-00003.gguf").write_bytes(b"2" * 19)
+
+        repo_files = [
+            "Model-Q4_K_M-00001-of-00003.gguf",
+            "Model-Q4_K_M-00002-of-00003.gguf",
+            "Model-Q4_K_M-00003-of-00003.gguf",
+        ]
+        detailed_files = [
+            {"path": repo_files[0], "size": 10},
+            {"path": repo_files[1], "size": 20},
+            {"path": repo_files[2], "size": 30},
+        ]
+        downloaded: list[str] = []
+
+        async def fake_download(**kwargs):
+            filename = kwargs["filename"]
+            downloaded.append(filename)
+            kwargs["local_path"].write_bytes(b"x" * kwargs["expected_size"])
+            return kwargs["local_path"]
+
+        with (
+            patch("cyber_inference.services.model_manager.list_repo_files", return_value=repo_files),
+            patch.object(
+                manager._hf_api,
+                "list_repo_tree",
+                return_value=[MagicMock(path=item["path"], size=item["size"]) for item in detailed_files],
+            ),
+            patch.object(manager, "_download_file_with_progress", AsyncMock(side_effect=fake_download)),
+            patch.object(manager, "_download_mmproj", AsyncMock(return_value=None)),
+            patch.object(manager, "_register_model", AsyncMock()),
+            patch.object(manager, "_notify_progress", AsyncMock()),
+        ):
+            result = await manager.download_model(
+                "demo/repo",
+                filename="Model-Q4_K_M-00002-of-00003.gguf",
+            )
+
+        assert downloaded == [
+            "Model-Q4_K_M-00002-of-00003.gguf",
+            "Model-Q4_K_M-00003-of-00003.gguf",
+        ]
+        assert result.model_name == "Model-Q4_K_M"
+        assert result.path == temp_models_dir / "Model-Q4_K_M-00001-of-00003.gguf"
+        assert result.size_bytes == 60
+        assert result.is_split_gguf is True
+
+    @pytest.mark.asyncio
+    async def test_download_split_gguf_force_redownloads_all_shards(self, temp_models_dir):
+        """Force mode should redownload every shard in the resolved split group."""
+        from cyber_inference.services.model_manager import ModelManager
+
+        manager = ModelManager(models_dir=temp_models_dir)
+        for index in range(1, 4):
+            (temp_models_dir / f"Model-Q4_K_M-0000{index}-of-00003.gguf").write_bytes(b"x" * 10)
+
+        repo_files = [
+            "Model-Q4_K_M-00001-of-00003.gguf",
+            "Model-Q4_K_M-00002-of-00003.gguf",
+            "Model-Q4_K_M-00003-of-00003.gguf",
+        ]
+        downloaded: list[str] = []
+
+        async def fake_download(**kwargs):
+            downloaded.append(kwargs["filename"])
+            return kwargs["local_path"]
+
+        with (
+            patch("cyber_inference.services.model_manager.list_repo_files", return_value=repo_files),
+            patch.object(
+                manager._hf_api,
+                "list_repo_tree",
+                return_value=[MagicMock(path=filename, size=10) for filename in repo_files],
+            ),
+            patch.object(manager, "_download_file_with_progress", AsyncMock(side_effect=fake_download)),
+            patch.object(manager, "_download_mmproj", AsyncMock(return_value=None)),
+            patch.object(manager, "_register_model", AsyncMock()),
+            patch.object(manager, "_notify_progress", AsyncMock()),
+        ):
+            await manager.download_model(
+                "demo/repo",
+                filename="Model-Q4_K_M-00001-of-00003.gguf",
+                force=True,
+            )
+
+        assert downloaded == repo_files
+
+    @pytest.mark.asyncio
+    async def test_download_split_gguf_rejects_incomplete_non_primary_submission(
+        self,
+        temp_models_dir,
+    ):
+        """A non-primary shard in an incomplete group should fail clearly."""
+        from cyber_inference.services.model_manager import ModelManager
+
+        manager = ModelManager(models_dir=temp_models_dir)
+        repo_files = [
+            "Model-Q4_K_M-00002-of-00003.gguf",
+            "Model-Q4_K_M-00003-of-00003.gguf",
+        ]
+
+        with (
+            patch("cyber_inference.services.model_manager.list_repo_files", return_value=repo_files),
+            patch.object(
+                manager._hf_api,
+                "list_repo_tree",
+                return_value=[MagicMock(path=filename, size=10) for filename in repo_files],
+            ),
+        ):
+            with pytest.raises(ValueError, match="incomplete"):
+                await manager.download_model(
+                    "demo/repo",
+                    filename="Model-Q4_K_M-00002-of-00003.gguf",
+                )
+
+    @pytest.mark.asyncio
+    async def test_list_models_suppresses_local_secondary_shard_without_primary(
+        self,
+        temp_models_dir,
+    ):
+        """A lone secondary shard should not appear as an installed model."""
+        from cyber_inference.services.model_manager import ModelManager
+
+        (temp_models_dir / "Model-Q4_K_M-00002-of-00003.gguf").write_bytes(b"x")
+        manager = ModelManager(models_dir=temp_models_dir)
+
+        @asynccontextmanager
+        async def empty_db_session():
+            class EmptySession:
+                async def execute(self, *_args, **_kwargs):
+                    result = MagicMock()
+                    result.scalars.return_value.all.return_value = []
+                    return result
+
+                async def commit(self):
+                    return None
+
+            yield EmptySession()
+
+        with patch("cyber_inference.services.model_manager.get_db_session", empty_db_session):
+            models = await manager.list_models(include_file_metadata=False)
+
+        assert models == []
+
+    @pytest.mark.asyncio
+    async def test_register_split_gguf_reconciles_raw_primary_row(self, temp_models_dir):
+        """Legacy first-shard DB rows should upgrade to the canonical split model name."""
+        from cyber_inference.services.model_manager import ModelManager
+
+        shard_paths = [
+            temp_models_dir / "Model-Q4_K_M-00001-of-00003.gguf",
+            temp_models_dir / "Model-Q4_K_M-00002-of-00003.gguf",
+            temp_models_dir / "Model-Q4_K_M-00003-of-00003.gguf",
+        ]
+        for index, shard_path in enumerate(shard_paths, start=1):
+            shard_path.write_bytes(str(index).encode() * 10)
+
+        engine = create_async_engine(f"sqlite+aiosqlite:///{temp_models_dir / 'test.db'}")
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        @asynccontextmanager
+        async def db_session():
+            async with async_session() as session:
+                try:
+                    yield session
+                    await session.commit()
+                except Exception:
+                    await session.rollback()
+                    raise
+
+        async with db_session() as session:
+            session.add(
+                Model(
+                    name="Model-Q4_K_M-00001-of-00003",
+                    filename="Model-Q4_K_M-00001-of-00003.gguf",
+                    file_path=str(shard_paths[0]),
+                    size_bytes=10,
+                    context_length=4096,
+                    is_downloaded=True,
+                )
+            )
+
+        manager = ModelManager(models_dir=temp_models_dir)
+        with patch("cyber_inference.services.model_manager.get_db_session", db_session):
+            await manager._register_model(
+                repo_id="demo/repo",
+                filename="Model-Q4_K_M-00001-of-00003.gguf",
+                file_path=shard_paths[0],
+                model_name_override="Model-Q4_K_M",
+                size_bytes_override=30,
+                is_split_gguf=True,
+                gguf_shard_filenames=[path.name for path in shard_paths],
+            )
+            models = await manager.list_models(include_file_metadata=False)
+
+        await engine.dispose()
+
+        assert [model["name"] for model in models] == ["Model-Q4_K_M"]
+        model = models[0]
+        assert model["filename"] == "Model-Q4_K_M-00001-of-00003.gguf"
+        assert model["size_bytes"] == 30
+        assert model["is_split_gguf"] is True
+        assert model["gguf_shard_count"] == 3
+
+    @pytest.mark.asyncio
+    async def test_list_models_suppresses_raw_shard_rows_when_canonical_exists(
+        self,
+        temp_models_dir,
+    ):
+        """Canonical split rows should hide legacy raw shard rows without deleting them."""
+        from cyber_inference.services.model_manager import ModelManager
+
+        shard_paths = [
+            temp_models_dir / "Model-Q4_K_M-00001-of-00002.gguf",
+            temp_models_dir / "Model-Q4_K_M-00002-of-00002.gguf",
+        ]
+        for shard_path in shard_paths:
+            shard_path.write_bytes(b"x" * 10)
+
+        engine = create_async_engine(f"sqlite+aiosqlite:///{temp_models_dir / 'test.db'}")
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        @asynccontextmanager
+        async def db_session():
+            async with async_session() as session:
+                try:
+                    yield session
+                    await session.commit()
+                except Exception:
+                    await session.rollback()
+                    raise
+
+        async with db_session() as session:
+            session.add_all(
+                [
+                    Model(
+                        name="Model-Q4_K_M",
+                        filename=shard_paths[0].name,
+                        file_path=str(shard_paths[0]),
+                        size_bytes=20,
+                        context_length=4096,
+                        is_split_gguf=True,
+                        gguf_shard_count=2,
+                        gguf_shard_filenames=[path.name for path in shard_paths],
+                        is_downloaded=True,
+                    ),
+                    Model(
+                        name="Model-Q4_K_M-00002-of-00002",
+                        filename=shard_paths[1].name,
+                        file_path=str(shard_paths[1]),
+                        size_bytes=10,
+                        context_length=4096,
+                        is_downloaded=True,
+                    ),
+                ]
+            )
+
+        manager = ModelManager(models_dir=temp_models_dir)
+        with patch("cyber_inference.services.model_manager.get_db_session", db_session):
+            models = await manager.list_models(include_file_metadata=False)
+
+        async with db_session() as session:
+            result = await session.execute(select(Model))
+            stored_rows = result.scalars().all()
+
+        await engine.dispose()
+
+        assert [model["name"] for model in models] == ["Model-Q4_K_M"]
+        assert len(stored_rows) == 2
+
+    @pytest.mark.asyncio
+    async def test_database_init_adds_split_gguf_columns_idempotently(self, temp_models_dir):
+        """Startup migration should add split metadata columns and tolerate repeat runs."""
+        db_path = temp_models_dir / "migration.db"
+
+        await init_database(db_path)
+        await close_database()
+        await init_database(db_path)
+        await close_database()
+
+        with sqlite3.connect(db_path) as connection:
+            columns = {
+                row[1]
+                for row in connection.execute("PRAGMA table_info('models')").fetchall()
+            }
+
+        assert {"is_split_gguf", "gguf_shard_count", "gguf_shard_filenames"} <= columns
 
 
 class TestProcessManager:
@@ -824,6 +1249,8 @@ class TestDownloadProgressEvents:
             phase="downloading_model",
             downloaded_bytes=420,
             total_bytes=1000,
+            items_complete=1,
+            items_total=3,
         )
 
         assert event["repo_id"] == "demo/repo"
@@ -831,3 +1258,5 @@ class TestDownloadProgressEvents:
         assert event["phase"] == "downloading_model"
         assert event["message"] == "Downloading model"
         assert event["downloaded_bytes"] == 420
+        assert event["items_complete"] == 1
+        assert event["items_total"] == 3

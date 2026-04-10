@@ -613,6 +613,10 @@
                             <span class="text-gray-400">Quantization:</span>
                             <span id="quantInfo" class="text-cyber-blue">-</span>
                         </div>
+                        <div id="shardInfoRow" class="hidden flex justify-between">
+                            <span class="text-gray-400">GGUF Shards:</span>
+                            <span id="shardInfo" class="text-cyber-yellow">-</span>
+                        </div>
                         <div id="mmprojInfoRow" class="hidden flex justify-between">
                             <span class="text-gray-400">mmproj Size:</span>
                             <span id="mmprojSizeInfo" class="text-white">-</span>
@@ -977,7 +981,13 @@
             option.value = file.filename;
             const size = formatBytes(file.size_bytes);
             const quant = file.quantization ? ` (${file.quantization.toUpperCase()})` : '';
-            option.textContent = `${file.filename}${quant} - ${size}`;
+            const split = file.is_split ? ` (${file.shard_count} files${quant})` : quant;
+            option.textContent = `${file.filename}${split} - ${size}`;
+            if (file.is_split && file.is_complete === false) {
+                option.disabled = true;
+                const missing = file.missing_shard_filenames ? file.missing_shard_filenames.length : 0;
+                option.textContent += ` - incomplete (${missing} missing)`;
+            }
             if (file.filename === data.suggested_model) {
                 option.selected = true;
             }
@@ -1061,6 +1071,14 @@
             document.getElementById('modelSizeInfo').textContent = formatBytes(modelFile.size_bytes);
             document.getElementById('quantInfo').textContent = modelFile.quantization ?
                 modelFile.quantization.toUpperCase() : '-';
+            if (modelFile.is_split) {
+                document.getElementById('shardInfoRow').classList.remove('hidden');
+                document.getElementById('shardInfo').textContent =
+                    `${modelFile.shard_filenames.length}/${modelFile.shard_count} files`;
+            } else {
+                document.getElementById('shardInfoRow').classList.add('hidden');
+                document.getElementById('shardInfo').textContent = '-';
+            }
         } else if (repoData.suggested_model) {
             const suggested = repoData.model_files.find(f => f.filename === repoData.suggested_model);
             if (suggested) {
@@ -1068,6 +1086,8 @@
                 document.getElementById('quantInfo').textContent = suggested.quantization ?
                     suggested.quantization.toUpperCase() + ' (auto)' : '-';
             }
+            document.getElementById('shardInfoRow').classList.add('hidden');
+            document.getElementById('shardInfo').textContent = '-';
         }
 
         // Find mmproj file info
@@ -1133,6 +1153,8 @@
                 if (!filename) {
                     filename = document.getElementById('filename').value;
                 }
+                const selectedModelFile = repoData && filename ?
+                    repoData.model_files.find(f => f.filename === filename) : null;
 
                 let mmprojFilename = null;
                 if (repoData && repoData.is_multimodal) {
@@ -1141,7 +1163,8 @@
 
                 endpoint = '/admin/models/download';
                 requestBody = {
-                    name: filename ? filename.replace('.gguf', '') : null,
+                    name: selectedModelFile && selectedModelFile.is_split ?
+                        null : (filename ? filename.replace('.gguf', '') : null),
                     hf_repo_id: repoId,
                     hf_filename: filename || null,
                     download_id: downloadId,

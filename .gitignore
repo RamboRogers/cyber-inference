@@ -96,3 +96,4 @@ bin/
 llama-server
 llama-cli
 
+.omx/

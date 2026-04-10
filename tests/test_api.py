@@ -10,8 +10,11 @@ Tests cover:
 
 import json
 import re
+import shutil
+import subprocess
 from contextlib import asynccontextmanager
 from datetime import datetime
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -860,8 +863,17 @@ async def test_load_model_endpoint_honors_context_override():
 @pytest.mark.asyncio
 async def test_download_model_endpoint_passes_download_id_to_manager():
     """Download endpoints should preserve the client download session id."""
+    from cyber_inference.services.model_manager import ModelDownloadResult
+
     model_manager = MagicMock()
-    model_manager.download_model = AsyncMock(return_value=MagicMock(name="demo.gguf", stat=lambda: MagicMock(st_size=1), exists=lambda: True))
+    model_manager.download_model = AsyncMock(
+        return_value=ModelDownloadResult(
+            path=MagicMock(name="demo.gguf", stat=lambda: MagicMock(st_size=1), exists=lambda: True),
+            model_name="demo",
+            filename="demo.gguf",
+            size_bytes=1,
+        )
+    )
     model_manager.get_model = AsyncMock(
         return_value={
             "id": 1,
@@ -892,6 +904,116 @@ async def test_download_model_endpoint_passes_download_id_to_manager():
 
 
 @pytest.mark.asyncio
+async def test_download_model_endpoint_uses_canonical_split_result_name_and_force():
+    """Split downloads should use the manager's canonical result name for response lookup."""
+    from cyber_inference.services.model_manager import ModelDownloadResult
+
+    model_manager = MagicMock()
+    model_manager.download_model = AsyncMock(
+        return_value=ModelDownloadResult(
+            path=MagicMock(),
+            model_name="Model-Q4_K_M",
+            filename="Model-Q4_K_M-00001-of-00003.gguf",
+            size_bytes=60,
+            is_split_gguf=True,
+            shard_filenames=[
+                "Model-Q4_K_M-00001-of-00003.gguf",
+                "Model-Q4_K_M-00002-of-00003.gguf",
+                "Model-Q4_K_M-00003-of-00003.gguf",
+            ],
+        )
+    )
+    model_manager.get_model = AsyncMock(
+        return_value={
+            "id": 1,
+            "name": "Model-Q4_K_M",
+            "filename": "Model-Q4_K_M-00001-of-00003.gguf",
+            "path": "/tmp/Model-Q4_K_M-00001-of-00003.gguf",
+            "hf_repo_id": "demo/repo",
+            "size_bytes": 60,
+            "quantization": "q4_k_m",
+            "context_length": 4096,
+            "model_type": "chat",
+            "is_split_gguf": True,
+            "gguf_shard_count": 3,
+            "gguf_shard_filenames": [
+                "Model-Q4_K_M-00001-of-00003.gguf",
+                "Model-Q4_K_M-00002-of-00003.gguf",
+                "Model-Q4_K_M-00003-of-00003.gguf",
+            ],
+            "is_downloaded": True,
+            "is_enabled": True,
+        }
+    )
+
+    with patch("cyber_inference.api.admin.ModelManager", return_value=model_manager):
+        async with make_test_client() as client:
+            response = await client.post(
+                "/admin/models/download",
+                json={
+                    "hf_repo_id": "demo/repo",
+                    "hf_filename": "Model-Q4_K_M-00002-of-00003.gguf",
+                    "force": True,
+                },
+            )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["name"] == "Model-Q4_K_M"
+    assert payload["size_bytes"] == 60
+    assert payload["is_split_gguf"] is True
+    assert payload["gguf_shard_count"] == 3
+    assert model_manager.get_model.await_args.args == ("Model-Q4_K_M",)
+    assert model_manager.download_model.await_args.kwargs["force"] is True
+
+
+@pytest.mark.asyncio
+async def test_repo_files_endpoint_returns_split_metadata():
+    """Repo file listing should pass split GGUF metadata through the API schema."""
+    model_manager = MagicMock()
+    model_manager.list_repo_files_detailed = AsyncMock(
+        return_value={
+            "repo_id": "demo/repo",
+            "model_files": [
+                {
+                    "filename": "Model-Q4_K_M-00001-of-00003.gguf",
+                    "size_bytes": 60,
+                    "quantization": "q4_k_m",
+                    "is_mmproj": False,
+                    "is_split": True,
+                    "shard_count": 3,
+                    "shard_total_size_bytes": 60,
+                    "shard_filenames": [
+                        "Model-Q4_K_M-00001-of-00003.gguf",
+                        "Model-Q4_K_M-00002-of-00003.gguf",
+                        "Model-Q4_K_M-00003-of-00003.gguf",
+                    ],
+                    "primary_filename": "Model-Q4_K_M-00001-of-00003.gguf",
+                    "is_complete": True,
+                    "missing_shard_filenames": [],
+                }
+            ],
+            "mmproj_files": [],
+            "is_multimodal": False,
+            "suggested_model": "Model-Q4_K_M-00001-of-00003.gguf",
+            "suggested_mmproj": None,
+        }
+    )
+
+    with patch("cyber_inference.api.admin.ModelManager", return_value=model_manager):
+        async with make_test_client() as client:
+            response = await client.get("/admin/models/repo-files?repo_id=demo/repo")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload["model_files"]) == 1
+    model_file = payload["model_files"][0]
+    assert model_file["is_split"] is True
+    assert model_file["shard_count"] == 3
+    assert model_file["primary_filename"] == "Model-Q4_K_M-00001-of-00003.gguf"
+
+
+@pytest.mark.asyncio
 async def test_web_dashboard():
     """Test the web dashboard page."""
     async with make_test_client() as client:
@@ -909,6 +1031,104 @@ async def test_web_models_page():
 
         assert response.status_code == 200
         assert "text/html" in response.headers.get("content-type", "")
+
+
+def test_models_template_consumes_split_gguf_metadata():
+    """Downloader UI should render one logical split option from mocked metadata."""
+    if not shutil.which("node"):
+        pytest.skip("node is required for the focused downloader JavaScript harness")
+
+    template = Path("src/cyber_inference/web/templates/models.html").read_text()
+    script = re.search(r"<script>([\s\S]*)</script>", template).group(1)
+    harness = f"""
+class Element {{
+  constructor(id) {{
+    this.id = id;
+    this.children = [];
+    this.value = '';
+    this.textContent = '';
+    this.disabled = false;
+    this.selected = false;
+    this.className = '';
+    this.style = {{}};
+    this.classList = {{
+      add: (...names) => {{ this.className += ' ' + names.join(' '); }},
+      remove: (...names) => {{
+        const remove = new Set(names);
+        this.className = this.className.split(/\\s+/).filter(x => !remove.has(x)).join(' ');
+      }},
+    }};
+  }}
+  set innerHTML(value) {{
+    this._innerHTML = value;
+    this.children = [];
+  }}
+  get innerHTML() {{ return this._innerHTML || ''; }}
+  appendChild(child) {{
+    this.children.push(child);
+    if (child.selected) this.value = child.value;
+  }}
+  addEventListener() {{}}
+  reset() {{}}
+}}
+const elements = {{}};
+globalThis.document = {{
+  getElementById: (id) => elements[id] || (elements[id] = new Element(id)),
+  createElement: (tag) => new Element(tag),
+}};
+globalThis.window = {{ location: {{ protocol: 'http:', host: 'test' }} }};
+globalThis.location = {{ reload: () => {{}} }};
+globalThis.WebSocket = function() {{}};
+globalThis.setTimeout = () => {{}};
+globalThis.alert = (message) => {{ throw new Error(message); }};
+globalThis.console = console;
+{script}
+repoData = {{
+  is_multimodal: false,
+  suggested_model: 'Model-Q4_K_M-00001-of-00003.gguf',
+  suggested_mmproj: null,
+  mmproj_files: [],
+  model_files: [
+    {{
+      filename: 'Model-Q4_K_M-00001-of-00003.gguf',
+      size_bytes: 60,
+      quantization: 'q4_k_m',
+      is_split: true,
+      shard_count: 3,
+      shard_filenames: [
+        'Model-Q4_K_M-00001-of-00003.gguf',
+        'Model-Q4_K_M-00002-of-00003.gguf',
+        'Model-Q4_K_M-00003-of-00003.gguf'
+      ],
+      is_complete: true,
+      missing_shard_filenames: [],
+    }},
+    {{
+      filename: 'Broken-00001-of-00002.gguf',
+      size_bytes: 10,
+      quantization: null,
+      is_split: true,
+      shard_count: 2,
+      shard_filenames: ['Broken-00001-of-00002.gguf'],
+      is_complete: false,
+      missing_shard_filenames: ['Broken-00002-of-00002.gguf'],
+    }}
+  ],
+}};
+populateFileSelections(repoData);
+const options = document.getElementById('modelFileSelect').children;
+if (options.length !== 2) throw new Error(`expected 2 logical options, got ${{options.length}}`);
+if (!options[0].textContent.includes('3 files')) throw new Error(options[0].textContent);
+if (!options[0].textContent.includes('60 B')) throw new Error(options[0].textContent);
+if (options[0].textContent.includes('00002-of-00003')) throw new Error(options[0].textContent);
+if (!options[1].disabled) throw new Error('incomplete option should be disabled');
+if (!document.getElementById('shardInfo').textContent.includes('3/3 files')) {{
+  throw new Error(document.getElementById('shardInfo').textContent);
+}}
+"""
+
+    result = subprocess.run(["node", "-e", harness], text=True, capture_output=True, check=False)
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.asyncio

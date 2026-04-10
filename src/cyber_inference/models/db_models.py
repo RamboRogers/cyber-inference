@@ -18,9 +18,9 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     Integer,
+    JSON,
     String,
     Text,
-    JSON,
     func,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -57,6 +57,11 @@ class Model(Base):
 
     # Multimodal support - path to mmproj file for vision models
     mmproj_path: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
+
+    # Split GGUF support
+    is_split_gguf: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    gguf_shard_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    gguf_shard_filenames: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
 
     # Engine type: which inference backend to use
     engine_type: Mapped[Optional[str]] = mapped_column(

@@ -216,6 +216,7 @@ class ModelCreate(BaseModel):
     hf_filename: str | None = Field(None, description="Specific filename to download")
     hf_mmproj_filename: str | None = Field(None, description="Specific mmproj filename to download for vision models")
     download_id: str | None = Field(None, description="Client-generated download session identifier")
+    force: bool = Field(False, description="Force redownload even when local files are complete")
     model_type: ModelType = Field(ModelType.CHAT, description="Type of model")
     context_length: int = Field(4096, description="Context length")
 
@@ -241,6 +242,9 @@ class ModelResponse(BaseModel):
     model_type: str | None
     engine_type: str | None = "llama"
     mmproj_path: str | None = None
+    is_split_gguf: bool | None = None
+    gguf_shard_count: int | None = None
+    gguf_shard_filenames: list[str] | None = None
     tool_template_mode: str | None = None
     tool_template_name: str | None = None
     tool_template_path: str | None = None
@@ -261,6 +265,13 @@ class RepoFileInfo(BaseModel):
     size_bytes: int
     quantization: str | None = None
     is_mmproj: bool = False
+    is_split: bool = False
+    shard_count: int | None = None
+    shard_total_size_bytes: int | None = None
+    shard_filenames: list[str] = Field(default_factory=list)
+    primary_filename: str | None = None
+    is_complete: bool = True
+    missing_shard_filenames: list[str] = Field(default_factory=list)
 
 
 class RepoFilesResponse(BaseModel):

@@ -19,10 +19,12 @@ Cyber-Inference is a web GUI and API server for running local inference engines 
 - `transformers` for full HuggingFace model directories
 - `whisper.cpp` for transcription/translation
 
+Current release: `0.2.0`
+
 ## Features
 
 - OpenAI-compatible API (`/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/v1/audio/*`)
-- Model download + registration from HuggingFace
+- Model download + registration from HuggingFace, including split GGUF shard sets
 - Automatic lazy loading and idle unloading
 - Web dashboard for model and resource management
 - Optional admin auth (JWT)
@@ -69,6 +71,11 @@ Open the UI at `http://localhost:8337`.
 
 Use the **Models** page in the UI or the CLI.
 
+Cyber-Inference handles GGUF repositories that publish one model across multiple shard files such as
+`Model-00001-of-00003.gguf`, `Model-00002-of-00003.gguf`, and `Model-00003-of-00003.gguf`.
+The downloader presents the shard set as one logical model choice, downloads any missing shards,
+skips complete shards on repeat runs, and registers one canonical model entry.
+
 ### CLI examples
 
 ```bash
@@ -79,6 +86,10 @@ uv run cyber-inference download-model Qwen/Qwen2.5-7B-Instruct
 # Force engine
 uv run cyber-inference download-model ggml-org/gpt-oss-20b-GGUF --engine gguf
 uv run cyber-inference download-model nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8 --engine transformers
+
+# Split GGUF repos are handled as one logical model.
+# Passing the first shard or a later shard downloads the full shard set.
+uv run cyber-inference download-model <org>/<split-gguf-repo> --filename Model-00001-of-00003.gguf
 
 # List local models
 uv run cyber-inference list-models
@@ -155,6 +166,7 @@ Environment variables use the `CYBER_INFERENCE_` prefix.
 - `GET /admin/status`
 - `GET /admin/resources`
 - `GET /admin/models`
+- `GET /admin/models/repo-files`
 - `POST /admin/models/download`
 - `POST /admin/models/download-transformers`
 - `POST /admin/models/{model}/load`

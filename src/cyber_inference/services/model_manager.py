@@ -13,9 +13,10 @@ import re
 import shutil
 import time
 import uuid
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import httpx
 from huggingface_hub import HfApi, hf_hub_url, list_repo_files, snapshot_download
@@ -31,6 +32,44 @@ logger = get_logger(__name__)
 
 GGUF_STRING_TYPE = 8
 GGUF_ARRAY_TYPE = 9
+
+
+@dataclass(frozen=True)
+class GgufShardInfo:
+    """Parsed terminal GGUF shard suffix metadata."""
+
+    prefix: str
+    separator: str
+    index: int
+    total: int
+    index_width: int
+    total_width: int
+
+    @property
+    def group_key(self) -> str:
+        return f"{self.prefix}{self.separator}of-{self.total:0{self.total_width}d}.gguf"
+
+    @property
+    def is_primary(self) -> bool:
+        return self.index == 1
+
+    def shard_filename(self, index: int) -> str:
+        return (
+            f"{self.prefix}{self.separator}"
+            f"{index:0{self.index_width}d}-of-{self.total:0{self.total_width}d}.gguf"
+        )
+
+
+@dataclass(frozen=True)
+class ModelDownloadResult:
+    """Result returned by GGUF downloads after registration."""
+
+    path: Path
+    model_name: str
+    filename: str
+    size_bytes: int
+    is_split_gguf: bool = False
+    shard_filenames: list[str] = field(default_factory=list)
 
 
 class ModelManager:
@@ -67,7 +106,7 @@ class ModelManager:
             data = handle.read(size)
             if len(data) != size:
                 raise ValueError("Unexpected end of file")
-            return data
+            return cast(bytes, data)
 
         def read_u8(handle) -> int:
             return int.from_bytes(read_exact(handle, 1), "little", signed=False)
@@ -395,6 +434,149 @@ class ModelManager:
         return name.endswith(".gguf") and "mmproj" in name
 
     @staticmethod
+    def _parse_gguf_shard_filename(filename: str) -> GgufShardInfo | None:
+        """Parse terminal split-GGUF suffixes like Model-00001-of-00003.gguf."""
+        if ModelManager._is_mmproj_file(filename):
+            return None
+
+        match = re.match(
+            r"^(?P<prefix>.+?)(?P<separator>[._-])"
+            r"(?P<index>\d+)-of-(?P<total>\d+)\.gguf$",
+            filename,
+            re.IGNORECASE,
+        )
+        if not match:
+            return None
+
+        index_text = match.group("index")
+        total_text = match.group("total")
+        index = int(index_text)
+        total = int(total_text)
+        if index < 1 or total < 2 or index > total:
+            return None
+
+        return GgufShardInfo(
+            prefix=match.group("prefix"),
+            separator=match.group("separator"),
+            index=index,
+            total=total,
+            index_width=len(index_text),
+            total_width=len(total_text),
+        )
+
+    @staticmethod
+    def _canonical_split_gguf_name(filename: str) -> str:
+        """Return the canonical model name for a split GGUF filename."""
+        shard = ModelManager._parse_gguf_shard_filename(filename)
+        if shard:
+            return shard.prefix
+        return Path(filename).stem
+
+    @staticmethod
+    def _is_complete_local_file(path: Path, expected_size: int | None) -> bool:
+        if not path.exists() or not path.is_file():
+            return False
+        if expected_size is None:
+            return True
+        return path.stat().st_size == expected_size
+
+    @staticmethod
+    def _group_gguf_model_files(files: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Group terminal split-GGUF shards into one logical model option."""
+        singles: list[dict[str, Any]] = []
+        groups: dict[str, dict[str, Any]] = {}
+
+        for file_info in files:
+            filename = str(file_info["filename"])
+            shard = ModelManager._parse_gguf_shard_filename(filename)
+            if not shard:
+                item = dict(file_info)
+                item.setdefault("is_split", False)
+                item.setdefault("shard_count", None)
+                item.setdefault("shard_total_size_bytes", None)
+                item.setdefault("shard_filenames", [])
+                item.setdefault("primary_filename", None)
+                item.setdefault("is_complete", True)
+                item.setdefault("missing_shard_filenames", [])
+                singles.append(item)
+                continue
+
+            group = groups.setdefault(
+                shard.group_key,
+                {
+                    "shard": shard,
+                    "items": {},
+                },
+            )
+            group["items"][shard.index] = dict(file_info)
+
+        grouped: list[dict[str, Any]] = []
+        for group in groups.values():
+            group_shard = group["shard"]
+            assert isinstance(group_shard, GgufShardInfo)
+            items = group["items"]
+            known_indexes = sorted(items)
+            primary_filename = group_shard.shard_filename(1)
+            primary_item = items.get(1) or items[known_indexes[0]]
+            shard_filenames = [items[index]["filename"] for index in known_indexes]
+            missing = [
+                group_shard.shard_filename(index)
+                for index in range(1, group_shard.total + 1)
+                if index not in items
+            ]
+            total_size = sum(int(items[index].get("size_bytes") or 0) for index in known_indexes)
+
+            grouped_item = dict(primary_item)
+            grouped_item.update(
+                {
+                    "filename": primary_filename,
+                    "size_bytes": total_size,
+                    "quantization": ModelManager._extract_quant_suffix(primary_filename),
+                    "is_mmproj": False,
+                    "is_split": True,
+                    "shard_count": group_shard.total,
+                    "shard_total_size_bytes": total_size,
+                    "shard_filenames": shard_filenames,
+                    "primary_filename": primary_filename,
+                    "is_complete": not missing,
+                    "missing_shard_filenames": missing,
+                    "shard_sizes": {
+                        items[index]["filename"]: int(items[index].get("size_bytes") or 0)
+                        for index in known_indexes
+                    },
+                }
+            )
+            grouped.append(grouped_item)
+
+        return sorted(singles + grouped, key=lambda item: str(item["filename"]).lower())
+
+    @staticmethod
+    def _local_split_gguf_metadata(file_path: Path) -> dict[str, Any] | None:
+        """Return local split-GGUF metadata for a shard path when a primary shard exists."""
+        shard = ModelManager._parse_gguf_shard_filename(file_path.name)
+        if not shard:
+            return None
+
+        primary_filename = shard.shard_filename(1)
+        primary_path = file_path.parent / primary_filename
+        if not primary_path.exists():
+            return None
+
+        shard_paths = [
+            file_path.parent / shard.shard_filename(index)
+            for index in range(1, shard.total + 1)
+        ]
+        existing_paths = [path for path in shard_paths if path.exists()]
+        return {
+            "primary_filename": primary_filename,
+            "primary_path": primary_path,
+            "shard_filenames": [path.name for path in existing_paths],
+            "shard_count": shard.total,
+            "size_bytes": sum(path.stat().st_size for path in existing_paths if path.is_file()),
+            "is_complete": len(existing_paths) == shard.total,
+        }
+
+    @staticmethod
     def _split_repo_and_filename(
         repo_id: str,
         filename: str | None,
@@ -467,7 +649,8 @@ class ModelManager:
 
         Returns lowercase suffix like 'bf16', 'f16', 'q8_0', 'q4_k_m', etc.
         """
-        stem = Path(filename).stem.lower()
+        shard = ModelManager._parse_gguf_shard_filename(filename)
+        stem = (shard.prefix if shard else Path(filename).stem).lower()
         # Match quantization patterns at end of filename
         patterns = [
             r"[._-](q\d+[_a-z0-9]*)$",  # Q4_K_M, Q8_0, etc.
@@ -660,6 +843,8 @@ class ModelManager:
         status_label: str = "Downloading file",
         download_id: str | None = None,
         phase: str = "downloading",
+        items_complete: int | None = None,
+        items_total: int | None = None,
     ) -> Path:
         """Stream a repo file download while emitting smooth GUI progress updates."""
         local_path.parent.mkdir(parents=True, exist_ok=True)
@@ -695,6 +880,8 @@ class ModelManager:
                     total_bytes=total_bytes,
                     download_id=download_id,
                     phase=phase,
+                    items_complete=items_complete,
+                    items_total=items_total,
                 )
                 with temp_path.open("wb") as handle:
                     async for chunk in response.aiter_bytes(chunk_size=1024 * 1024):
@@ -726,6 +913,8 @@ class ModelManager:
                                 bytes_per_second=bytes_per_second,
                                 download_id=download_id,
                                 phase=phase,
+                                items_complete=items_complete,
+                                items_total=items_total,
                             )
                             last_notified_progress = progress
                             last_notify_ts = now
@@ -827,6 +1016,7 @@ class ModelManager:
                         "quantization": quantization,
                     })
 
+            model_files = self._group_gguf_model_files(model_files)
             logger.info(f"[success]Found {len(model_files)} model files[/success]")
             return model_files
 
@@ -886,27 +1076,34 @@ class ModelManager:
                 else:
                     model_files.append(file_info)
 
+            model_files = self._group_gguf_model_files(model_files)
+
             is_multimodal = len(mmproj_files) > 0
 
             # Auto-suggest best model file (prefer Q4_K_M, then others)
-            suggested_model = None
+            suggested_model: str | None = None
             if model_files:
                 preferred_quants = ["q4_k_m", "q4_k_s", "q5_k_m", "q5_k_s", "q4_0", "q8_0"]
+                complete_files = [f for f in model_files if f.get("is_complete", True)]
                 for quant in preferred_quants:
-                    for f in model_files:
-                        if f["quantization"] and quant == f["quantization"].lower():
-                            suggested_model = f["filename"]
+                    for f in complete_files:
+                        quantization_value = f.get("quantization")
+                        if (
+                            isinstance(quantization_value, str)
+                            and quant == quantization_value.lower()
+                        ):
+                            suggested_model = str(f["filename"])
                             break
                     if suggested_model:
                         break
-                if not suggested_model:
-                    suggested_model = model_files[0]["filename"]
+                if not suggested_model and complete_files:
+                    suggested_model = str(complete_files[0]["filename"])
 
             # Auto-suggest mmproj for the suggested model
             suggested_mmproj = None
             if suggested_model and mmproj_files:
                 suggested_mmproj = self._select_mmproj_file(
-                    [f["filename"] for f in mmproj_files],
+                    [str(f["filename"]) for f in mmproj_files],
                     suggested_model
                 )
 
@@ -939,6 +1136,21 @@ class ModelManager:
         """
         return self._select_mmproj_file(mmproj_files, model_filename)
 
+    def _resolve_repo_model_file(
+        self,
+        files: list[dict[str, Any]],
+        filename: str,
+    ) -> dict[str, Any] | None:
+        """Find a logical repo model option by primary or shard filename."""
+        for file_info in files:
+            if file_info["filename"] == filename:
+                return file_info
+            if file_info.get("primary_filename") == filename:
+                return file_info
+            if filename in file_info.get("shard_filenames", []):
+                return file_info
+        return None
+
     async def download_model(
         self,
         repo_id: str,
@@ -946,7 +1158,7 @@ class ModelManager:
         mmproj_filename: str | None = None,
         force: bool = False,
         download_id: str | None = None,
-    ) -> Path:
+    ) -> ModelDownloadResult:
         """
         Download a model from HuggingFace.
 
@@ -957,7 +1169,7 @@ class ModelManager:
             force: Force redownload even if exists
 
         Returns:
-            Path to downloaded model file
+            Download result with canonical model identity
         """
         repo_id = repo_id.strip()
         download_id = download_id or self._new_download_id()
@@ -969,18 +1181,23 @@ class ModelManager:
         logger.info(f"[highlight]Downloading model from: {repo_id}[/highlight]")
         repo_files = list_repo_files(repo_id, token=self._hf_token)
 
+        files = await self.list_repo_files(repo_id, files=repo_files)
+
         # If no filename specified, find the best GGUF file
         if filename is None:
-            files = await self.list_repo_files(repo_id, files=repo_files)
             if not files:
                 raise ValueError(f"No GGUF files found in {repo_id}")
 
             # Prefer Q4_K_M or similar balanced quantization
             preferred_quants = ["Q4_K_M", "Q4_K_S", "Q5_K_M", "Q5_K_S", "Q4_0"]
-            filename = files[0]["filename"]
+            complete_files = [file for file in files if file.get("is_complete", True)]
+            if not complete_files:
+                raise ValueError(f"No complete GGUF files found in {repo_id}")
+
+            filename = complete_files[0]["filename"]
 
             for quant in preferred_quants:
-                for f in files:
+                for f in complete_files:
                     if quant.lower() in f["filename"].lower():
                         filename = f["filename"]
                         break
@@ -990,9 +1207,28 @@ class ModelManager:
 
             logger.info(f"  Auto-selected file: {filename}")
 
-        files = await self.list_repo_files(repo_id, files=repo_files)
-        selected_file = next((file for file in files if file["filename"] == filename), None)
-        expected_size = selected_file["size_bytes"] if selected_file else None
+        selected_file = self._resolve_repo_model_file(files, filename)
+        if not selected_file:
+            raise ValueError(f"GGUF file not found in {repo_id}: {filename}")
+        if not selected_file.get("is_complete", True):
+            missing = ", ".join(selected_file.get("missing_shard_filenames", []))
+            detail = f" Missing shards: {missing}" if missing else ""
+            raise ValueError(f"Split GGUF shard set is incomplete for {filename}.{detail}")
+
+        is_split = bool(selected_file.get("is_split"))
+        primary_filename = str(selected_file.get("primary_filename") or selected_file["filename"])
+        filename = primary_filename
+        expected_size = int(selected_file["size_bytes"]) if selected_file else None
+        shard_filenames = list(selected_file.get("shard_filenames") or [filename])
+        shard_sizes = {
+            str(name): int(size or 0)
+            for name, size in (selected_file.get("shard_sizes") or {}).items()
+        }
+        model_name = (
+            self._canonical_split_gguf_name(filename)
+            if is_split
+            else Path(filename).stem
+        )
 
         # Notify download starting
         await self._notify_progress(
@@ -1008,7 +1244,93 @@ class ModelManager:
 
         # Check if already downloaded
         local_path = self.models_dir / filename
-        if local_path.exists() and not force:
+        if is_split:
+            for index, shard_filename in enumerate(shard_filenames, start=1):
+                shard_path = self.models_dir / shard_filename
+                shard_expected_size = shard_sizes.get(shard_filename) or None
+                if self._is_complete_local_file(shard_path, shard_expected_size) and not force:
+                    logger.info(f"  Shard already present: {shard_path}")
+                    await self._notify_progress(
+                        repo_id,
+                        shard_filename,
+                        (index / len(shard_filenames)) * 95,
+                        "skipped",
+                        message=f"Shard already downloaded ({index}/{len(shard_filenames)})",
+                        downloaded_bytes=shard_expected_size,
+                        total_bytes=shard_expected_size,
+                        download_id=download_id,
+                        phase="downloading_model",
+                        items_complete=index,
+                        items_total=len(shard_filenames),
+                    )
+                    continue
+
+                await self._download_file_with_progress(
+                    repo_id=repo_id,
+                    filename=shard_filename,
+                    local_path=shard_path,
+                    expected_size=shard_expected_size,
+                    status_label=f"Downloading shard {index}/{len(shard_filenames)}",
+                    download_id=download_id,
+                    phase="downloading_model",
+                    items_complete=index - 1,
+                    items_total=len(shard_filenames),
+                )
+
+            local_path = self.models_dir / primary_filename
+            mmproj_path = await self._download_mmproj(
+                repo_id, local_path,
+                repo_files=repo_files,
+                mmproj_filename=mmproj_filename,
+                force=force,
+                download_id=download_id,
+            )
+            await self._notify_progress(
+                repo_id,
+                filename,
+                100,
+                "registering",
+                message="Finalizing model registration…",
+                downloaded_bytes=expected_size,
+                total_bytes=expected_size,
+                download_id=download_id,
+                phase="registering",
+                items_complete=len(shard_filenames),
+                items_total=len(shard_filenames),
+            )
+            await self._register_model(
+                repo_id,
+                filename,
+                local_path,
+                mmproj_path=mmproj_path,
+                model_name_override=model_name,
+                size_bytes_override=expected_size,
+                is_split_gguf=True,
+                gguf_shard_filenames=shard_filenames,
+            )
+            await self._notify_progress(
+                repo_id,
+                filename,
+                100,
+                "complete",
+                message="Download complete.",
+                downloaded_bytes=expected_size,
+                total_bytes=expected_size,
+                download_id=download_id,
+                phase="complete",
+                items_complete=len(shard_filenames),
+                items_total=len(shard_filenames),
+            )
+            return ModelDownloadResult(
+                path=local_path,
+                model_name=model_name,
+                filename=filename,
+                size_bytes=expected_size or 0,
+                is_split_gguf=True,
+                shard_filenames=shard_filenames,
+            )
+
+        if self._is_complete_local_file(local_path, expected_size) and not force:
             logger.info(f"[success]Model already exists: {local_path}[/success]")
 
             # Download mmproj and get path
@@ -1036,7 +1358,14 @@ class ModelManager:
                 phase="complete",
             )
 
-            return local_path
+            return ModelDownloadResult(
+                path=local_path,
+                model_name=model_name,
+                filename=filename,
+                size_bytes=expected_size or (local_path.stat().st_size if local_path.exists() else 0),
+                is_split_gguf=False,
+                shard_filenames=[],
+            )
 
         # Download with progress
         logger.info(f"  Downloading to: {local_path}")
@@ -1090,7 +1419,14 @@ class ModelManager:
                 phase="complete",
             )
 
-            return local_path
+            return ModelDownloadResult(
+                path=local_path,
+                model_name=model_name,
+                filename=filename,
+                size_bytes=expected_size or (local_path.stat().st_size if local_path.exists() else 0),
+                is_split_gguf=False,
+                shard_filenames=[],
+            )
 
         except Exception as e:
             logger.error(f"[error]Download failed: {e}[/error]")
@@ -1150,6 +1486,54 @@ class ModelManager:
         except Exception as e:
             logger.debug(f"Could not send progress notification: {e}")
 
+    async def _reconcile_split_model_identity(
+        self,
+        session: Any,
+        canonical_name: str,
+        filename: str,
+        file_path: Path,
+    ) -> str:
+        """Upgrade legacy shard-named rows to the canonical split-GGUF name when safe."""
+        canonical_result = await session.execute(
+            select(Model).where(Model.name == canonical_name)
+        )
+        if canonical_result.scalar_one_or_none():
+            return canonical_name
+
+        primary_shard = self._parse_gguf_shard_filename(filename)
+        if not primary_shard:
+            return canonical_name
+
+        result = await session.execute(select(Model))
+        candidates = []
+        for model in result.scalars().all():
+            names_to_check = [
+                model.filename,
+                Path(model.file_path).name if model.file_path else "",
+                f"{model.name}.gguf" if model.name else "",
+            ]
+            if any(
+                (shard := self._parse_gguf_shard_filename(name))
+                and shard.group_key == primary_shard.group_key
+                for name in names_to_check
+            ):
+                candidates.append(model)
+
+        if not candidates:
+            return canonical_name
+
+        def candidate_sort_key(model: Model) -> tuple[int, int]:
+            shard = self._parse_gguf_shard_filename(model.filename or "")
+            return (0 if shard and shard.is_primary else 1, model.id or 0)
+
+        candidates.sort(key=candidate_sort_key)
+        winner = candidates[0]
+        winner.name = canonical_name
+        winner.filename = filename
+        winner.file_path = str(file_path)
+        logger.info(f"  Reconciled split GGUF model identity: {canonical_name}")
+        return canonical_name
+
     async def _register_model(
         self,
         repo_id: str,
@@ -1158,6 +1542,9 @@ class ModelManager:
         mmproj_path: Path | None = None,
         engine_type: str | None = None,
         model_name_override: str | None = None,
+        size_bytes_override: int | None = None,
+        is_split_gguf: bool = False,
+        gguf_shard_filenames: list[str] | None = None,
     ) -> Model:
         """Register a model in the database.
 
@@ -1175,7 +1562,9 @@ class ModelManager:
         quantization = self._extract_quant_suffix(filename)
 
         # Get file size (for directory-based models, sum all files)
-        if file_path.is_dir():
+        if size_bytes_override is not None:
+            size_bytes = size_bytes_override
+        elif file_path.is_dir():
             size_bytes = sum(
                 f.stat().st_size for f in file_path.rglob("*") if f.is_file()
             )
@@ -1207,6 +1596,14 @@ class ModelManager:
             engine_type = "llama"  # default
 
         async with get_db_session() as session:
+            if is_split_gguf:
+                model_name = await self._reconcile_split_model_identity(
+                    session=session,
+                    canonical_name=model_name,
+                    filename=filename,
+                    file_path=file_path,
+                )
+
             # Check if already registered
             result = await session.execute(
                 select(Model).where(Model.name == model_name)
@@ -1220,6 +1617,11 @@ class ModelManager:
                 existing.is_downloaded = True
                 existing.download_progress = 100.0
                 existing.engine_type = engine_type
+                existing.is_split_gguf = is_split_gguf
+                existing.gguf_shard_count = (
+                    len(gguf_shard_filenames or []) if is_split_gguf else None
+                )
+                existing.gguf_shard_filenames = gguf_shard_filenames if is_split_gguf else None
                 if context_length:
                     existing.context_length = context_length
 
@@ -1294,6 +1696,9 @@ class ModelManager:
                 model_type=model_type,
                 engine_type=engine_type,
                 mmproj_path=mmproj_path_str,
+                is_split_gguf=is_split_gguf,
+                gguf_shard_count=len(gguf_shard_filenames or []) if is_split_gguf else None,
+                gguf_shard_filenames=gguf_shard_filenames if is_split_gguf else None,
                 is_downloaded=True,
                 download_progress=100.0,
             )
@@ -1324,10 +1729,39 @@ class ModelManager:
         async with get_db_session() as session:
             result = await session.execute(select(Model))
             db_models = result.scalars().all()
+            db_model_names = {model.name for model in db_models}
 
             updated = False
             for model in db_models:
                 metadata_summary: dict[str, Any] = {}
+                file_path = Path(model.file_path) if model.file_path else None
+                split_metadata = (
+                    self._local_split_gguf_metadata(file_path)
+                    if file_path and file_path.suffix == ".gguf"
+                    else None
+                )
+                if file_path and file_path.suffix == ".gguf" and not split_metadata:
+                    shard = self._parse_gguf_shard_filename(file_path.name)
+                    if shard:
+                        continue
+                if split_metadata:
+                    canonical_name = self._canonical_split_gguf_name(
+                        split_metadata["primary_filename"]
+                    )
+                    if model.name != canonical_name and canonical_name in db_model_names:
+                        continue
+                    if model.name != canonical_name and canonical_name not in db_model_names:
+                        model.name = canonical_name
+                        model.filename = split_metadata["primary_filename"]
+                        model.file_path = str(split_metadata["primary_path"])
+                        db_model_names.add(canonical_name)
+                        updated = True
+                    model.is_split_gguf = True
+                    model.gguf_shard_count = split_metadata["shard_count"]
+                    model.gguf_shard_filenames = split_metadata["shard_filenames"]
+                    model.size_bytes = split_metadata["size_bytes"]
+                    updated = True
+
                 # Backfill context_length for models that still have the 4096 default
                 if model.file_path:
                     file_path = Path(model.file_path)
@@ -1361,6 +1795,9 @@ class ModelManager:
                     "model_type": model.model_type,
                     "engine_type": engine_type,
                     "mmproj_path": model.mmproj_path,
+                    "is_split_gguf": bool(model.is_split_gguf),
+                    "gguf_shard_count": model.gguf_shard_count,
+                    "gguf_shard_filenames": model.gguf_shard_filenames,
                     "is_vlm": is_vlm,
                     "is_downloaded": model.is_downloaded,
                     "is_enabled": model.is_enabled,
@@ -1395,6 +1832,24 @@ class ModelManager:
         for file_path in list(self.models_dir.glob("*.gguf")) + list(self.models_dir.glob("ggml-*.bin")):
             if file_path.suffix == ".gguf" and self._is_mmproj_file(file_path.name):
                 continue
+            split_metadata = (
+                self._local_split_gguf_metadata(file_path)
+                if file_path.suffix == ".gguf"
+                else None
+            )
+            if file_path.suffix == ".gguf" and not split_metadata:
+                shard = self._parse_gguf_shard_filename(file_path.name)
+                if shard:
+                    continue
+            if split_metadata:
+                if file_path.name != split_metadata["primary_filename"]:
+                    continue
+                model_name = self._canonical_split_gguf_name(file_path.name)
+                if model_name in registered_names:
+                    continue
+            else:
+                model_name = file_path.stem
+
             if file_path.name not in registered_files:
                 metadata_summary = (
                     self._read_gguf_metadata_summary_cached(file_path) if include_file_metadata else {}
@@ -1408,16 +1863,23 @@ class ModelManager:
 
                 models.append({
                     "id": None,
-                    "name": file_path.stem,
+                    "name": model_name,
                     "filename": file_path.name,
                     "path": str(file_path),
                     "hf_repo_id": None,
-                    "size_bytes": file_path.stat().st_size,
+                    "size_bytes": (
+                        split_metadata["size_bytes"] if split_metadata else file_path.stat().st_size
+                    ),
                     "quantization": None,
                     "context_length": context_length or 4096,
                     "model_type": None,
                     "engine_type": "llama",
                     "mmproj_path": mmproj_path,
+                    "is_split_gguf": bool(split_metadata),
+                    "gguf_shard_count": split_metadata["shard_count"] if split_metadata else None,
+                    "gguf_shard_filenames": (
+                        split_metadata["shard_filenames"] if split_metadata else None
+                    ),
                     "is_vlm": bool(mmproj_path),
                     "is_downloaded": True,
                     "is_enabled": True,
@@ -1471,6 +1933,9 @@ class ModelManager:
                         "model_type": None,
                         "engine_type": "transformers",
                         "mmproj_path": None,
+                        "is_split_gguf": False,
+                        "gguf_shard_count": None,
+                        "gguf_shard_filenames": None,
                         "is_vlm": is_vlm,
                         "is_downloaded": True,
                         "is_enabled": True,

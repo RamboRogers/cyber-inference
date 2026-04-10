@@ -238,7 +238,8 @@ def download_model(
             path = await manager.download_transformers_model(model_id)
             console.print(f"[bright_green]Transformers model downloaded to: {path}[/bright_green]")
         else:
-            await manager.download_model(model_id, filename=filename)
+            result = await manager.download_model(model_id, filename=filename)
+            console.print(f"[bright_green]GGUF model downloaded to: {result.path}[/bright_green]")
 
     asyncio.run(_download())
 

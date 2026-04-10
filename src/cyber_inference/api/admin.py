@@ -237,6 +237,9 @@ async def list_models(
                 model_type=m.model_type,
                 engine_type=m.engine_type,
                 mmproj_path=m.mmproj_path,
+                is_split_gguf=m.is_split_gguf,
+                gguf_shard_count=m.gguf_shard_count,
+                gguf_shard_filenames=m.gguf_shard_filenames,
                 tool_template_mode=m.tool_template_mode,
                 tool_template_name=m.tool_template_name,
                 tool_template_path=m.tool_template_path,
@@ -277,6 +280,13 @@ async def list_repo_files(
                     size_bytes=f["size_bytes"],
                     quantization=f.get("quantization"),
                     is_mmproj=f.get("is_mmproj", False),
+                    is_split=f.get("is_split", False),
+                    shard_count=f.get("shard_count"),
+                    shard_total_size_bytes=f.get("shard_total_size_bytes"),
+                    shard_filenames=f.get("shard_filenames", []),
+                    primary_filename=f.get("primary_filename"),
+                    is_complete=f.get("is_complete", True),
+                    missing_shard_filenames=f.get("missing_shard_filenames", []),
                 )
                 for f in result["model_files"]
             ],
@@ -286,6 +296,13 @@ async def list_repo_files(
                     size_bytes=f["size_bytes"],
                     quantization=f.get("quantization"),
                     is_mmproj=True,
+                    is_split=f.get("is_split", False),
+                    shard_count=f.get("shard_count"),
+                    shard_total_size_bytes=f.get("shard_total_size_bytes"),
+                    shard_filenames=f.get("shard_filenames", []),
+                    primary_filename=f.get("primary_filename"),
+                    is_complete=f.get("is_complete", True),
+                    missing_shard_filenames=f.get("missing_shard_filenames", []),
                 )
                 for f in result["mmproj_files"]
             ],
@@ -356,22 +373,11 @@ async def download_model(
             repo_id=request.hf_repo_id,
             filename=request.hf_filename,
             mmproj_filename=request.hf_mmproj_filename,
+            force=request.force,
             download_id=request.download_id,
         )
 
-        # Auto-generate model name if not provided
-        model_name = request.name
-        if not model_name:
-            if path:
-                # Use filename stem (without extension)
-                model_name = path.stem
-            elif request.hf_filename:
-                # Use filename without extension
-                from pathlib import Path as PathLib
-                model_name = PathLib(request.hf_filename).stem
-            else:
-                # Fallback to repo_id slug
-                model_name = request.hf_repo_id.split("/")[-1].replace("-", "_")
+        model_name = path.model_name
 
         model = await mm.get_model(model_name)
 
@@ -381,14 +387,17 @@ async def download_model(
             return ModelResponse(
                 id=0,
                 name=model_name,
-                filename=path.name if path else request.hf_filename or "unknown",
-                file_path=str(path) if path else "",
+                filename=path.filename,
+                file_path=str(path.path),
                 hf_repo_id=request.hf_repo_id,
-                size_bytes=path.stat().st_size if path and path.exists() else 0,
+                size_bytes=path.size_bytes,
                 quantization=None,
                 context_length=4096,
                 model_type=None,
                 mmproj_path=None,
+                is_split_gguf=path.is_split_gguf,
+                gguf_shard_count=len(path.shard_filenames or []) if path.is_split_gguf else None,
+                gguf_shard_filenames=path.shard_filenames,
                 tool_template_mode=None,
                 tool_template_name=None,
                 tool_template_path=None,
@@ -411,6 +420,9 @@ async def download_model(
             context_length=model["context_length"],
             model_type=model.get("model_type"),
             mmproj_path=model.get("mmproj_path"),
+            is_split_gguf=model.get("is_split_gguf"),
+            gguf_shard_count=model.get("gguf_shard_count"),
+            gguf_shard_filenames=model.get("gguf_shard_filenames"),
             tool_template_mode=model.get("tool_template_mode"),
             tool_template_name=model.get("tool_template_name"),
             tool_template_path=model.get("tool_template_path"),
