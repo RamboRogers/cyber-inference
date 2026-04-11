@@ -195,6 +195,59 @@ class LlamaInstaller:
 
             return release
 
+    @staticmethod
+    def _release_text_field(release: dict[str, Any], key: str) -> str | None:
+        value = release.get(key)
+        return value if isinstance(value, str) and value else None
+
+    async def get_latest_release_info(self) -> dict[str, str | None]:
+        """
+        Get compact latest-release metadata for admin status displays.
+        """
+        release = await self.get_latest_release()
+        backend = await self.detect_gpu_backend()
+        compatible_asset = self._select_github_asset(release, backend)
+        compatible_asset_name = None
+        if compatible_asset:
+            asset_name = compatible_asset.get("name")
+            if isinstance(asset_name, str):
+                compatible_asset_name = asset_name
+
+        return {
+            "tag_name": self._release_text_field(release, "tag_name"),
+            "name": self._release_text_field(release, "name"),
+            "html_url": self._release_text_field(release, "html_url"),
+            "published_at": self._release_text_field(release, "published_at"),
+            "compatible_asset": compatible_asset_name,
+        }
+
+    @staticmethod
+    def _parse_build_number(value: str | None) -> int | None:
+        """
+        Extract comparable llama.cpp build numbers from version text or tags.
+        """
+        if not value:
+            return None
+        match = re.search(r"(?:version:\s*|^b)(\d+)", value.strip(), re.IGNORECASE)
+        if not match:
+            return None
+        return int(match.group(1))
+
+    @classmethod
+    def get_update_available(
+        cls,
+        installed_version: str | None,
+        latest_tag: str | None,
+    ) -> bool | None:
+        """
+        Return update availability when installed and latest versions are comparable.
+        """
+        installed_build = cls._parse_build_number(installed_version)
+        latest_build = cls._parse_build_number(latest_tag)
+        if installed_build is None or latest_build is None:
+            return None
+        return latest_build > installed_build
+
     def _is_linux_arm64(self) -> bool:
         """Return True when running on Linux ARM64/AArch64."""
         return self._platform == "linux" and self._arch in ("arm64", "aarch64")
@@ -617,13 +670,18 @@ class LlamaInstaller:
             Version string, or None if not installed
         """
         llama_server_path = self.get_binary_path()
+        return self._get_binary_version(llama_server_path)
 
-        if not llama_server_path.exists():
+    def _get_binary_version(self, binary_path: Path) -> str | None:
+        """
+        Get a llama-server version string for a specific binary path.
+        """
+        if not binary_path.exists():
             return None
 
         try:
             result = subprocess.run(
-                [str(llama_server_path), "--version"],
+                [str(binary_path), "--version"],
                 capture_output=True,
                 text=True,
                 timeout=5,
@@ -637,6 +695,68 @@ class LlamaInstaller:
             return raw.splitlines()[-1].strip() if raw else "unknown"
         except Exception:
             return "unknown"
+
+    def get_managed_binary_path(self) -> Path:
+        """
+        Get the Cyber-Inference-managed llama-server path without consulting PATH.
+        """
+        binary_name = "llama-server.exe" if self._platform == "windows" else "llama-server"
+        return self.bin_dir / binary_name
+
+    @staticmethod
+    def _paths_same(left: Path, right: Path) -> bool:
+        """
+        Compare paths robustly while tolerating missing files.
+        """
+        try:
+            if left.exists() and right.exists():
+                return left.samefile(right)
+        except OSError:
+            pass
+        try:
+            return left.resolve() == right.resolve()
+        except OSError:
+            return left.absolute() == right.absolute()
+
+    async def get_binary_status(self) -> dict[str, Any]:
+        """
+        Report active llama-server provenance and managed-update eligibility.
+        """
+        managed_path = self.get_managed_binary_path()
+        system_path = self._find_system_binary()
+
+        source = "missing"
+        binary_path: Path | None = None
+        update_allowed = True
+        update_blocked_reason: str | None = None
+
+        if system_path is not None:
+            if self._paths_same(system_path, managed_path):
+                source = "managed"
+                binary_path = managed_path
+            else:
+                source = "system"
+                binary_path = system_path
+                update_allowed = False
+                update_blocked_reason = (
+                    "llama-server is managed by the system. Update it with your OS or "
+                    "package manager; Cyber-Inference will not overwrite system binaries."
+                )
+        elif managed_path.exists():
+            source = "managed"
+            binary_path = managed_path
+
+        installed_version = self._get_binary_version(binary_path) if binary_path else None
+
+        return {
+            "source": source,
+            "binary_path": str(binary_path) if binary_path else None,
+            "managed_binary_path": str(managed_path),
+            "installed_version": installed_version,
+            "is_system_managed": source == "system",
+            "update_allowed": update_allowed,
+            "update_blocked_reason": update_blocked_reason,
+        }
 
     def _find_system_binary(self) -> Path | None:
         """
@@ -662,11 +782,7 @@ class LlamaInstaller:
             return True
 
         # Fall back to bin_dir
-        llama_server_path = self.bin_dir / "llama-server"
-        if self._platform == "windows":
-            llama_server_path = self.bin_dir / "llama-server.exe"
-
-        return llama_server_path.exists()
+        return self.get_managed_binary_path().exists()
 
     def get_binary_path(self) -> Path:
         """
@@ -680,7 +796,4 @@ class LlamaInstaller:
             return system_binary
 
         # Fall back to bin_dir
-        llama_server_path = self.bin_dir / "llama-server"
-        if self._platform == "windows":
-            llama_server_path = self.bin_dir / "llama-server.exe"
-        return llama_server_path
+        return self.get_managed_binary_path()

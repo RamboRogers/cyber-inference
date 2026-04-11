@@ -356,6 +356,144 @@ async def test_admin_config():
         assert data["model_load_timeout"] == 300
 
 
+def _llama_release_info() -> dict[str, str | None]:
+    return {
+        "tag_name": "b1001",
+        "name": "Build 1001",
+        "html_url": "https://github.com/ggerganov/llama.cpp/releases/tag/b1001",
+        "published_at": "2026-04-11T00:00:00Z",
+        "compatible_asset": "llama-b1001-macos-arm64.zip",
+    }
+
+
+def _llama_binary_status(source: str = "managed") -> dict[str, object]:
+    is_system = source == "system"
+    binary_path = "/usr/local/bin/llama-server" if is_system else "/tmp/bin/llama-server"
+    return {
+        "source": source,
+        "binary_path": None if source == "missing" else binary_path,
+        "managed_binary_path": "/tmp/bin/llama-server",
+        "installed_version": None if source == "missing" else "version: 1000 (abc123)",
+        "is_system_managed": is_system,
+        "update_allowed": not is_system,
+        "update_blocked_reason": "System-managed binary detected." if is_system else None,
+    }
+
+
+def _llama_installer_mock(source: str = "managed") -> MagicMock:
+    installer = MagicMock()
+    installer.get_binary_status = AsyncMock(return_value=_llama_binary_status(source))
+    installer.get_latest_release_info = AsyncMock(return_value=_llama_release_info())
+    installer.get_update_available = MagicMock(return_value=True)
+    installer.install = AsyncMock(return_value=Path("/tmp/bin/llama-server"))
+    return installer
+
+
+@pytest.mark.asyncio
+async def test_admin_llama_cpp_status_reports_system_managed_binary():
+    """llama.cpp status should disclose system-managed provenance."""
+    installer = _llama_installer_mock("system")
+
+    with (
+        patch("cyber_inference.api.admin._get_llama_installer", return_value=installer),
+        patch("cyber_inference.api.admin._get_running_llama_session_names", return_value=[]),
+    ):
+        async with make_test_client() as client:
+            response = await client.get("/admin/llama-cpp/status")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["source"] == "system"
+    assert data["binary_path"] == "/usr/local/bin/llama-server"
+    assert data["managed_binary_path"] == "/tmp/bin/llama-server"
+    assert data["installed_version"] == "version: 1000 (abc123)"
+    assert data["latest_release"]["tag_name"] == "b1001"
+    assert data["update_allowed"] is False
+    assert data["update_blocked_reason"] == "System-managed binary detected."
+
+
+@pytest.mark.asyncio
+async def test_admin_llama_cpp_status_survives_latest_release_failure():
+    """Latest-release errors should not hide local llama.cpp status."""
+    installer = _llama_installer_mock("managed")
+    installer.get_latest_release_info = AsyncMock(side_effect=RuntimeError("GitHub unavailable"))
+
+    with (
+        patch("cyber_inference.api.admin._get_llama_installer", return_value=installer),
+        patch("cyber_inference.api.admin._get_running_llama_session_names", return_value=[]),
+    ):
+        async with make_test_client() as client:
+            response = await client.get("/admin/llama-cpp/status")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["source"] == "managed"
+    assert data["latest_release"] is None
+    assert data["latest_release_error"] == "GitHub unavailable"
+    assert data["update_available"] is None
+
+
+@pytest.mark.asyncio
+async def test_admin_llama_cpp_update_refuses_system_managed_binary():
+    """The admin updater must not overwrite PATH/system binaries."""
+    installer = _llama_installer_mock("system")
+
+    with (
+        patch("cyber_inference.api.admin._get_llama_installer", return_value=installer),
+        patch("cyber_inference.api.admin._get_running_llama_session_names", return_value=[]),
+    ):
+        async with make_test_client() as client:
+            response = await client.post("/admin/llama-cpp/update")
+
+    assert response.status_code == 409
+    installer.install.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_admin_llama_cpp_update_refuses_running_llama_sessions():
+    """The admin updater should block binary replacement while llama sessions run."""
+    installer = _llama_installer_mock("managed")
+
+    with (
+        patch("cyber_inference.api.admin._get_llama_installer", return_value=installer),
+        patch(
+            "cyber_inference.api.admin._get_running_llama_session_names",
+            return_value=["demo-model"],
+        ),
+    ):
+        async with make_test_client() as client:
+            response = await client.post("/admin/llama-cpp/update")
+
+    assert response.status_code == 409
+    assert "Unload llama.cpp models before updating" in response.json()["detail"]
+    installer.install.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_admin_llama_cpp_update_installs_managed_binary():
+    """Managed or missing installs should run force update and refresh status."""
+    installer = _llama_installer_mock("missing")
+    installer.get_binary_status = AsyncMock(
+        side_effect=[
+            _llama_binary_status("missing"),
+            _llama_binary_status("managed"),
+        ]
+    )
+
+    with (
+        patch("cyber_inference.api.admin._get_llama_installer", return_value=installer),
+        patch("cyber_inference.api.admin._get_running_llama_session_names", return_value=[]),
+    ):
+        async with make_test_client() as client:
+            response = await client.post("/admin/llama-cpp/update")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["source"] == "managed"
+    assert data["binary_path"] == "/tmp/bin/llama-server"
+    installer.install.assert_awaited_once_with(force=True)
+
+
 @pytest.mark.asyncio
 async def test_chat_completion_validation():
     """Test request validation for chat completions."""
@@ -1415,6 +1553,24 @@ def test_settings_template_saves_pre_model_load_command():
     assert "preModelLoadCommandEnabled" in template
     assert "pre_model_load_command_enabled" in template
     assert "pre_model_load_command_timeout" in template
+
+
+def test_settings_template_shows_llama_cpp_runtime_controls():
+    """Settings UI should expose llama.cpp version and managed update controls."""
+    template = Path("src/cyber_inference/web/templates/settings.html").read_text()
+
+    assert "LLAMA.CPP RUNTIME" in template
+    assert 'id="llamaCppRuntimePanel"' in template
+    assert 'id="llamaCppSource"' in template
+    assert 'id="llamaCppBinaryPath"' in template
+    assert 'id="llamaCppInstalledVersion"' in template
+    assert 'id="llamaCppLatestRelease"' in template
+    assert 'id="llamaCppUpdateBtn"' in template
+    assert "/admin/llama-cpp/status" in template
+    assert "/admin/llama-cpp/update" in template
+    assert "System-managed binary detected" in template
+    assert "Unload llama.cpp models before updating" in template
+    assert "updateBtn.disabled = !data.update_allowed" in template
 
 
 @pytest.mark.asyncio

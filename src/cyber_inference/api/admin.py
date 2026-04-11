@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jose import jwt
+from jose import jwt  # type: ignore[import-untyped]
 from sqlalchemy import select
 
 from cyber_inference.core.auth import verify_admin_token_value
@@ -27,6 +27,8 @@ from cyber_inference.models.schemas import (
     AdminLoginResponse,
     ConfigurationResponse,
     ConfigurationUpdate,
+    LlamaCppReleaseInfo,
+    LlamaCppStatusResponse,
     LoadModelRequest,
     ModelCreate,
     ModelResponse,
@@ -36,6 +38,7 @@ from cyber_inference.models.schemas import (
     SystemResourcesResponse,
 )
 from cyber_inference.services.auto_loader import AutoLoader
+from cyber_inference.services.llama_installer import LlamaInstaller
 from cyber_inference.services.model_manager import ModelManager
 
 logger = get_logger(__name__)
@@ -67,7 +70,7 @@ def _validate_global_config_value(key: str, value: object) -> None:
     """Validate admin-configurable global settings before persistence."""
     if key == "model_load_timeout":
         try:
-            timeout = int(value)
+            timeout = int(str(value))
         except (TypeError, ValueError):
             raise HTTPException(status_code=400, detail="model_load_timeout must be an integer")
         if timeout < 30 or timeout > 3600:
@@ -77,7 +80,7 @@ def _validate_global_config_value(key: str, value: object) -> None:
             )
     elif key == "pre_model_load_command_timeout":
         try:
-            timeout = int(value)
+            timeout = int(str(value))
         except (TypeError, ValueError):
             raise HTTPException(
                 status_code=400,
@@ -101,6 +104,70 @@ def _get_auto_loader() -> AutoLoader:
     """Get the auto-loader instance."""
     from cyber_inference.api.v1 import get_auto_loader
     return get_auto_loader()
+
+
+def _get_llama_installer() -> LlamaInstaller:
+    """Get a llama.cpp installer instance."""
+    return LlamaInstaller()
+
+
+def _get_running_llama_session_names() -> list[str]:
+    """Return active llama.cpp session names that block binary replacement."""
+    from cyber_inference.main import get_process_manager
+
+    try:
+        processes = get_process_manager().get_all_processes()
+    except RuntimeError:
+        return []
+
+    active_statuses = {"starting", "running", "stopping"}
+    return [
+        process.model_name
+        for process in processes
+        if process.server_type == "llama" and process.status in active_statuses
+    ]
+
+
+async def _build_llama_cpp_status(installer: LlamaInstaller) -> LlamaCppStatusResponse:
+    """Build admin-facing llama.cpp binary status."""
+    binary_status = await installer.get_binary_status()
+    latest_release = None
+    latest_release_error = None
+    update_available = None
+
+    try:
+        latest_release_info = await installer.get_latest_release_info()
+        latest_release = LlamaCppReleaseInfo(**latest_release_info)
+        update_available = installer.get_update_available(
+            binary_status.get("installed_version"),
+            latest_release.tag_name,
+        )
+    except Exception as e:
+        latest_release_error = str(e)
+
+    running_sessions = _get_running_llama_session_names()
+    update_allowed = bool(binary_status["update_allowed"])
+    update_blocked_reason = binary_status.get("update_blocked_reason")
+    if running_sessions and update_allowed:
+        update_allowed = False
+        update_blocked_reason = (
+            "Unload llama.cpp models before updating: "
+            + ", ".join(sorted(running_sessions))
+        )
+
+    return LlamaCppStatusResponse(
+        source=str(binary_status["source"]),
+        binary_path=binary_status.get("binary_path"),
+        managed_binary_path=str(binary_status["managed_binary_path"]),
+        installed_version=binary_status.get("installed_version"),
+        is_system_managed=bool(binary_status["is_system_managed"]),
+        update_allowed=update_allowed,
+        update_blocked_reason=update_blocked_reason,
+        latest_release=latest_release,
+        latest_release_error=latest_release_error,
+        update_available=update_available,
+        running_llama_sessions=sorted(running_sessions),
+    )
 
 
 async def verify_admin_token(
@@ -175,6 +242,46 @@ async def admin_login(request: AdminLoginRequest) -> AdminLoginResponse:
         access_token=token,
         expires_in=settings.jwt_expiry_hours * 3600,
     )
+
+
+@router.get("/llama-cpp/status")
+async def get_llama_cpp_status(
+    _: bool = Depends(verify_admin_token),
+) -> LlamaCppStatusResponse:
+    """
+    Get llama.cpp binary provenance, version, and latest release status.
+    """
+    logger.debug("GET /admin/llama-cpp/status")
+    return await _build_llama_cpp_status(_get_llama_installer())
+
+
+@router.post("/llama-cpp/update")
+async def update_llama_cpp(
+    _: bool = Depends(verify_admin_token),
+) -> LlamaCppStatusResponse:
+    """
+    Update the Cyber-Inference-managed llama.cpp binary.
+    """
+    logger.info("[highlight]POST /admin/llama-cpp/update[/highlight]")
+    installer = _get_llama_installer()
+    status_info = await _build_llama_cpp_status(installer)
+
+    if status_info.is_system_managed:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=status_info.update_blocked_reason
+            or "llama-server is system-managed and cannot be updated by Cyber-Inference.",
+        )
+
+    if status_info.running_llama_sessions:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=status_info.update_blocked_reason
+            or "Unload llama.cpp models before updating.",
+        )
+
+    await installer.install(force=True)
+    return await _build_llama_cpp_status(installer)
 
 
 @router.get("/status")

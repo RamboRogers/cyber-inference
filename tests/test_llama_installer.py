@@ -8,6 +8,10 @@ import pytest
 from cyber_inference.services.llama_installer import LlamaInstaller
 
 
+def _version_result() -> MagicMock:
+    return MagicMock(stdout="version: 1000 (abc123)", stderr="")
+
+
 def test_select_github_asset_does_not_choose_wrong_arch(tmp_path: Path) -> None:
     """Linux ARM should not select a Linux x64 generic asset."""
     installer = LlamaInstaller(bin_dir=tmp_path)
@@ -22,6 +26,119 @@ def test_select_github_asset_does_not_choose_wrong_arch(tmp_path: Path) -> None:
 
     selected = installer._select_github_asset(release, backend="cpu")
     assert selected is None
+
+
+def test_get_managed_binary_path_ignores_system_path(tmp_path: Path) -> None:
+    """Managed binary path should always point inside bin_dir."""
+    installer = LlamaInstaller(bin_dir=tmp_path)
+
+    assert installer.get_managed_binary_path() == tmp_path / "llama-server"
+
+
+@pytest.mark.asyncio
+async def test_binary_status_reports_system_managed_path(tmp_path: Path) -> None:
+    """A PATH binary outside bin_dir should be reported but not updateable."""
+    installer = LlamaInstaller(bin_dir=tmp_path)
+    system_binary = tmp_path.parent / "system-llama-server"
+    system_binary.write_text("#!/bin/sh\n")
+
+    with (
+        patch("cyber_inference.services.llama_installer.shutil.which", return_value=str(system_binary)),
+        patch("cyber_inference.services.llama_installer.subprocess.run", return_value=_version_result()),
+    ):
+        status = await installer.get_binary_status()
+
+    assert status["source"] == "system"
+    assert status["binary_path"] == str(system_binary)
+    assert status["is_system_managed"] is True
+    assert status["update_allowed"] is False
+    assert "system" in status["update_blocked_reason"]
+
+
+@pytest.mark.asyncio
+async def test_binary_status_treats_path_to_managed_binary_as_managed(tmp_path: Path) -> None:
+    """A managed binary found through PATH should remain Cyber-Inference managed."""
+    installer = LlamaInstaller(bin_dir=tmp_path)
+    managed_binary = installer.get_managed_binary_path()
+    managed_binary.write_text("#!/bin/sh\n")
+
+    with (
+        patch("cyber_inference.services.llama_installer.shutil.which", return_value=str(managed_binary)),
+        patch("cyber_inference.services.llama_installer.subprocess.run", return_value=_version_result()),
+    ):
+        status = await installer.get_binary_status()
+
+    assert status["source"] == "managed"
+    assert status["binary_path"] == str(managed_binary)
+    assert status["is_system_managed"] is False
+    assert status["update_allowed"] is True
+
+
+@pytest.mark.asyncio
+async def test_binary_status_reports_managed_or_missing_without_path(tmp_path: Path) -> None:
+    """Local managed state should be clear when PATH has no llama-server."""
+    installer = LlamaInstaller(bin_dir=tmp_path)
+
+    with patch("cyber_inference.services.llama_installer.shutil.which", return_value=None):
+        missing = await installer.get_binary_status()
+
+    assert missing["source"] == "missing"
+    assert missing["binary_path"] is None
+    assert missing["managed_binary_path"] == str(tmp_path / "llama-server")
+    assert missing["update_allowed"] is True
+
+    managed_binary = installer.get_managed_binary_path()
+    managed_binary.write_text("#!/bin/sh\n")
+    with (
+        patch("cyber_inference.services.llama_installer.shutil.which", return_value=None),
+        patch("cyber_inference.services.llama_installer.subprocess.run", return_value=_version_result()),
+    ):
+        managed = await installer.get_binary_status()
+
+    assert managed["source"] == "managed"
+    assert managed["binary_path"] == str(managed_binary)
+    assert managed["installed_version"] == "version: 1000 (abc123)"
+
+
+def test_update_available_only_when_versions_are_comparable(tmp_path: Path) -> None:
+    """Version comparison should be conservative."""
+    installer = LlamaInstaller(bin_dir=tmp_path)
+
+    assert installer.get_update_available("version: 1000 (abc123)", "b1001") is True
+    assert installer.get_update_available("version: 1000 (abc123)", "b1000") is False
+    assert installer.get_update_available("llama build unknown", "b1001") is None
+
+
+@pytest.mark.asyncio
+async def test_get_latest_release_info_serializes_selected_asset(tmp_path: Path) -> None:
+    """Release status should expose compact metadata and matching asset name."""
+    installer = LlamaInstaller(bin_dir=tmp_path)
+    release = {
+        "tag_name": "b1001",
+        "name": "Build 1001",
+        "html_url": "https://github.com/ggerganov/llama.cpp/releases/tag/b1001",
+        "published_at": "2026-04-11T00:00:00Z",
+        "assets": [
+            {
+                "name": "llama-b1001-macos-arm64.zip",
+                "browser_download_url": "https://example/llama.zip",
+            }
+        ],
+    }
+    installer._platform = "darwin"
+    installer._arch = "arm64"
+
+    with (
+        patch.object(installer, "get_latest_release", AsyncMock(return_value=release)),
+        patch.object(installer, "detect_gpu_backend", AsyncMock(return_value="metal")),
+    ):
+        info = await installer.get_latest_release_info()
+
+    assert info["tag_name"] == "b1001"
+    assert info["name"] == "Build 1001"
+    assert info["html_url"] == "https://github.com/ggerganov/llama.cpp/releases/tag/b1001"
+    assert info["published_at"] == "2026-04-11T00:00:00Z"
+    assert info["compatible_asset"] == "llama-b1001-macos-arm64.zip"
 
 
 @pytest.mark.asyncio

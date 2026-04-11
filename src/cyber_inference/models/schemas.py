@@ -341,6 +341,30 @@ class SystemResourcesResponse(BaseModel):
     gpu_memory_note: str | None = None
 
 
+class LlamaCppReleaseInfo(BaseModel):
+    """Selected llama.cpp latest-release metadata for admin display."""
+    tag_name: str | None = None
+    name: str | None = None
+    html_url: str | None = None
+    published_at: str | None = None
+    compatible_asset: str | None = None
+
+
+class LlamaCppStatusResponse(BaseModel):
+    """llama.cpp binary provenance and update status."""
+    source: str
+    binary_path: str | None = None
+    managed_binary_path: str
+    installed_version: str | None = None
+    is_system_managed: bool
+    update_allowed: bool
+    update_blocked_reason: str | None = None
+    latest_release: LlamaCppReleaseInfo | None = None
+    latest_release_error: str | None = None
+    update_available: bool | None = None
+    running_llama_sessions: list[str] = Field(default_factory=list)
+
+
 class ConfigurationResponse(BaseModel):
     """Response with configuration value."""
     key: str

@@ -46,6 +46,61 @@
     </div>
     {% endif %}
 
+    <!-- llama.cpp Runtime -->
+    <div class="cyber-card rounded-xl overflow-hidden" id="llamaCppRuntimePanel">
+        <div class="px-6 py-4 border-b border-cyber-neon/20">
+            <h2 class="font-cyber text-xl font-semibold text-cyber-neon flex items-center space-x-2">
+                <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 5h14a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2z" />
+                </svg>
+                <span>LLAMA.CPP RUNTIME</span>
+            </h2>
+        </div>
+        <div class="p-6 space-y-4">
+            <div id="llamaCppStatusMessage" class="text-sm font-mono text-gray-400">
+                Loading llama.cpp runtime status...
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm font-mono">
+                <div class="bg-cyber-dark/50 rounded-lg p-4">
+                    <div class="text-gray-500 text-xs mb-1">Source</div>
+                    <div id="llamaCppSource" class="text-white">-</div>
+                </div>
+                <div class="bg-cyber-dark/50 rounded-lg p-4">
+                    <div class="text-gray-500 text-xs mb-1">Installed Version</div>
+                    <div id="llamaCppInstalledVersion" class="text-white break-all">-</div>
+                </div>
+                <div class="bg-cyber-dark/50 rounded-lg p-4">
+                    <div class="text-gray-500 text-xs mb-1">Binary Path</div>
+                    <div id="llamaCppBinaryPath" class="text-white break-all">-</div>
+                </div>
+                <div class="bg-cyber-dark/50 rounded-lg p-4">
+                    <div class="text-gray-500 text-xs mb-1">Latest GitHub Release</div>
+                    <div id="llamaCppLatestRelease" class="text-white break-all">-</div>
+                    <a id="llamaCppLatestReleaseLink" class="hidden text-cyber-blue hover:underline text-xs mt-1 inline-block" href="#" target="_blank" rel="noopener">
+                        Open release
+                    </a>
+                </div>
+            </div>
+            <div id="llamaCppUpdateBlockedReason" class="hidden text-xs font-mono text-cyber-yellow"></div>
+            <div id="llamaCppLatestReleaseError" class="hidden text-xs font-mono text-cyber-yellow"></div>
+            <div class="flex flex-wrap gap-3">
+                <button onclick="loadLlamaCppStatus()"
+                        class="cyber-btn px-4 py-2 rounded-lg font-mono">
+                    Refresh Status
+                </button>
+                <button onclick="updateLlamaCpp()"
+                        id="llamaCppUpdateBtn"
+                        class="cyber-btn px-4 py-2 rounded-lg font-mono"
+                        disabled>
+                    Update Managed llama.cpp
+                </button>
+            </div>
+            <p class="text-xs text-gray-500 font-mono">
+                System-managed binaries are shown for visibility only. Update them with your OS or package manager.
+            </p>
+        </div>
+    </div>
+
     <!-- Settings Grid -->
     <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <!-- Server Settings -->
@@ -566,6 +621,132 @@
         return false;
     }
 
+    function setText(id, value) {
+        const element = document.getElementById(id);
+        if (!element) return;
+        element.textContent = value || '-';
+    }
+
+    function setNotice(id, message) {
+        const element = document.getElementById(id);
+        if (!element) return;
+        element.textContent = message || '';
+        element.classList.toggle('hidden', !message);
+    }
+
+    function renderLlamaCppStatus(data) {
+        const sourceLabels = {
+            system: 'System-managed',
+            managed: 'Cyber-Inference managed',
+            missing: 'Not installed',
+        };
+        const source = sourceLabels[data.source] || data.source || 'Unknown';
+        const latest = data.latest_release || {};
+        const latestLabel = latest.tag_name
+            ? `${latest.tag_name}${latest.published_at ? ' / ' + latest.published_at : ''}`
+            : 'Unavailable';
+        const releaseLink = document.getElementById('llamaCppLatestReleaseLink');
+        const updateBtn = document.getElementById('llamaCppUpdateBtn');
+
+        setText('llamaCppSource', source);
+        setText('llamaCppInstalledVersion', data.installed_version || 'Not installed');
+        setText('llamaCppBinaryPath', data.binary_path || data.managed_binary_path);
+        setText('llamaCppLatestRelease', latestLabel);
+        setNotice('llamaCppUpdateBlockedReason', data.update_blocked_reason || '');
+        setNotice(
+            'llamaCppLatestReleaseError',
+            data.latest_release_error ? `Latest release unavailable: ${data.latest_release_error}` : '',
+        );
+
+        if (releaseLink) {
+            if (latest.html_url) {
+                releaseLink.href = latest.html_url;
+                releaseLink.classList.remove('hidden');
+            } else {
+                releaseLink.classList.add('hidden');
+            }
+        }
+
+        if (updateBtn) {
+            updateBtn.disabled = !data.update_allowed;
+            updateBtn.textContent = data.source === 'missing'
+                ? 'Install Managed llama.cpp'
+                : 'Update Managed llama.cpp';
+        }
+
+        let message = 'llama.cpp status loaded.';
+        if (data.source === 'system') {
+            message = 'System-managed binary detected. Update it with your OS/package manager.';
+        } else if (data.running_llama_sessions && data.running_llama_sessions.length > 0) {
+            message = 'Unload llama.cpp models before updating.';
+        } else if (data.source === 'missing') {
+            message = 'llama.cpp is not installed locally. Install the managed copy to enable llama models.';
+        } else if (data.update_available === true) {
+            message = 'A newer comparable llama.cpp release is available.';
+        } else if (data.update_available === false) {
+            message = 'Installed llama.cpp build matches the latest comparable release.';
+        } else {
+            message = 'Version comparison is unavailable; installed and latest release are shown separately.';
+        }
+        setText('llamaCppStatusMessage', message);
+    }
+
+    async function loadLlamaCppStatus() {
+        setText('llamaCppStatusMessage', 'Loading llama.cpp runtime status...');
+        try {
+            const response = await adminFetch('/admin/llama-cpp/status', {
+                cache: 'no-store',
+            });
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+            const data = await response.json();
+            renderLlamaCppStatus(data);
+        } catch (error) {
+            console.error('Error loading llama.cpp status:', error);
+            setText('llamaCppStatusMessage', 'Unable to load llama.cpp runtime status.');
+            showToast({ tone: 'danger', message: 'Unable to load llama.cpp status.' });
+        }
+    }
+
+    async function updateLlamaCpp() {
+        const confirmed = await confirmAction({
+            tone: 'warning',
+            title: 'Update Managed llama.cpp',
+            message: 'Download and replace the Cyber-Inference managed llama.cpp binary? Unload llama.cpp models before updating.',
+            confirmText: 'Update',
+            cancelText: 'Cancel',
+        });
+        if (!confirmed) return;
+
+        const updateBtn = document.getElementById('llamaCppUpdateBtn');
+        const originalText = updateBtn ? updateBtn.textContent : '';
+        if (updateBtn) {
+            updateBtn.disabled = true;
+            updateBtn.textContent = 'Updating...';
+        }
+
+        try {
+            const response = await adminFetch('/admin/llama-cpp/update', {
+                method: 'POST',
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(data.detail || `HTTP ${response.status}`);
+            }
+            renderLlamaCppStatus(data);
+            showToast({ tone: 'success', message: 'Managed llama.cpp updated.' });
+        } catch (error) {
+            console.error('Error updating llama.cpp:', error);
+            showToast({ tone: 'danger', message: 'Unable to update llama.cpp: ' + error.message });
+            await loadLlamaCppStatus();
+        } finally {
+            if (updateBtn && updateBtn.textContent === 'Updating...') {
+                updateBtn.textContent = originalText || 'Update Managed llama.cpp';
+            }
+        }
+    }
+
         async function saveSettings(event) {
         event.preventDefault();
 
@@ -920,5 +1101,9 @@
             showToast({ tone: 'danger', message: 'Error shutting down server.' });
         }
     }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        loadLlamaCppStatus();
+    });
 </script>
 {% endblock %}
