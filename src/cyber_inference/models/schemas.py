@@ -176,6 +176,15 @@ class EmbeddingResponse(BaseModel):
     usage: dict
 
 
+class ModelContext(BaseModel):
+    """Context-window metadata for model discovery."""
+    length: int | None = None
+    window: int | None = None
+    configured_length: int | None = None
+    native_length: int | None = None
+    source: str | None = None
+
+
 class ModelCapabilities(BaseModel):
     """Simple capability metadata for a model."""
     vision: bool = False
@@ -197,6 +206,10 @@ class ModelInfo(BaseModel):
     is_loaded: bool | None = None
     status: str | None = None
     capabilities: ModelCapabilities | None = None
+    context: ModelContext | None = None
+    context_length: int | None = None
+    max_context_length: int | None = None
+    context_window: int | None = None
 
 
 class ModelsResponse(BaseModel):

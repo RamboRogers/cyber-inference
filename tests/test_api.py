@@ -86,6 +86,8 @@ async def test_v1_models_endpoint_includes_runtime_and_capabilities():
                 "model_type": "chat",
                 "mmproj_path": "/tmp/mmproj-demo.gguf",
                 "is_vlm": True,
+                "context_length": 131072,
+                "default_context_size": 65536,
             }
         ]
     )
@@ -98,6 +100,12 @@ async def test_v1_models_endpoint_includes_runtime_and_capabilities():
                 "effective_config": {
                     "tool_calling": {"status": "supported"},
                     "vision": {"enabled": True},
+                    "launch_config": {
+                        "context_size": 65536,
+                        "configured_context_size": 65536,
+                        "native_context_size": 131072,
+                        "context_source": "configured_default",
+                    },
                 },
             }
         }
@@ -118,9 +126,115 @@ async def test_v1_models_endpoint_includes_runtime_and_capabilities():
         assert model["server_type"] == "llama"
         assert model["capabilities"]["vision"] is True
         assert model["capabilities"]["tool_calling"] == "supported"
+        assert model["context"] == {
+            "length": 65536,
+            "window": 65536,
+            "configured_length": 65536,
+            "native_length": 131072,
+            "source": "configured_default",
+        }
+        assert model["context_length"] == 65536
+        assert model["max_context_length"] == 65536
+        assert model["context_window"] == 65536
         auto_loader.get_models_status.assert_awaited_once()
     finally:
         app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_v1_model_detail_includes_context_metadata():
+    """The model detail endpoint should expose the same context metadata as the list endpoint."""
+    auto_loader = MagicMock()
+    auto_loader.get_model_info = AsyncMock(
+        return_value={
+            "name": "demo-model",
+            "engine_type": "llama",
+            "model_type": "chat",
+            "context_length": 32768,
+            "default_context_size": None,
+        }
+    )
+    auto_loader.get_model_status = AsyncMock(
+        return_value={
+            "is_loaded": True,
+            "status": "running",
+            "server_type": "llama",
+            "effective_config": {
+                "tool_calling": {"status": "unknown"},
+                "launch_config": {
+                    "context_size": 8192,
+                    "configured_context_size": None,
+                    "native_context_size": 32768,
+                    "context_source": "running",
+                },
+            },
+        }
+    )
+
+    with patch("cyber_inference.api.v1.get_auto_loader", return_value=auto_loader):
+        async with make_test_client() as client:
+            response = await client.get("/v1/models/demo-model")
+
+    assert response.status_code == 200
+    model = response.json()
+    assert model["id"] == "demo-model"
+    assert model["context"]["length"] == 8192
+    assert model["context"]["window"] == 8192
+    assert model["context"]["configured_length"] is None
+    assert model["context"]["native_length"] == 32768
+    assert model["context"]["source"] == "running"
+    assert model["context_length"] == 8192
+    assert model["max_context_length"] == 8192
+    assert model["context_window"] == 8192
+
+
+@pytest.mark.asyncio
+async def test_v1_models_context_metadata_tolerates_missing_launch_config():
+    """Missing launch config should not break model-list serialization."""
+    async def override_get_db():
+        yield MagicMock()
+
+    auto_loader = MagicMock()
+    auto_loader.list_available_models = AsyncMock(
+        return_value=[
+            {
+                "name": "minimal-model",
+                "engine_type": "llama",
+                "model_type": "chat",
+            }
+        ]
+    )
+    auto_loader.get_models_status = AsyncMock(
+        return_value={
+            "minimal-model": {
+                "is_loaded": False,
+                "status": "not_loaded",
+                "server_type": "llama",
+                "effective_config": {"tool_calling": {"status": "unsupported"}},
+            }
+        }
+    )
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        with patch("cyber_inference.api.v1.get_auto_loader", return_value=auto_loader):
+            async with make_test_client() as client:
+                response = await client.get("/v1/models")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    model = response.json()["data"][0]
+    assert model["context"] == {
+        "length": None,
+        "window": None,
+        "configured_length": None,
+        "native_length": None,
+        "source": None,
+    }
+    assert model["context_length"] is None
+    assert model["max_context_length"] is None
+    assert model["context_window"] is None
 
 
 @pytest.mark.asyncio

@@ -42,6 +42,7 @@ from cyber_inference.models.schemas import (
     EmbeddingRequest,
     EmbeddingResponse,
     ModelCapabilities,
+    ModelContext,
     ModelInfo,
     ModelsResponse,
     TranscriptionResponse,
@@ -521,10 +522,73 @@ async def _validate_tool_calling_request(
         raise HTTPException(status_code=400, detail=detail)
 
 
+def _optional_int(value) -> int | None:
+    """Coerce context values from runtime metadata without making response building fragile."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        with suppress(ValueError):
+            return int(stripped)
+    return None
+
+
+def _first_present(*values: int | None) -> int | None:
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
+
+def _build_model_context(model: dict, status_info: dict) -> ModelContext:
+    effective_config = status_info.get("effective_config", {})
+    if not isinstance(effective_config, dict):
+        effective_config = {}
+
+    launch_config = effective_config.get("launch_config", {})
+    if not isinstance(launch_config, dict):
+        launch_config = {}
+
+    configured_length = _first_present(
+        _optional_int(launch_config.get("configured_context_size")),
+        _optional_int(model.get("default_context_size")),
+    )
+    native_length = _first_present(
+        _optional_int(launch_config.get("native_context_size")),
+        _optional_int(model.get("context_length")),
+    )
+    length = _first_present(
+        _optional_int(launch_config.get("context_size")),
+        configured_length,
+        native_length,
+    )
+    source = launch_config.get("context_source")
+    source = source if isinstance(source, str) else None
+
+    return ModelContext(
+        length=length,
+        window=length,
+        configured_length=configured_length,
+        native_length=native_length,
+        source=source,
+    )
+
+
 def _build_model_info(model: dict, status_info: dict) -> ModelInfo:
     effective_config = status_info.get("effective_config", {})
+    if not isinstance(effective_config, dict):
+        effective_config = {}
     tool_info = effective_config.get("tool_calling", {})
+    if not isinstance(tool_info, dict):
+        tool_info = {}
     tool_status = tool_info.get("status", "unsupported")
+    context = _build_model_context(model, status_info)
 
     capabilities = ModelCapabilities(
         vision=bool(model.get("mmproj_path") or model.get("is_vlm")),
@@ -541,6 +605,10 @@ def _build_model_info(model: dict, status_info: dict) -> ModelInfo:
         is_loaded=status_info.get("is_loaded"),
         status=status_info.get("status"),
         capabilities=capabilities,
+        context=context,
+        context_length=context.length,
+        max_context_length=context.length,
+        context_window=context.length,
     )
 
 
