@@ -155,11 +155,17 @@ Environment variables use the `CYBER_INFERENCE_` prefix.
 | `CYBER_INFERENCE_DEFAULT_CONTEXT_SIZE` | `8192` | Default context for llama.cpp |
 | `CYBER_INFERENCE_MAX_CONTEXT_SIZE` | `32768` | Max allowed context |
 | `CYBER_INFERENCE_MODEL_IDLE_TIMEOUT` | `300` | Idle unload timeout in seconds |
+| `CYBER_INFERENCE_MODEL_LOAD_TIMEOUT` | `300` | Startup readiness timeout in seconds |
 | `CYBER_INFERENCE_MAX_LOADED_MODELS` | `1` | Max simultaneously loaded models |
 | `CYBER_INFERENCE_MAX_MEMORY_PERCENT` | `80` | Memory pressure threshold |
 | `CYBER_INFERENCE_LLAMA_GPU_LAYERS` | `-1` | llama.cpp GPU layer setting |
 | `CYBER_INFERENCE_ADMIN_PASSWORD` | unset | Enables admin auth when set |
 | `CYBER_INFERENCE_HF_TOKEN` | unset | HuggingFace token for private repos |
+
+Large models can take several minutes before their backend server reports ready. The
+`Model Load Timeout (seconds)` admin setting controls how long Cyber-Inference waits during model
+startup before treating the load as failed. If startup times out, the launched backend process is
+terminated and its port is released.
 
 ## Admin Endpoints
 

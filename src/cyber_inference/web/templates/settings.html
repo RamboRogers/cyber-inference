@@ -139,6 +139,16 @@
                                value="{{ settings.max_loaded_models }}"
                                class="cyber-input w-full px-4 py-2 rounded-lg font-mono" min="1" required>
                     </div>
+                    <div>
+                        <label class="block text-sm font-mono text-gray-400 mb-2">Model Load Timeout (seconds)</label>
+                        <input type="number" id="model_load_timeout" name="model_load_timeout"
+                               value="{{ settings.model_load_timeout }}"
+                               class="cyber-input w-full px-4 py-2 rounded-lg font-mono"
+                               min="30" max="3600" required>
+                        <p class="text-xs text-gray-500 mt-1">
+                            How long Cyber-Inference waits for llama.cpp, transformers, or whisper servers to become ready. Large GGUF models may need several minutes.
+                        </p>
+                    </div>
                 </div>
             </div>
 
@@ -538,6 +548,7 @@
             const maxContextSize = parseInt(document.getElementById('max_context_size').value);
             const idleUnloadEnabled = document.getElementById('model_idle_unload_enabled').checked;
             const maxLoadedModels = parseInt(document.getElementById('max_loaded_models').value);
+            const modelLoadTimeout = parseInt(document.getElementById('model_load_timeout').value);
             const maxMemoryPercent = parseInt(document.getElementById('max_memory_percent').value);
             const llamaGpuLayers = parseInt(document.getElementById('llama_gpu_layers').value);
             const modelIdleTimeoutInput = document.getElementById('model_idle_timeout');
@@ -572,6 +583,13 @@
                 return;
             }
 
+            if (modelLoadTimeout < 30 || modelLoadTimeout > 3600) {
+                showToast({ tone: 'warning', message: 'Model load timeout must be between 30 and 3600 seconds.' });
+                saveBtn.disabled = false;
+                saveBtn.innerHTML = originalText;
+                return;
+            }
+
             if (maxMemoryPercent < 50 || maxMemoryPercent > 95) {
                 showToast({ tone: 'warning', message: 'Max memory percent must be between 50 and 95.' });
                 saveBtn.disabled = false;
@@ -585,6 +603,7 @@
                 { key: 'max_context_size', value: maxContextSize },
                 { key: 'model_idle_unload_enabled', value: idleUnloadEnabled },
                 { key: 'model_idle_timeout', value: modelIdleTimeout },
+                { key: 'model_load_timeout', value: modelLoadTimeout },
                 { key: 'max_loaded_models', value: maxLoadedModels },
                 { key: 'max_memory_percent', value: maxMemoryPercent },
                 { key: 'llama_gpu_layers', value: llamaGpuLayers },

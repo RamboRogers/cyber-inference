@@ -63,6 +63,20 @@ def _normalize_optional_string(value: object) -> str | None:
     return text or None
 
 
+def _validate_global_config_value(key: str, value: object) -> None:
+    """Validate admin-configurable global settings before persistence."""
+    if key == "model_load_timeout":
+        try:
+            timeout = int(value)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="model_load_timeout must be an integer")
+        if timeout < 30 or timeout > 3600:
+            raise HTTPException(
+                status_code=400,
+                detail="model_load_timeout must be between 30 and 3600 seconds",
+            )
+
+
 def _get_auto_loader() -> AutoLoader:
     """Get the auto-loader instance."""
     from cyber_inference.api.v1 import get_auto_loader
@@ -790,6 +804,7 @@ async def get_config(
         "max_context_size": settings.max_context_size,
         "model_idle_unload_enabled": settings.model_idle_unload_enabled,
         "model_idle_timeout": settings.model_idle_timeout,
+        "model_load_timeout": settings.model_load_timeout,
         "max_loaded_models": settings.max_loaded_models,
         "max_memory_percent": settings.max_memory_percent,
         "llama_gpu_layers": settings.llama_gpu_layers,
@@ -801,6 +816,7 @@ async def get_config(
             "max_context_size",
             "model_idle_unload_enabled",
             "model_idle_timeout",
+            "model_load_timeout",
             "max_loaded_models",
             "max_memory_percent",
             "llama_gpu_layers",
@@ -827,6 +843,8 @@ async def update_config(
     Update a configuration value.
     """
     logger.info(f"[info]PUT /admin/config/{key}[/info]")
+
+    _validate_global_config_value(key, update.value)
 
     async with get_db_session() as session:
         result = await session.execute(

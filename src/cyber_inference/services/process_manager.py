@@ -15,6 +15,7 @@ import socket
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import cast
 
 import httpx
 import psutil
@@ -277,9 +278,10 @@ class ProcessManager:
 
         launch_config: dict[str, object] = {}
         if effective_config and isinstance(effective_config.get("launch_config"), dict):
+            raw_launch_config = cast(dict[object, object], effective_config["launch_config"])
             launch_config = {
                 str(key): value
-                for key, value in effective_config["launch_config"].items()
+                for key, value in raw_launch_config.items()
             }
 
         cmd = self._build_llama_server_command(
@@ -333,7 +335,7 @@ class ProcessManager:
             asyncio.create_task(self._monitor_output(model_name, process))
 
             # Wait for server to be ready
-            await self._wait_for_ready(model_name, port)
+            await self._wait_for_ready(model_name, port, timeout=float(settings.model_load_timeout))
 
             llama_proc.status = "running"
             logger.info(f"[success]llama-server ready for {model_name} on port {port}[/success]")
@@ -344,7 +346,7 @@ class ProcessManager:
             logger.error(f"[error]Failed to start llama-server: {e}[/error]")
             llama_proc.status = "error"
             llama_proc.error_message = str(e)
-            self._release_port(port)
+            await self._cleanup_failed_start(model_name, llama_proc, port)
             raise
 
     def _build_llama_server_command(
@@ -494,7 +496,11 @@ class ProcessManager:
             asyncio.create_task(self._monitor_output(model_name, process))
 
             # Wait for whisper server to be ready
-            await self._wait_for_whisper_ready(model_name, port)
+            await self._wait_for_whisper_ready(
+                model_name,
+                port,
+                timeout=float(settings.model_load_timeout),
+            )
 
             whisper_proc.status = "running"
             logger.info(f"[success]whisper-server ready for {model_name} on port {port}[/success]")
@@ -505,7 +511,7 @@ class ProcessManager:
             logger.error(f"[error]Failed to start whisper-server: {e}[/error]")
             whisper_proc.status = "error"
             whisper_proc.error_message = str(e)
-            self._release_port(port)
+            await self._cleanup_failed_start(model_name, whisper_proc, port)
             raise
 
     async def _wait_for_whisper_ready(
@@ -584,6 +590,8 @@ class ProcessManager:
                 logger.warning(f"Model {model_name} already running on port {existing.port}")
                 return existing
 
+        settings = get_settings()
+
         # Allocate port
         port = self._find_available_port()
         logger.info(f"  Allocated port: {port}")
@@ -642,7 +650,12 @@ class ProcessManager:
             asyncio.create_task(self._monitor_output(model_name, process))
 
             # Wait for server to be ready (uses same /health + /v1/models check)
-            await self._wait_for_server_ready(model_name, port, timeout=300.0, server_label="Transformers")
+            await self._wait_for_server_ready(
+                model_name,
+                port,
+                timeout=float(settings.model_load_timeout),
+                server_label="Transformers",
+            )
 
             tf_proc.status = "running"
             logger.info(
@@ -655,7 +668,7 @@ class ProcessManager:
             logger.error(f"[error]Failed to start transformers server: {e}[/error]")
             tf_proc.status = "error"
             tf_proc.error_message = str(e)
-            self._release_port(port)
+            await self._cleanup_failed_start(model_name, tf_proc, port)
             raise
 
     async def _wait_for_server_ready(
@@ -824,6 +837,33 @@ class ProcessManager:
 
                 logger.debug(f"  Waiting for server... ({elapsed:.1f}s)")
                 await asyncio.sleep(check_interval)
+
+    async def _cleanup_failed_start(
+        self,
+        model_name: str,
+        proc: LlamaProcess,
+        port: int,
+    ) -> None:
+        """Clean up a subprocess that failed before becoming ready."""
+        try:
+            process = proc.process
+            if process and process.returncode is None:
+                logger.info(f"[info]Cleaning up failed startup for {model_name}[/info]")
+                process.terminate()
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=10.0)
+                except TimeoutError:
+                    logger.warning(
+                        f"[warning]Force killing failed startup process: {model_name}[/warning]"
+                    )
+                    process.kill()
+                    await process.wait()
+        except Exception as cleanup_error:
+            logger.warning(f"[warning]Failed startup cleanup issue: {cleanup_error}[/warning]")
+        finally:
+            self._release_port(port)
+            if self._processes.get(model_name) is proc:
+                del self._processes[model_name]
 
     async def stop_server(self, model_name: str, timeout: float = 10.0) -> None:
         """

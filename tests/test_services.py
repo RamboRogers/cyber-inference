@@ -101,6 +101,7 @@ class TestSettings:
         assert settings.log_level == "INFO"
         assert settings.default_context_size == 8192
         assert settings.model_idle_unload_enabled is False
+        assert settings.model_load_timeout == 300
         assert settings.max_loaded_models == 1
 
     def test_settings_from_env(self, monkeypatch):
@@ -747,6 +748,148 @@ class TestProcessManager:
 
         assert "--jinja" in cmd
 
+    @pytest.mark.asyncio
+    async def test_start_server_uses_configured_model_load_timeout(self, temp_dirs):
+        from cyber_inference.services.process_manager import ProcessManager
+
+        models_dir, bin_dir = temp_dirs
+        pm = ProcessManager(models_dir=models_dir, bin_dir=bin_dir)
+        process = MagicMock(pid=1234, returncode=None, stdout=None)
+        settings = MagicMock(
+            default_context_size=8192,
+            llama_gpu_layers=-1,
+            llama_threads=None,
+            model_load_timeout=444,
+        )
+        wait_for_ready = AsyncMock()
+
+        with (
+            patch("cyber_inference.services.process_manager.get_settings", return_value=settings),
+            patch.object(pm._installer, "get_binary_path", return_value=Path("/tmp/llama-server")),
+            patch.object(pm, "_find_available_port", return_value=9338),
+            patch("asyncio.create_subprocess_exec", AsyncMock(return_value=process)),
+            patch.object(pm, "_wait_for_ready", wait_for_ready),
+        ):
+            await pm.start_server("demo", Path("/tmp/demo.gguf"))
+
+        wait_for_ready.assert_awaited_once_with("demo", 9338, timeout=444.0)
+
+    @pytest.mark.asyncio
+    async def test_start_whisper_and_transformers_use_configured_model_load_timeout(self, temp_dirs):
+        from cyber_inference.services.process_manager import ProcessManager
+
+        models_dir, bin_dir = temp_dirs
+        pm = ProcessManager(models_dir=models_dir, bin_dir=bin_dir)
+        settings = MagicMock(llama_threads=None, model_load_timeout=555)
+        wait_for_whisper_ready = AsyncMock()
+
+        with (
+            patch("cyber_inference.services.process_manager.get_settings", return_value=settings),
+            patch.object(pm._whisper_installer, "is_installed", return_value=True),
+            patch.object(pm._whisper_installer, "get_binary_path", return_value=Path("/tmp/whisper-server")),
+            patch.object(pm, "_find_available_port", return_value=9339),
+            patch("asyncio.create_subprocess_exec", AsyncMock(return_value=MagicMock(pid=1, returncode=None, stdout=None))),
+            patch.object(pm, "_wait_for_whisper_ready", wait_for_whisper_ready),
+        ):
+            await pm.start_whisper_server("whisper", Path("/tmp/whisper.bin"))
+
+        wait_for_whisper_ready.assert_awaited_once_with("whisper", 9339, timeout=555.0)
+
+        wait_for_server_ready = AsyncMock()
+        with (
+            patch("cyber_inference.services.process_manager.get_settings", return_value=settings),
+            patch.object(pm, "_find_available_port", return_value=9340),
+            patch("asyncio.create_subprocess_exec", AsyncMock(return_value=MagicMock(pid=2, returncode=None, stdout=None))),
+            patch.object(pm, "_wait_for_server_ready", wait_for_server_ready),
+        ):
+            await pm.start_transformers_server("tf", Path("/tmp/tf"))
+
+        wait_for_server_ready.assert_awaited_once_with(
+            "tf",
+            9340,
+            timeout=555.0,
+            server_label="Transformers",
+        )
+
+    @pytest.mark.asyncio
+    async def test_cleanup_failed_start_terminates_and_removes_owned_process(self, temp_dirs):
+        from cyber_inference.services.process_manager import LlamaProcess, ProcessManager
+
+        models_dir, bin_dir = temp_dirs
+        pm = ProcessManager(models_dir=models_dir, bin_dir=bin_dir, base_port=49338)
+        process = MagicMock(returncode=None)
+        process.wait = AsyncMock(return_value=0)
+        proc = LlamaProcess(
+            model_name="demo",
+            model_path=Path("/tmp/demo.gguf"),
+            port=49338,
+            process=process,
+        )
+        pm._processes["demo"] = proc
+        pm._port_allocations.add(49338)
+
+        await pm._cleanup_failed_start("demo", proc, 49338)
+
+        process.terminate.assert_called_once()
+        process.kill.assert_not_called()
+        assert "demo" not in pm._processes
+        assert 49338 not in pm._port_allocations
+
+    @pytest.mark.asyncio
+    async def test_cleanup_failed_start_preserves_newer_process_entry(self, temp_dirs):
+        from cyber_inference.services.process_manager import LlamaProcess, ProcessManager
+
+        models_dir, bin_dir = temp_dirs
+        pm = ProcessManager(models_dir=models_dir, bin_dir=bin_dir, base_port=49339)
+        old_proc = LlamaProcess(
+            model_name="demo",
+            model_path=Path("/tmp/old.gguf"),
+            port=49339,
+            process=None,
+        )
+        new_proc = LlamaProcess(
+            model_name="demo",
+            model_path=Path("/tmp/new.gguf"),
+            port=49340,
+            process=None,
+        )
+        pm._processes["demo"] = new_proc
+        pm._port_allocations.add(49339)
+
+        await pm._cleanup_failed_start("demo", old_proc, 49339)
+
+        assert pm._processes["demo"] is new_proc
+        assert 49339 not in pm._port_allocations
+
+    @pytest.mark.asyncio
+    async def test_start_server_timeout_cleans_up_failed_process(self, temp_dirs):
+        from cyber_inference.services.process_manager import ProcessManager
+
+        models_dir, bin_dir = temp_dirs
+        pm = ProcessManager(models_dir=models_dir, bin_dir=bin_dir, base_port=49340)
+        process = MagicMock(pid=4321, returncode=None, stdout=None)
+        process.wait = AsyncMock(return_value=0)
+        settings = MagicMock(
+            default_context_size=8192,
+            llama_gpu_layers=-1,
+            llama_threads=None,
+            model_load_timeout=30,
+        )
+
+        with (
+            patch("cyber_inference.services.process_manager.get_settings", return_value=settings),
+            patch.object(pm._installer, "get_binary_path", return_value=Path("/tmp/llama-server")),
+            patch.object(pm, "_find_available_port", return_value=49340),
+            patch("asyncio.create_subprocess_exec", AsyncMock(return_value=process)),
+            patch.object(pm, "_wait_for_ready", AsyncMock(side_effect=TimeoutError("Server failed to start within 30s"))),
+        ):
+            with pytest.raises(TimeoutError, match="30s"):
+                await pm.start_server("demo", Path("/tmp/demo.gguf"))
+
+        process.terminate.assert_called_once()
+        assert "demo" not in pm._processes
+        assert 49340 not in pm._port_allocations
+
 
 class TestAutoLoader:
     """Tests for auto-loader service."""
@@ -906,6 +1049,28 @@ class TestAutoLoader:
         assert result["applied_live"] is True
         assert result["reload_triggered"] is False
         assert result["restart_required"] is False
+
+    @pytest.mark.asyncio
+    async def test_model_load_timeout_applies_live_without_reload(self):
+        from cyber_inference.services.auto_loader import AutoLoader
+
+        loader = AutoLoader()
+        loader.refresh_runtime_settings = MagicMock(
+            return_value={
+                "idle_timeout": 300,
+                "load_timeout": 600,
+                "idle_unload_enabled": False,
+                "max_loaded_models": 1,
+                "max_memory_percent": 80.0,
+            }
+        )
+
+        result = await loader.reconcile_global_config_change("model_load_timeout")
+
+        assert result["applied_live"] is True
+        assert result["reload_triggered"] is False
+        assert result["restart_required"] is False
+        assert result["runtime_policy"]["load_timeout"] == 600
 
     @pytest.mark.asyncio
     async def test_load_model_prefers_native_context_when_no_override(self):

@@ -33,6 +33,7 @@ GLOBAL_RUNTIME_REFRESH_KEYS = {
     "max_context_size",
     "model_idle_unload_enabled",
     "model_idle_timeout",
+    "model_load_timeout",
     "max_loaded_models",
     "max_memory_percent",
     "llama_gpu_layers",
@@ -111,6 +112,7 @@ class AutoLoader:
         self._resource_monitor = resource_monitor
 
         self._idle_timeout = settings.model_idle_timeout
+        self._load_timeout = settings.model_load_timeout
         self._max_loaded = settings.max_loaded_models
         self._max_memory_percent = settings.max_memory_percent
         self._idle_unload_enabled = settings.model_idle_unload_enabled
@@ -321,11 +323,13 @@ class AutoLoader:
         """Refresh runtime policy values from cached settings."""
         settings = get_settings()
         self._idle_timeout = settings.model_idle_timeout
+        self._load_timeout = settings.model_load_timeout
         self._max_loaded = settings.max_loaded_models
         self._max_memory_percent = settings.max_memory_percent
         self._idle_unload_enabled = settings.model_idle_unload_enabled
         return {
             "idle_timeout": self._idle_timeout,
+            "load_timeout": self._load_timeout,
             "idle_unload_enabled": self._idle_unload_enabled,
             "max_loaded_models": self._max_loaded,
             "max_memory_percent": self._max_memory_percent,

@@ -20,10 +20,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 
 from cyber_inference.core.database import get_db
 from cyber_inference.main import app
-from cyber_inference.models.db_models import Model
+from cyber_inference.models.db_models import Configuration, Model
 from cyber_inference.models.schemas import ChatCompletionRequest, ChatMessage
 
 
@@ -238,6 +239,7 @@ async def test_admin_config():
         assert "port" in data
         assert "log_level" in data
         assert "model_idle_unload_enabled" in data
+        assert data["model_load_timeout"] == 300
 
 
 @pytest.mark.asyncio
@@ -832,6 +834,66 @@ async def test_update_idle_toggle_returns_live_apply_without_reload(test_db):
 
 
 @pytest.mark.asyncio
+async def test_update_model_load_timeout_returns_live_apply_without_reload(test_db):
+    """Model load timeout changes should apply to future loads without reload."""
+
+    @asynccontextmanager
+    async def override_get_db_session():
+        yield test_db
+
+    auto_loader = MagicMock()
+    auto_loader.reconcile_global_config_change = AsyncMock(
+        return_value={
+            "applied_live": True,
+            "reload_triggered": False,
+            "reloaded_models": [],
+            "restart_required": False,
+        }
+    )
+
+    with (
+        patch("cyber_inference.api.admin.get_db_session", override_get_db_session),
+        patch("cyber_inference.api.admin._get_auto_loader", return_value=auto_loader),
+    ):
+        async with make_test_client() as client:
+            response = await client.put(
+                "/admin/config/model_load_timeout",
+                json={"value": 600},
+            )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["value"] == 600
+    assert data["applied_live"] is True
+    assert data["reload_triggered"] is False
+    assert data["restart_required"] is False
+
+
+@pytest.mark.asyncio
+async def test_update_model_load_timeout_rejects_out_of_range_values(test_db):
+    """Model load timeout bounds should be enforced before persistence."""
+
+    @asynccontextmanager
+    async def override_get_db_session():
+        yield test_db
+
+    auto_loader = MagicMock()
+
+    with (
+        patch("cyber_inference.api.admin.get_db_session", override_get_db_session),
+        patch("cyber_inference.api.admin._get_auto_loader", return_value=auto_loader),
+    ):
+        async with make_test_client() as client:
+            low = await client.put("/admin/config/model_load_timeout", json={"value": 29})
+            high = await client.put("/admin/config/model_load_timeout", json={"value": 3601})
+
+    assert low.status_code == 400
+    assert high.status_code == 400
+    result = await test_db.execute(select(Configuration).where(Configuration.key == "model_load_timeout"))
+    assert result.scalar_one_or_none() is None
+
+
+@pytest.mark.asyncio
 async def test_load_model_endpoint_honors_context_override():
     """Manual load requests should be able to override the load-time context size."""
     auto_loader = MagicMock()
@@ -1129,6 +1191,20 @@ if (!document.getElementById('shardInfo').textContent.includes('3/3 files')) {{
 
     result = subprocess.run(["node", "-e", harness], text=True, capture_output=True, check=False)
     assert result.returncode == 0, result.stderr
+
+
+def test_settings_template_saves_model_load_timeout():
+    """Settings UI should expose and save model load timeout."""
+    template = Path("src/cyber_inference/web/templates/settings.html").read_text()
+
+    assert "Model Load Timeout (seconds)" in template
+    assert 'id="model_load_timeout"' in template
+    assert 'min="30"' in template
+    assert 'max="3600"' in template
+    assert "Large GGUF models may need several minutes" in template
+    assert "const modelLoadTimeout" in template
+    assert "model_load_timeout" in template
+    assert "Model load timeout must be between 30 and 3600 seconds." in template
 
 
 @pytest.mark.asyncio

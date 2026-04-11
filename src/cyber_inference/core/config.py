@@ -47,6 +47,7 @@ CONFIG_DB_CASTS: dict[str, ConfigCaster] = {
     "max_context_size": int,
     "model_idle_unload_enabled": _parse_bool,
     "model_idle_timeout": int,
+    "model_load_timeout": int,
     "max_loaded_models": int,
     "max_memory_percent": float,
     "llama_gpu_layers": int,
@@ -93,6 +94,10 @@ class Settings(BaseSettings):
         description="Whether idle timer unloading is enabled",
     )
     model_idle_timeout: int = Field(default=300, description="Seconds before unloading idle model")
+    model_load_timeout: int = Field(
+        default=300,
+        description="Seconds to wait for model server startup",
+    )
     max_loaded_models: int = Field(default=1, description="Maximum number of simultaneously loaded models")
 
     # Resource limits

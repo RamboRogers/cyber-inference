@@ -11,14 +11,21 @@
   wrong-sized shards, and support forced redownloads.
 - Graceful split-GGUF database upgrade behavior for legacy shard-named rows.
 - Downloader UI metadata for split GGUF models.
+- Admin-adjustable model load timeout, defaulting to 300 seconds.
 
 ### Changed
 - `ModelManager.download_model()` now returns a `ModelDownloadResult` carrying the canonical model
   name, primary path, aggregate size, and shard metadata.
 - Admin download responses now look up the canonical registered model name returned by the backend.
 - CLI GGUF downloads now report the resolved local model path from `ModelDownloadResult`.
+- Backend startup waits now use the configured model load timeout across llama.cpp, whisper.cpp, and
+  transformers servers.
+
+### Fixed
+- Timed-out backend startups now terminate the launched process, release the allocated port, and
+  avoid leaving stale process tracking behind.
 
 ### Verification
-- `uv run pytest` passed with 94 tests.
+- `uv run pytest` passed with 103 tests.
 - Scoped ruff checks on changed implementation and tests passed.
 - `uv run mypy src/cyber_inference/services/model_manager.py --ignore-missing-imports` passed.
