@@ -48,6 +48,9 @@ CONFIG_DB_CASTS: dict[str, ConfigCaster] = {
     "model_idle_unload_enabled": _parse_bool,
     "model_idle_timeout": int,
     "model_load_timeout": int,
+    "pre_model_load_command_enabled": _parse_bool,
+    "pre_model_load_command": _parse_optional_str,
+    "pre_model_load_command_timeout": int,
     "max_loaded_models": int,
     "max_memory_percent": float,
     "llama_gpu_layers": int,
@@ -97,6 +100,18 @@ class Settings(BaseSettings):
     model_load_timeout: int = Field(
         default=300,
         description="Seconds to wait for model server startup",
+    )
+    pre_model_load_command_enabled: bool = Field(
+        default=False,
+        description="Run a host command before starting model servers",
+    )
+    pre_model_load_command: str | None = Field(
+        default="sudo sysctl -w vm.drop_caches=3",
+        description="Host command to run before model load",
+    )
+    pre_model_load_command_timeout: int = Field(
+        default=15,
+        description="Seconds to wait for pre-model load command",
     )
     max_loaded_models: int = Field(default=1, description="Maximum number of simultaneously loaded models")
 
@@ -218,7 +233,12 @@ async def load_db_config_overrides() -> dict[str, object]:
             overrides[config.key] = cast(config.value)
         except (TypeError, ValueError):
             overrides[config.key] = config.value
-        if config.key in {"admin_password", "llama_tool_template", "llama_tool_template_file"}:
+        if config.key in {
+            "admin_password",
+            "llama_tool_template",
+            "llama_tool_template_file",
+            "pre_model_load_command",
+        }:
             value = overrides[config.key]
             if isinstance(value, str) and not value.strip():
                 overrides[config.key] = None
@@ -232,7 +252,16 @@ async def apply_db_config_overrides(settings: Settings) -> dict[str, object]:
     """
     overrides = await load_db_config_overrides()
     for key, value in overrides.items():
-        if key in {"admin_password", "llama_tool_template", "llama_tool_template_file"} and isinstance(value, str) and not value.strip():
+        if (
+            key in {
+                "admin_password",
+                "llama_tool_template",
+                "llama_tool_template_file",
+                "pre_model_load_command",
+            }
+            and isinstance(value, str)
+            and not value.strip()
+        ):
             value = None
         if hasattr(settings, key):
             setattr(settings, key, value)

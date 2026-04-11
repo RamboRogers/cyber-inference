@@ -372,6 +372,10 @@ async def test_chat_completions_llama_forwards_raw_request_payload():
     assert captured_request["url"] == "http://127.0.0.1:9999/v1/chat/completions"
     assert captured_request["json"] == raw_payload
     assert "n_predict" not in captured_request["json"]
+    auto_loader.ensure_model_loaded.assert_awaited_once_with(
+        "demo",
+        load_trigger="public_autoload",
+    )
 
 
 @pytest.mark.asyncio
@@ -894,6 +898,83 @@ async def test_update_model_load_timeout_rejects_out_of_range_values(test_db):
 
 
 @pytest.mark.asyncio
+async def test_pre_model_load_command_requires_admin_password_to_enable(test_db):
+    """Pre-model load command cannot be armed without admin protection."""
+
+    @asynccontextmanager
+    async def override_get_db_session():
+        yield test_db
+
+    auto_loader = MagicMock()
+
+    with (
+        patch("cyber_inference.api.admin.get_db_session", override_get_db_session),
+        patch("cyber_inference.api.admin._get_auto_loader", return_value=auto_loader),
+    ):
+        async with make_test_client() as client:
+            response = await client.put(
+                "/admin/config/pre_model_load_command_enabled",
+                json={"value": True},
+            )
+
+    assert response.status_code == 400
+    result = await test_db.execute(
+        select(Configuration).where(Configuration.key == "pre_model_load_command_enabled")
+    )
+    assert result.scalar_one_or_none() is None
+
+
+@pytest.mark.asyncio
+async def test_pre_model_load_command_config_updates_apply_live(test_db, monkeypatch):
+    """Command text can be configured while disabled and applies to future loads."""
+    from cyber_inference.core.config import reload_settings
+
+    monkeypatch.setenv("CYBER_INFERENCE_ADMIN_PASSWORD", "secret")
+    reload_settings()
+
+    @asynccontextmanager
+    async def override_get_db_session():
+        yield test_db
+
+    auto_loader = MagicMock()
+    auto_loader.reconcile_global_config_change = AsyncMock(
+        return_value={
+            "applied_live": True,
+            "reload_triggered": False,
+            "reloaded_models": [],
+            "restart_required": False,
+        }
+    )
+
+    try:
+        from cyber_inference.api.admin import verify_admin_token
+
+        app.dependency_overrides[verify_admin_token] = lambda: True
+        with (
+            patch("cyber_inference.api.admin.get_db_session", override_get_db_session),
+            patch("cyber_inference.api.admin._get_auto_loader", return_value=auto_loader),
+        ):
+            async with make_test_client() as client:
+                command_response = await client.put(
+                    "/admin/config/pre_model_load_command",
+                    json={"value": "sudo sysctl -w vm.drop_caches=3"},
+                )
+                enabled_response = await client.put(
+                    "/admin/config/pre_model_load_command_enabled",
+                    json={"value": True},
+                )
+    finally:
+        app.dependency_overrides.clear()
+        monkeypatch.delenv("CYBER_INFERENCE_ADMIN_PASSWORD", raising=False)
+        reload_settings()
+
+    assert command_response.status_code == 200
+    assert enabled_response.status_code == 200
+    assert enabled_response.json()["applied_live"] is True
+    assert enabled_response.json()["reload_triggered"] is False
+
+
+@pytest.mark.asyncio
 async def test_load_model_endpoint_honors_context_override():
     """Manual load requests should be able to override the load-time context size."""
     auto_loader = MagicMock()
@@ -1205,6 +1286,21 @@ def test_settings_template_saves_model_load_timeout():
     assert "const modelLoadTimeout" in template
     assert "model_load_timeout" in template
     assert "Model load timeout must be between 30 and 3600 seconds." in template
+
+
+def test_settings_template_saves_pre_model_load_command():
+    """Settings UI should expose and save pre-model load command controls."""
+    template = Path("src/cyber_inference/web/templates/settings.html").read_text()
+
+    assert "Run pre-model load command" in template
+    assert "Thor/DGX Spark" in template
+    assert "sudo sysctl -w vm.drop_caches=3" in template
+    assert 'id="pre_model_load_command_enabled"' in template
+    assert 'id="pre_model_load_command"' in template
+    assert 'id="pre_model_load_command_timeout"' in template
+    assert "preModelLoadCommandEnabled" in template
+    assert "pre_model_load_command_enabled" in template
+    assert "pre_model_load_command_timeout" in template
 
 
 @pytest.mark.asyncio

@@ -12,6 +12,8 @@
 - Graceful split-GGUF database upgrade behavior for legacy shard-named rows.
 - Downloader UI metadata for split GGUF models.
 - Admin-adjustable model load timeout, defaulting to 300 seconds.
+- Admin-configurable pre-model load command for Thor/DGX Spark cache clearing, defaulting to
+  `sudo sysctl -w vm.drop_caches=3` and disabled by default.
 
 ### Changed
 - `ModelManager.download_model()` now returns a `ModelDownloadResult` carrying the canonical model
@@ -20,6 +22,8 @@
 - CLI GGUF downloads now report the resolved local model path from `ModelDownloadResult`.
 - Backend startup waits now use the configured model load timeout across llama.cpp, whisper.cpp, and
   transformers servers.
+- Model startup can now run the configured pre-load command before launching the backend server when
+  enabled from admin-initiated loads. Public `/v1` lazy-loads skip the hook in this release.
 
 ### Fixed
 - Timed-out backend startups now terminate the launched process, release the allocated port, and

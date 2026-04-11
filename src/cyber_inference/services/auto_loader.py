@@ -9,6 +9,8 @@ Handles:
 """
 
 import asyncio
+import shlex
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
@@ -34,6 +36,9 @@ GLOBAL_RUNTIME_REFRESH_KEYS = {
     "model_idle_unload_enabled",
     "model_idle_timeout",
     "model_load_timeout",
+    "pre_model_load_command_enabled",
+    "pre_model_load_command",
+    "pre_model_load_command_timeout",
     "max_loaded_models",
     "max_memory_percent",
     "llama_gpu_layers",
@@ -113,6 +118,9 @@ class AutoLoader:
 
         self._idle_timeout = settings.model_idle_timeout
         self._load_timeout = settings.model_load_timeout
+        self._pre_load_command_enabled = settings.pre_model_load_command_enabled
+        self._pre_load_command = settings.pre_model_load_command
+        self._pre_load_command_timeout = settings.pre_model_load_command_timeout
         self._max_loaded = settings.max_loaded_models
         self._max_memory_percent = settings.max_memory_percent
         self._idle_unload_enabled = settings.model_idle_unload_enabled
@@ -249,7 +257,11 @@ class AutoLoader:
                 logger.info(f"[warning]Unloading LRU model: {oldest.model_name}[/warning]")
                 await self.unload_model(oldest.model_name, reason="memory_pressure")
 
-    async def ensure_model_loaded(self, model_name: str) -> str:
+    async def ensure_model_loaded(
+        self,
+        model_name: str,
+        load_trigger: str = "public_autoload",
+    ) -> str:
         """
         Ensure a model is loaded and return its server URL.
 
@@ -302,7 +314,11 @@ class AutoLoader:
                     )
 
             # Load the model
-            return await self.load_model(model_name, reason="on_demand_load")
+            return await self.load_model(
+                model_name,
+                reason="on_demand_load",
+                load_trigger=load_trigger,
+            )
 
     def _record_event(
         self,
@@ -324,12 +340,18 @@ class AutoLoader:
         settings = get_settings()
         self._idle_timeout = settings.model_idle_timeout
         self._load_timeout = settings.model_load_timeout
+        self._pre_load_command_enabled = settings.pre_model_load_command_enabled
+        self._pre_load_command = settings.pre_model_load_command
+        self._pre_load_command_timeout = settings.pre_model_load_command_timeout
         self._max_loaded = settings.max_loaded_models
         self._max_memory_percent = settings.max_memory_percent
         self._idle_unload_enabled = settings.model_idle_unload_enabled
         return {
             "idle_timeout": self._idle_timeout,
             "load_timeout": self._load_timeout,
+            "pre_model_load_command_enabled": self._pre_load_command_enabled,
+            "pre_model_load_command": self._pre_load_command,
+            "pre_model_load_command_timeout": self._pre_load_command_timeout,
             "idle_unload_enabled": self._idle_unload_enabled,
             "max_loaded_models": self._max_loaded,
             "max_memory_percent": self._max_memory_percent,
@@ -727,6 +749,126 @@ class AutoLoader:
             if key in supported_fields and value is not None
         }
 
+    async def _run_pre_model_load_command(
+        self,
+        model_name: str,
+        load_trigger: str,
+    ) -> dict[str, Any]:
+        """Run the configured host command before model startup."""
+        settings = get_settings()
+        command = _normalize_optional_string(settings.pre_model_load_command)
+        result: dict[str, Any] = {
+            "enabled": bool(settings.pre_model_load_command_enabled),
+            "command": command,
+            "trigger": load_trigger,
+            "status": "skipped",
+        }
+        if not settings.pre_model_load_command_enabled or not command:
+            return result
+
+        if load_trigger == "public_autoload":
+            result["status"] = "skipped_public_autoload"
+            return result
+
+        if not settings.admin_password:
+            result["status"] = "blocked"
+            result["warning"] = "Admin protection must be enabled before pre-load commands can run."
+            logger.warning("[warning]Pre-model load command blocked: admin protection is disabled[/warning]")
+            return result
+
+        try:
+            argv = shlex.split(command)
+        except ValueError as exc:
+            result["status"] = "invalid"
+            result["warning"] = str(exc)
+            logger.warning(f"[warning]Invalid pre-model load command for {model_name}: {exc}[/warning]")
+            return result
+
+        if not argv:
+            result["status"] = "skipped"
+            return result
+
+        timeout = max(1, int(settings.pre_model_load_command_timeout))
+        stderr_tail = bytearray()
+        stderr_limit = 4096
+        start = time.monotonic()
+        logger.info(f"[info]Running pre-model load command for {model_name}: {command}[/info]")
+
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *argv,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
+            )
+        except FileNotFoundError:
+            result.update(
+                {
+                    "status": "missing_executable",
+                    "duration_ms": int((time.monotonic() - start) * 1000),
+                }
+            )
+            logger.warning(f"[warning]Pre-model load command executable not found: {argv[0]}[/warning]")
+            return result
+        except OSError as exc:
+            result.update(
+                {
+                    "status": "start_failed",
+                    "duration_ms": int((time.monotonic() - start) * 1000),
+                    "warning": str(exc),
+                }
+            )
+            logger.warning(f"[warning]Pre-model load command could not start: {exc}[/warning]")
+            return result
+
+        async def read_stderr_tail() -> bytes:
+            if process.stderr is None:
+                return b""
+            while True:
+                chunk = await process.stderr.read(1024)
+                if not chunk:
+                    break
+                stderr_tail.extend(chunk)
+                if len(stderr_tail) > stderr_limit:
+                    del stderr_tail[:-stderr_limit]
+            return bytes(stderr_tail)
+
+        stderr_task = asyncio.create_task(read_stderr_tail())
+        try:
+            return_code = await asyncio.wait_for(process.wait(), timeout=timeout)
+            stderr = await stderr_task
+        except TimeoutError:
+            process.terminate()
+            try:
+                await asyncio.wait_for(process.wait(), timeout=3.0)
+            except TimeoutError:
+                process.kill()
+                await process.wait()
+            stderr = await stderr_task
+            result["status"] = "timeout"
+            result["duration_ms"] = int((time.monotonic() - start) * 1000)
+            result["stderr_tail"] = stderr.decode(errors="replace")
+            logger.warning(f"[warning]Pre-model load command timed out after {timeout}s[/warning]")
+            return result
+
+        status = "succeeded" if return_code == 0 else "failed"
+        result.update(
+            {
+                "status": status,
+                "return_code": return_code,
+                "duration_ms": int((time.monotonic() - start) * 1000),
+            }
+        )
+        if stderr:
+            result["stderr_tail"] = stderr.decode(errors="replace")
+        if return_code == 0:
+            logger.info(f"[success]Pre-model load command completed for {model_name}[/success]")
+        else:
+            logger.warning(
+                f"[warning]Pre-model load command failed for {model_name}: exit {return_code}[/warning]"
+            )
+        return result
+
     async def load_model(
         self,
         model_name: str,
@@ -734,6 +876,7 @@ class AutoLoader:
         reload_count: int = 0,
         context_size_override: int | None = None,
         gpu_layers_override: int | None = None,
+        load_trigger: str = "public_autoload",
     ) -> str:
         """
         Load a model and return its server URL.
@@ -812,6 +955,8 @@ class AutoLoader:
         launch_config, tool_calling = self._resolve_tooling_config(model_info, strict=True)
         effective_config["launch_config"].update(launch_config)
         effective_config["tool_calling"] = tool_calling
+        pre_load_result = await self._run_pre_model_load_command(model_name, load_trigger)
+        effective_config["pre_model_load_command"] = pre_load_result
 
         # Start the appropriate server based on engine_type
         if engine_type == "transformers":
@@ -864,6 +1009,7 @@ class AutoLoader:
             reason=reason,
             port=proc.port,
             server_type=proc.server_type,
+            pre_model_load_command=pre_load_result,
         )
 
         return url
@@ -907,6 +1053,7 @@ class AutoLoader:
             model_name,
             reason=f"reload:{reason}",
             reload_count=next_reload_count,
+            load_trigger="admin_reload",
         )
         status = await self.get_model_status(model_name)
         status["reload_triggered"] = True

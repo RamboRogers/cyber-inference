@@ -75,6 +75,26 @@ def _validate_global_config_value(key: str, value: object) -> None:
                 status_code=400,
                 detail="model_load_timeout must be between 30 and 3600 seconds",
             )
+    elif key == "pre_model_load_command_timeout":
+        try:
+            timeout = int(value)
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=400,
+                detail="pre_model_load_command_timeout must be an integer",
+            )
+        if timeout < 1 or timeout > 300:
+            raise HTTPException(
+                status_code=400,
+                detail="pre_model_load_command_timeout must be between 1 and 300 seconds",
+            )
+    elif key == "pre_model_load_command_enabled" and _parse_bool_config(value):
+        settings = get_settings()
+        if not settings.admin_password:
+            raise HTTPException(
+                status_code=400,
+                detail="Admin protection must be enabled before pre-model load commands can run.",
+            )
 
 
 def _get_auto_loader() -> AutoLoader:
@@ -605,6 +625,7 @@ async def load_model(
             model_name,
             context_size_override=request.context_size if request else None,
             gpu_layers_override=request.gpu_layers if request else None,
+            load_trigger="admin_manual",
         )
         status_info = await auto_loader.get_model_status(model_name)
 
@@ -805,6 +826,9 @@ async def get_config(
         "model_idle_unload_enabled": settings.model_idle_unload_enabled,
         "model_idle_timeout": settings.model_idle_timeout,
         "model_load_timeout": settings.model_load_timeout,
+        "pre_model_load_command_enabled": settings.pre_model_load_command_enabled,
+        "pre_model_load_command": settings.pre_model_load_command,
+        "pre_model_load_command_timeout": settings.pre_model_load_command_timeout,
         "max_loaded_models": settings.max_loaded_models,
         "max_memory_percent": settings.max_memory_percent,
         "llama_gpu_layers": settings.llama_gpu_layers,
@@ -817,6 +841,9 @@ async def get_config(
             "model_idle_unload_enabled",
             "model_idle_timeout",
             "model_load_timeout",
+            "pre_model_load_command_enabled",
+            "pre_model_load_command",
+            "pre_model_load_command_timeout",
             "max_loaded_models",
             "max_memory_percent",
             "llama_gpu_layers",
@@ -851,7 +878,12 @@ async def update_config(
             select(Configuration).where(Configuration.key == key)
         )
         config = result.scalar_one_or_none()
-        optional_string_keys = {"admin_password", "llama_tool_template", "llama_tool_template_file"}
+        optional_string_keys = {
+            "admin_password",
+            "llama_tool_template",
+            "llama_tool_template_file",
+            "pre_model_load_command",
+        }
         stored_value = (
             ""
             if key in optional_string_keys and update.value is None

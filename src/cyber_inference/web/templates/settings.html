@@ -149,6 +149,40 @@
                             How long Cyber-Inference waits for llama.cpp, transformers, or whisper servers to become ready. Large GGUF models may need several minutes.
                         </p>
                     </div>
+                    <div class="space-y-3 border border-cyber-yellow/20 rounded-lg p-4 bg-cyber-dark/30">
+                        <div>
+                            <label class="flex items-center gap-3">
+                                <input type="checkbox" id="pre_model_load_command_enabled" name="pre_model_load_command_enabled"
+                                       class="h-4 w-4 accent-cyber-neon"
+                                       {% if settings.pre_model_load_command_enabled %}checked{% endif %}
+                                       {% if not admin_enabled %}disabled{% endif %}>
+                                <span class="text-sm font-mono text-gray-300">
+                                    Run pre-model load command
+                                </span>
+                            </label>
+                            <p class="text-xs text-gray-500 mt-1">
+                                Thor/DGX Spark: clears Linux disk/page cache before loading large models on unified memory systems. Requires passwordless sudo or a root service context.
+                            </p>
+                            {% if not admin_enabled %}
+                            <p class="text-xs text-cyber-yellow mt-1">
+                                Enable admin protection before local pre-load commands can run.
+                            </p>
+                            {% endif %}
+                        </div>
+                        <div>
+                            <label class="block text-sm font-mono text-gray-400 mb-2">Pre-Model Load Command</label>
+                            <input type="text" id="pre_model_load_command" name="pre_model_load_command"
+                                   value="{{ settings.pre_model_load_command or 'sudo sysctl -w vm.drop_caches=3' }}"
+                                   class="cyber-input w-full px-4 py-2 rounded-lg font-mono">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-mono text-gray-400 mb-2">Command Timeout (seconds)</label>
+                            <input type="number" id="pre_model_load_command_timeout" name="pre_model_load_command_timeout"
+                                   value="{{ settings.pre_model_load_command_timeout }}"
+                                   class="cyber-input w-full px-4 py-2 rounded-lg font-mono"
+                                   min="1" max="300" required>
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -549,6 +583,9 @@
             const idleUnloadEnabled = document.getElementById('model_idle_unload_enabled').checked;
             const maxLoadedModels = parseInt(document.getElementById('max_loaded_models').value);
             const modelLoadTimeout = parseInt(document.getElementById('model_load_timeout').value);
+            const preModelLoadCommandEnabled = document.getElementById('pre_model_load_command_enabled').checked;
+            const preModelLoadCommand = document.getElementById('pre_model_load_command').value.trim();
+            const preModelLoadCommandTimeout = parseInt(document.getElementById('pre_model_load_command_timeout').value);
             const maxMemoryPercent = parseInt(document.getElementById('max_memory_percent').value);
             const llamaGpuLayers = parseInt(document.getElementById('llama_gpu_layers').value);
             const modelIdleTimeoutInput = document.getElementById('model_idle_timeout');
@@ -590,6 +627,20 @@
                 return;
             }
 
+            if (preModelLoadCommandEnabled && !preModelLoadCommand) {
+                showToast({ tone: 'warning', message: 'Pre-model load command is required when enabled.' });
+                saveBtn.disabled = false;
+                saveBtn.innerHTML = originalText;
+                return;
+            }
+
+            if (preModelLoadCommandTimeout < 1 || preModelLoadCommandTimeout > 300) {
+                showToast({ tone: 'warning', message: 'Pre-model load command timeout must be between 1 and 300 seconds.' });
+                saveBtn.disabled = false;
+                saveBtn.innerHTML = originalText;
+                return;
+            }
+
             if (maxMemoryPercent < 50 || maxMemoryPercent > 95) {
                 showToast({ tone: 'warning', message: 'Max memory percent must be between 50 and 95.' });
                 saveBtn.disabled = false;
@@ -604,6 +655,9 @@
                 { key: 'model_idle_unload_enabled', value: idleUnloadEnabled },
                 { key: 'model_idle_timeout', value: modelIdleTimeout },
                 { key: 'model_load_timeout', value: modelLoadTimeout },
+                { key: 'pre_model_load_command_enabled', value: preModelLoadCommandEnabled },
+                { key: 'pre_model_load_command', value: preModelLoadCommand || null },
+                { key: 'pre_model_load_command_timeout', value: preModelLoadCommandTimeout },
                 { key: 'max_loaded_models', value: maxLoadedModels },
                 { key: 'max_memory_percent', value: maxMemoryPercent },
                 { key: 'llama_gpu_layers', value: llamaGpuLayers },

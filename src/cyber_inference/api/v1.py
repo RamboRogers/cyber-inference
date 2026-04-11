@@ -606,7 +606,10 @@ async def chat_completions(
 
     # Ensure model is loaded
     try:
-        server_url = await auto_loader.ensure_model_loaded(request.model)
+        server_url = await auto_loader.ensure_model_loaded(
+            request.model,
+            load_trigger="public_autoload",
+        )
     except Exception as e:
         logger.error(f"[error]Failed to load model: {e}[/error]")
         raise HTTPException(status_code=503, detail=f"Failed to load model: {e}")
@@ -852,7 +855,10 @@ async def completions(
 
     # Ensure model is loaded
     try:
-        server_url = await auto_loader.ensure_model_loaded(request.model)
+        server_url = await auto_loader.ensure_model_loaded(
+            request.model,
+            load_trigger="public_autoload",
+        )
     except Exception as e:
         logger.error(f"[error]Failed to load model: {e}[/error]")
         raise HTTPException(status_code=503, detail=f"Failed to load model: {e}")
@@ -1061,7 +1067,10 @@ async def embeddings(
 
     # Ensure model is loaded
     try:
-        server_url = await auto_loader.ensure_model_loaded(request.model)
+        server_url = await auto_loader.ensure_model_loaded(
+            request.model,
+            load_trigger="public_autoload",
+        )
     except Exception as e:
         logger.error(f"[error]Failed to load model: {e}[/error]")
         raise HTTPException(status_code=503, detail=f"Failed to load model: {e}")
@@ -1189,7 +1198,10 @@ async def transcriptions(
 
     # Ensure model is loaded
     try:
-        server_url = await auto_loader.ensure_model_loaded(model)
+        server_url = await auto_loader.ensure_model_loaded(
+            model,
+            load_trigger="public_autoload",
+        )
     except Exception as e:
         logger.error(f"[error]Failed to load model: {e}[/error]")
         raise HTTPException(status_code=503, detail=f"Failed to load model: {e}")
@@ -1323,7 +1335,10 @@ async def translations(
 
     # Ensure model is loaded
     try:
-        server_url = await auto_loader.ensure_model_loaded(model)
+        server_url = await auto_loader.ensure_model_loaded(
+            model,
+            load_trigger="public_autoload",
+        )
     except Exception as e:
         logger.error(f"[error]Failed to load model: {e}[/error]")
         raise HTTPException(status_code=503, detail=f"Failed to load model: {e}")

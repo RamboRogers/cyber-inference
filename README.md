@@ -156,6 +156,9 @@ Environment variables use the `CYBER_INFERENCE_` prefix.
 | `CYBER_INFERENCE_MAX_CONTEXT_SIZE` | `32768` | Max allowed context |
 | `CYBER_INFERENCE_MODEL_IDLE_TIMEOUT` | `300` | Idle unload timeout in seconds |
 | `CYBER_INFERENCE_MODEL_LOAD_TIMEOUT` | `300` | Startup readiness timeout in seconds |
+| `CYBER_INFERENCE_PRE_MODEL_LOAD_COMMAND_ENABLED` | `false` | Run host command before model startup |
+| `CYBER_INFERENCE_PRE_MODEL_LOAD_COMMAND` | `sudo sysctl -w vm.drop_caches=3` | Host command for pre-model load preparation |
+| `CYBER_INFERENCE_PRE_MODEL_LOAD_COMMAND_TIMEOUT` | `15` | Pre-load command timeout in seconds |
 | `CYBER_INFERENCE_MAX_LOADED_MODELS` | `1` | Max simultaneously loaded models |
 | `CYBER_INFERENCE_MAX_MEMORY_PERCENT` | `80` | Memory pressure threshold |
 | `CYBER_INFERENCE_LLAMA_GPU_LAYERS` | `-1` | llama.cpp GPU layer setting |
@@ -166,6 +169,13 @@ Large models can take several minutes before their backend server reports ready.
 `Model Load Timeout (seconds)` admin setting controls how long Cyber-Inference waits during model
 startup before treating the load as failed. If startup times out, the launched backend process is
 terminated and its port is released.
+
+Thor/DGX Spark operators can enable `Run pre-model load command` in Admin Settings to clear Linux
+disk/page cache before loading very large models. The default command is
+`sudo sysctl -w vm.drop_caches=3`; configure passwordless sudo or run Cyber-Inference in a service
+context that can execute the command without an interactive prompt. In this first release, public
+`/v1` API lazy-loads skip the pre-load command; use the Admin UI load action when the host needs the
+cache-clear hook before startup.
 
 ## Admin Endpoints
 

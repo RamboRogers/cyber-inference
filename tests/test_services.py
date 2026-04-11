@@ -102,6 +102,9 @@ class TestSettings:
         assert settings.default_context_size == 8192
         assert settings.model_idle_unload_enabled is False
         assert settings.model_load_timeout == 300
+        assert settings.pre_model_load_command_enabled is False
+        assert settings.pre_model_load_command == "sudo sysctl -w vm.drop_caches=3"
+        assert settings.pre_model_load_command_timeout == 15
         assert settings.max_loaded_models == 1
 
     def test_settings_from_env(self, monkeypatch):
@@ -1071,6 +1074,151 @@ class TestAutoLoader:
         assert result["reload_triggered"] is False
         assert result["restart_required"] is False
         assert result["runtime_policy"]["load_timeout"] == 600
+
+    @pytest.mark.asyncio
+    async def test_pre_model_load_command_runs_before_server_start_when_enabled(self, monkeypatch):
+        from cyber_inference.core.config import reload_settings
+        from cyber_inference.services.auto_loader import AutoLoader
+
+        monkeypatch.setenv("CYBER_INFERENCE_ADMIN_PASSWORD", "secret")
+        monkeypatch.setenv("CYBER_INFERENCE_PRE_MODEL_LOAD_COMMAND_ENABLED", "true")
+        monkeypatch.setenv("CYBER_INFERENCE_PRE_MODEL_LOAD_COMMAND", "echo ready")
+        reload_settings()
+
+        process = MagicMock()
+        process.wait = AsyncMock(return_value=0)
+        process.stderr = None
+        create_process = AsyncMock(return_value=process)
+
+        process_manager = MagicMock()
+        process_manager.start_server = AsyncMock(
+            return_value=MagicMock(status="running", port=9338, server_type="llama", effective_config={})
+        )
+        process_manager.get_server_props = AsyncMock(return_value={"chat_template": "{{ messages }}"})
+        model_manager = MagicMock()
+        model_manager.get_model = AsyncMock(
+            return_value={
+                "name": "demo",
+                "engine_type": "llama",
+                "context_length": 4096,
+                "model_type": "chat",
+                "hf_repo_id": "demo/repo",
+                "is_downloaded": True,
+                "is_enabled": True,
+            }
+        )
+        model_manager.get_model_path = AsyncMock(return_value=Path("/tmp/demo.gguf"))
+        model_manager.update_last_used = AsyncMock()
+
+        try:
+            with patch("asyncio.create_subprocess_exec", create_process):
+                loader = AutoLoader(process_manager=process_manager, model_manager=model_manager)
+                await loader.load_model("demo", load_trigger="admin_manual")
+        finally:
+            monkeypatch.delenv("CYBER_INFERENCE_ADMIN_PASSWORD", raising=False)
+            monkeypatch.delenv("CYBER_INFERENCE_PRE_MODEL_LOAD_COMMAND_ENABLED", raising=False)
+            monkeypatch.delenv("CYBER_INFERENCE_PRE_MODEL_LOAD_COMMAND", raising=False)
+            reload_settings()
+
+        create_process.assert_awaited_once()
+        process_manager.start_server.assert_awaited_once()
+        effective_config = process_manager.start_server.await_args.kwargs["effective_config"]
+        assert effective_config["pre_model_load_command"]["status"] == "succeeded"
+        assert loader._model_events["demo"]["pre_model_load_command"]["status"] == "succeeded"
+
+    @pytest.mark.asyncio
+    async def test_pre_model_load_command_skips_public_autoload(self, monkeypatch):
+        from cyber_inference.core.config import reload_settings
+        from cyber_inference.services.auto_loader import AutoLoader
+
+        monkeypatch.setenv("CYBER_INFERENCE_ADMIN_PASSWORD", "secret")
+        monkeypatch.setenv("CYBER_INFERENCE_PRE_MODEL_LOAD_COMMAND_ENABLED", "true")
+        monkeypatch.setenv("CYBER_INFERENCE_PRE_MODEL_LOAD_COMMAND", "echo ready")
+        reload_settings()
+
+        process_manager = MagicMock()
+        process_manager.get_server_url = AsyncMock(return_value=None)
+        process_manager.get_running_models.return_value = []
+        process_manager.start_server = AsyncMock(
+            return_value=MagicMock(status="running", port=9338, server_type="llama", effective_config={})
+        )
+        process_manager.get_server_props = AsyncMock(return_value={"chat_template": "{{ messages }}"})
+        model_manager = MagicMock()
+        model_manager.get_model = AsyncMock(
+            return_value={
+                "name": "demo",
+                "engine_type": "llama",
+                "context_length": 4096,
+                "model_type": "chat",
+                "hf_repo_id": "demo/repo",
+                "is_downloaded": True,
+                "is_enabled": True,
+            }
+        )
+        model_manager.get_model_path = AsyncMock(return_value=Path("/tmp/demo.gguf"))
+        model_manager.update_last_used = AsyncMock()
+
+        try:
+            with patch("asyncio.create_subprocess_exec", AsyncMock()) as create_process:
+                loader = AutoLoader(process_manager=process_manager, model_manager=model_manager)
+                await loader.ensure_model_loaded("demo")
+        finally:
+            monkeypatch.delenv("CYBER_INFERENCE_ADMIN_PASSWORD", raising=False)
+            monkeypatch.delenv("CYBER_INFERENCE_PRE_MODEL_LOAD_COMMAND_ENABLED", raising=False)
+            monkeypatch.delenv("CYBER_INFERENCE_PRE_MODEL_LOAD_COMMAND", raising=False)
+            reload_settings()
+
+        create_process.assert_not_called()
+        effective_config = process_manager.start_server.await_args.kwargs["effective_config"]
+        assert effective_config["pre_model_load_command"]["status"] == "skipped_public_autoload"
+
+    @pytest.mark.asyncio
+    async def test_pre_model_load_command_blocks_without_admin_password(self, monkeypatch):
+        from cyber_inference.core.config import reload_settings
+        from cyber_inference.services.auto_loader import AutoLoader
+
+        monkeypatch.setenv("CYBER_INFERENCE_PRE_MODEL_LOAD_COMMAND_ENABLED", "true")
+        monkeypatch.setenv("CYBER_INFERENCE_PRE_MODEL_LOAD_COMMAND", "echo ready")
+        reload_settings()
+
+        try:
+            loader = AutoLoader()
+            result = await loader._run_pre_model_load_command("demo", "admin_manual")
+        finally:
+            monkeypatch.delenv("CYBER_INFERENCE_PRE_MODEL_LOAD_COMMAND_ENABLED", raising=False)
+            monkeypatch.delenv("CYBER_INFERENCE_PRE_MODEL_LOAD_COMMAND", raising=False)
+            reload_settings()
+
+        assert result["status"] == "blocked"
+
+    @pytest.mark.asyncio
+    async def test_pre_model_load_command_timeout_does_not_raise(self, monkeypatch):
+        from cyber_inference.core.config import reload_settings
+        from cyber_inference.services.auto_loader import AutoLoader
+
+        monkeypatch.setenv("CYBER_INFERENCE_ADMIN_PASSWORD", "secret")
+        monkeypatch.setenv("CYBER_INFERENCE_PRE_MODEL_LOAD_COMMAND_ENABLED", "true")
+        monkeypatch.setenv("CYBER_INFERENCE_PRE_MODEL_LOAD_COMMAND", "sleep 10")
+        monkeypatch.setenv("CYBER_INFERENCE_PRE_MODEL_LOAD_COMMAND_TIMEOUT", "1")
+        reload_settings()
+
+        process = MagicMock(returncode=None)
+        process.wait = AsyncMock(side_effect=[TimeoutError(), 0])
+        process.stderr = None
+
+        try:
+            with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=process)):
+                loader = AutoLoader()
+                result = await loader._run_pre_model_load_command("demo", "admin_manual")
+        finally:
+            monkeypatch.delenv("CYBER_INFERENCE_ADMIN_PASSWORD", raising=False)
+            monkeypatch.delenv("CYBER_INFERENCE_PRE_MODEL_LOAD_COMMAND_ENABLED", raising=False)
+            monkeypatch.delenv("CYBER_INFERENCE_PRE_MODEL_LOAD_COMMAND", raising=False)
+            monkeypatch.delenv("CYBER_INFERENCE_PRE_MODEL_LOAD_COMMAND_TIMEOUT", raising=False)
+            reload_settings()
+
+        assert result["status"] == "timeout"
+        process.terminate.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_load_model_prefers_native_context_when_no_override(self):

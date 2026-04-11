@@ -35,6 +35,9 @@ _CONFIG_UI_LABELS = {
     "model_idle_unload_enabled": "Idle Unload Timer",
     "model_idle_timeout": "Idle Timeout (seconds)",
     "model_load_timeout": "Model Load Timeout (seconds)",
+    "pre_model_load_command_enabled": "Pre-Model Load Command",
+    "pre_model_load_command": "Pre-Model Load Command",
+    "pre_model_load_command_timeout": "Pre-Model Load Command Timeout",
     "max_loaded_models": "Max Loaded Models",
     "max_memory_percent": "Max Memory Usage (%)",
     "llama_gpu_layers": "GPU Layers",
@@ -79,11 +82,17 @@ def _copy_response_headers(response: httpx.Response) -> dict[str, str]:
     return proxied_headers
 
 
-async def _resolve_llama_chat_backend(model_name: str) -> tuple[str, dict]:
+async def _resolve_llama_chat_backend(
+    model_name: str,
+    load_trigger: str = "public_autoload",
+) -> tuple[str, dict]:
     from cyber_inference.api.v1 import get_auto_loader
 
     auto_loader = get_auto_loader()
-    server_url = await auto_loader.ensure_model_loaded(model_name)
+    server_url = await auto_loader.ensure_model_loaded(
+        model_name,
+        load_trigger=load_trigger,
+    )
     status_info = await auto_loader.get_model_status(model_name)
 
     if status_info.get("server_type") != "llama":
@@ -274,7 +283,10 @@ async def llama_chat_ui_proxy(request: Request, model_name: str, proxy_path: str
     if redirect:
         return redirect
 
-    server_url, _ = await _resolve_llama_chat_backend(model_name)
+    server_url, _ = await _resolve_llama_chat_backend(
+        model_name,
+        load_trigger="admin_manual",
+    )
     upstream_path = proxy_path or ""
     upstream_url = f"{server_url}/{upstream_path}"
     if request.url.query:
@@ -305,7 +317,10 @@ async def chat_page(request: Request, model_name: str) -> Response:
     if not templates:
         return HTMLResponse(content="Templates not found", status_code=500)
 
-    _, status_info = await _resolve_llama_chat_backend(model_name)
+    _, status_info = await _resolve_llama_chat_backend(
+        model_name,
+        load_trigger="admin_manual",
+    )
     context = _template_context(
         request,
         page="chat",
@@ -344,6 +359,9 @@ async def settings_page(request: Request) -> Response:
         "model_idle_unload_enabled": settings.model_idle_unload_enabled,
         "model_idle_timeout": settings.model_idle_timeout,
         "model_load_timeout": settings.model_load_timeout,
+        "pre_model_load_command_enabled": settings.pre_model_load_command_enabled,
+        "pre_model_load_command": settings.pre_model_load_command,
+        "pre_model_load_command_timeout": settings.pre_model_load_command_timeout,
         "max_loaded_models": settings.max_loaded_models,
         "max_memory_percent": settings.max_memory_percent,
         "llama_gpu_layers": settings.llama_gpu_layers,
@@ -399,6 +417,9 @@ async def settings_page(request: Request) -> Response:
             "model_idle_unload_enabled": saved_settings["model_idle_unload_enabled"],
             "model_idle_timeout": saved_settings["model_idle_timeout"],
             "model_load_timeout": saved_settings["model_load_timeout"],
+            "pre_model_load_command_enabled": saved_settings["pre_model_load_command_enabled"],
+            "pre_model_load_command": saved_settings["pre_model_load_command"],
+            "pre_model_load_command_timeout": saved_settings["pre_model_load_command_timeout"],
             "max_loaded_models": saved_settings["max_loaded_models"],
             "max_memory_percent": saved_settings["max_memory_percent"],
             "llama_gpu_layers": saved_settings["llama_gpu_layers"],
