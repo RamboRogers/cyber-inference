@@ -37,6 +37,7 @@ Both images set the same application-facing paths and defaults:
 - `VOLUME ["/app/data", "/app/models"]`
 - health check against `http://localhost:8337/health`
 
-The Thor image runs `/app/bin/llama-server --version` during build so missing binaries or shared
-libraries fail before publish. The Linux AMD64 lane instead verifies that the image can run
+The Thor image verifies that `/app/bin/llama-server` is present during image build, then the GitHub
+Actions workflow runs `/app/bin/llama-server --version` with the NVIDIA runtime enabled after the
+image is built. The Linux AMD64 lane instead verifies that the image can run
 `cyber-inference install-llama` successfully and produce `/app/bin/llama-server`.

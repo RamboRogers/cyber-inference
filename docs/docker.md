@@ -25,7 +25,8 @@ compatible `llama-server` into `/app/bin`.
 - `llama-server` built natively on `thor.lab` and baked into `/app/bin`
 
 The Thor publish workflow clones the current `llama.cpp` default branch, builds it on Thor hardware,
-stages the runtime files into `docker/build/llama-bin`, and then builds the image. The GitHub
+stages the runtime files into `docker/build/llama-bin`, builds the image, and then runs
+`/app/bin/llama-server --version` with the NVIDIA runtime enabled. The GitHub
 Actions job is routed to the self-hosted runner registered with the labels
 `self-hosted`, `Linux`, `ARM64`, `NVIDIA`, and `Thor`.
 

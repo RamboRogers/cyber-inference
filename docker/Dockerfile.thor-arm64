@@ -47,8 +47,7 @@ RUN set -eux; \
     chmod +x start.sh /app/bin/llama-server; \
     mkdir -p /app/data/logs /app/models; \
     uv sync --frozen --no-dev; \
-    which llama-server; \
-    /app/bin/llama-server --version
+    which llama-server
 
 EXPOSE 8337
 VOLUME ["/app/data", "/app/models"]
