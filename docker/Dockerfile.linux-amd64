@@ -1,0 +1,84 @@
+# syntax=docker/dockerfile:1.7
+# Linux AMD64 NVIDIA image for Cyber-Inference.
+# Builds a pinned llama.cpp CUDA binary at image build time and stages it into /app/bin.
+
+ARG CUDA_VERSION=13.0.0
+ARG UBUNTU_VERSION=24.04
+ARG LLAMA_CPP_REF=b8816
+
+FROM nvcr.io/nvidia/cuda:${CUDA_VERSION}-devel-ubuntu${UBUNTU_VERSION} AS llama-build
+ARG LLAMA_CPP_REF
+ENV DEBIAN_FRONTEND=noninteractive
+WORKDIR /build
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        cmake \
+        git \
+        ninja-build; \
+    rm -rf /var/lib/apt/lists/*
+
+RUN git clone --depth 1 --branch "${LLAMA_CPP_REF}" https://github.com/ggml-org/llama.cpp.git llama.cpp
+WORKDIR /build/llama.cpp
+RUN cmake -B build -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release -G Ninja \
+    && cmake --build build --config Release -j"$(nproc)"
+
+COPY docker/scripts/stage-llama-runtime.sh /usr/local/bin/stage-llama-runtime
+RUN stage-llama-runtime /build/llama.cpp/build /llama-bin \
+    && /llama-bin/llama-server --version
+
+FROM nvcr.io/nvidia/cuda:${CUDA_VERSION}-runtime-ubuntu${UBUNTU_VERSION}
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    CYBER_INFERENCE_DATA_DIR=/app/data \
+    CYBER_INFERENCE_MODELS_DIR=/app/models \
+    CYBER_INFERENCE_BIN_DIR=/app/bin \
+    CYBER_INFERENCE_HOST=0.0.0.0 \
+    CYBER_INFERENCE_PORT=8337 \
+    CYBER_INFERENCE_LOG_LEVEL=INFO \
+    CYBER_INFERENCE_LLAMA_GPU_LAYERS=-1 \
+    NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility \
+    LD_LIBRARY_PATH=/app/bin:${LD_LIBRARY_PATH} \
+    PATH=/app/bin:/root/.local/bin:/root/.cargo/bin:${PATH}
+
+WORKDIR /app
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        git \
+        libcurl4 \
+        libgomp1 \
+        python3 \
+        python3-dev \
+        python3-pip \
+        python3-venv; \
+    rm -rf /var/lib/apt/lists/*; \
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+
+COPY --from=llama-build /llama-bin/ /app/bin/
+COPY pyproject.toml uv.lock README.md start.sh .python-version ./
+COPY src/ ./src/
+
+RUN set -eux; \
+    chmod +x /app/start.sh /app/bin/llama-server; \
+    mkdir -p /app/data/logs /app/models; \
+    uv sync --frozen --no-dev; \
+    which llama-server; \
+    /app/bin/llama-server --version
+
+EXPOSE 8337
+VOLUME ["/app/data", "/app/models"]
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=180s --retries=3 \
+    CMD curl -f http://localhost:8337/health || exit 1
+
+CMD ["./start.sh"]

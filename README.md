@@ -6,7 +6,7 @@
   <img src="https://img.shields.io/badge/llama.cpp-Powered-00ff9f?style=for-the-badge" alt="llama.cpp">
   <img src="https://img.shields.io/badge/Transformers-Powered-00ff9f?style=for-the-badge" alt="Transformers">
   <img src="https://img.shields.io/badge/whisper.cpp-Powered-00ff9f?style=for-the-badge" alt="whisper.cpp">
-  <img src="https://img.shields.io/badge/NVIDIA-Jetson-76B900?style=for-the-badge&logo=nvidia&logoColor=white" alt="Jetson">
+  <img src="https://img.shields.io/badge/NVIDIA-Containers-76B900?style=for-the-badge&logo=nvidia&logoColor=white" alt="NVIDIA containers">
 </p>
 
 <p align="center">
@@ -28,8 +28,8 @@ Current release: `0.2.0`
 - Automatic lazy loading and idle unloading
 - Web dashboard for model and resource management
 - Optional admin auth (JWT)
-- Docker and docker-compose support (CPU + NVIDIA)
-- NVIDIA and Apple Silicon friendly deployment paths
+- NVIDIA-only published container images for Linux AMD64 and Thor ARM64
+- Native local startup paths for macOS Apple Silicon and non-container development
 
 ## Inference Engines
 
@@ -124,22 +124,75 @@ curl http://localhost:8337/v1/chat/completions \
 
 ## Docker
 
-### CPU
+Cyber-Inference publishes NVIDIA-only container images for the two supported deployment targets:
+
+| Target | Image |
+| --- | --- |
+| Linux AMD64 NVIDIA hosts | `ghcr.io/ramborogers/cyber-inference:linux-amd64` |
+| Thor / DGX Spark ARM64 NVIDIA hosts | `ghcr.io/ramborogers/cyber-inference:thor-arm64` |
+
+Both images expect durable host directories mounted into the container:
+
+- `./data` → `/app/data` for the database and logs
+- `./models` → `/app/models` for downloaded model files
+
+Docker is **not** the recommended path for macOS Apple Silicon MPS. On macOS, use the native local
+startup flow above so Metal/MPS support is available directly from the host.
+
+### Linux AMD64 NVIDIA
 
 ```bash
-docker-compose up -d
+mkdir -p data models
+
+docker pull ghcr.io/ramborogers/cyber-inference:linux-amd64
+
+docker run -d --name cyber-inference \
+  --gpus all \
+  -p 8337:8337 \
+  -v "$PWD/data:/app/data" \
+  -v "$PWD/models:/app/models" \
+  ghcr.io/ramborogers/cyber-inference:linux-amd64
 ```
 
-### NVIDIA GPU
+### Thor / DGX Spark ARM64 NVIDIA
 
 ```bash
-docker-compose -f docker-compose.nvidia.yml up -d
+mkdir -p data models
+
+docker pull ghcr.io/ramborogers/cyber-inference:thor-arm64
+
+docker run -d --name cyber-inference \
+  --runtime nvidia \
+  -p 8337:8337 \
+  -v "$PWD/data:/app/data" \
+  -v "$PWD/models:/app/models" \
+  ghcr.io/ramborogers/cyber-inference:thor-arm64
 ```
 
-### Jetson
+### Upgrade while preserving local state
+
+Use the same host `data` and `models` directories when replacing a container. Pick the target tag for
+your host (`linux-amd64` or `thor-arm64`) and restart with the same mounts:
 
 ```bash
-docker-compose -f docker-compose.jetson.yml up -d
+TARGET_TAG=linux-amd64  # or thor-arm64
+
+docker stop cyber-inference
+docker rm cyber-inference
+docker pull "ghcr.io/ramborogers/cyber-inference:${TARGET_TAG}"
+
+docker run -d --name cyber-inference \
+  --gpus all \
+  -p 8337:8337 \
+  -v "$PWD/data:/app/data" \
+  -v "$PWD/models:/app/models" \
+  "ghcr.io/ramborogers/cyber-inference:${TARGET_TAG}"
+```
+
+For Thor hosts that require the NVIDIA runtime flag instead of `--gpus all`, replace that line with:
+
+```bash
+  --runtime nvidia \
 ```
 
 ## Configuration
