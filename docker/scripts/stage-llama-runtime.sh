@@ -1,55 +1,53 @@
 #!/usr/bin/env bash
-# Stage a llama.cpp build output into a flat runtime directory for Docker images.
-# Usage: stage-llama-runtime.sh <llama.cpp-build-dir> <destination-dir>
-
+# Stage a llama.cpp build into a compact runtime directory for Docker image assembly.
+# Usage: stage-llama-runtime.sh <llama.cpp build dir> <output dir>
 set -euo pipefail
 
 if [[ $# -ne 2 ]]; then
-  echo "usage: $0 <llama.cpp-build-dir> <destination-dir>" >&2
-  exit 2
+  echo "usage: $0 <llama.cpp build dir> <output dir>" >&2
+  exit 64
 fi
 
 build_dir="$1"
-dest_dir="$2"
+out_dir="$2"
+server=""
 
-if [[ ! -d "$build_dir" ]]; then
-  echo "llama.cpp build directory does not exist: $build_dir" >&2
-  exit 1
-fi
-
-server_path=""
 for candidate in \
   "$build_dir/bin/llama-server" \
-  "$build_dir/bin/server" \
   "$build_dir/examples/server/llama-server" \
-  "$build_dir/examples/server/server"; do
-  if [[ -f "$candidate" ]]; then
-    server_path="$candidate"
+  "$build_dir/llama-server"; do
+  if [[ -x "$candidate" ]]; then
+    server="$candidate"
     break
   fi
 done
 
-if [[ -z "$server_path" ]]; then
-  server_path="$(find "$build_dir" -type f \( -name llama-server -o -name server \) | head -n 1 || true)"
-fi
-
-if [[ -z "$server_path" || ! -f "$server_path" ]]; then
-  echo "could not find llama-server in $build_dir" >&2
+if [[ -z "$server" ]]; then
+  echo "llama-server not found under $build_dir" >&2
+  find "$build_dir" -maxdepth 4 -type f -name 'llama-server*' -print >&2 || true
   exit 1
 fi
 
-mkdir -p "$dest_dir"
-cp "$server_path" "$dest_dir/llama-server"
-chmod 0755 "$dest_dir/llama-server"
+rm -rf "$out_dir"
+mkdir -p "$out_dir"
+cp -a "$server" "$out_dir/llama-server"
+chmod +x "$out_dir/llama-server"
 
-# Copy llama.cpp's own shared libraries so the final image does not depend on build-tree paths.
-while IFS= read -r lib_path; do
-  cp -P "$lib_path" "$dest_dir/"
-done < <(find "$build_dir" -type f \( -name '*.so' -o -name '*.so.*' \) | sort -u)
+# Copy llama.cpp-built shared objects next to llama-server. System and CUDA runtime
+# libraries are supplied by the target NVIDIA base images; keeping only build-tree
+# libraries avoids accidentally shadowing glibc or host driver libraries.
+while IFS= read -r -d '' lib; do
+  cp -a "$lib" "$out_dir/"
+done < <(find "$build_dir" -type f \( -name 'libggml*.so*' -o -name 'libllama*.so*' -o -name 'libmtmd*.so*' \) -print0)
 
-# Preserve any symlinked sonames that live next to the binary.
-server_dir="$(dirname "$server_path")"
-find "$server_dir" -maxdepth 1 -type l \( -name '*.so' -o -name '*.so.*' \) -exec cp -P {} "$dest_dir/" \;
+# Also copy symlink entries when the build generated soname symlinks.
+while IFS= read -r -d '' lib; do
+  cp -a "$lib" "$out_dir/"
+done < <(find "$build_dir" -type l \( -name 'libggml*.so*' -o -name 'libllama*.so*' -o -name 'libmtmd*.so*' \) -print0)
 
-file_count="$(find "$dest_dir" -maxdepth 1 \( -type f -o -type l \) | wc -l | tr -d ' ')"
-echo "staged $file_count llama.cpp runtime file(s) into $dest_dir"
+if command -v ldd >/dev/null 2>&1; then
+  echo "llama-server dynamic dependencies:"
+  ldd "$out_dir/llama-server" || true
+fi
+
+LD_LIBRARY_PATH="$out_dir:${LD_LIBRARY_PATH:-}" "$out_dir/llama-server" --version

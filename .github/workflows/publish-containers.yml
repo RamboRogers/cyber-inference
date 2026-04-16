@@ -2,94 +2,94 @@ name: Publish containers
 
 on:
   workflow_dispatch:
-    inputs:
-      llama_cpp_ref:
-        description: "llama.cpp git tag or ref to build"
-        required: false
-        default: "b8816"
   push:
     branches:
       - main
-    tags:
-      - "v*"
+    paths:
+      - .github/workflows/publish-containers.yml
+      - docker/**
+      - src/**
+      - pyproject.toml
+      - uv.lock
+      - start.sh
+      - README.md
 
 permissions:
   contents: read
   packages: write
 
 env:
-  IMAGE_NAME: ghcr.io/ramborogers/cyber-inference
-  LLAMA_CPP_REF: ${{ inputs.llama_cpp_ref || vars.LLAMA_CPP_REF || 'b8816' }}
+  IMAGE_LINUX_AMD64: ghcr.io/ramborogers/cyber-inference:linux-amd64
+  IMAGE_THOR_ARM64: ghcr.io/ramborogers/cyber-inference:thor-arm64
+  LLAMA_CPP_VERSION: b8816
 
 jobs:
   linux-amd64:
-    name: Publish Linux AMD64 NVIDIA image
-    runs-on: ubuntu-24.04
+    name: Build and publish Linux AMD64 NVIDIA image
+    runs-on: ubuntu-latest
     steps:
-      - name: Check out Cyber-Inference
+      - name: Check out repository
         uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-      - name: Build and push linux-amd64 image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: docker/Dockerfile.linux-amd64
-          platforms: linux/amd64
-          push: true
-          tags: ${{ env.IMAGE_NAME }}:linux-amd64
-          build-args: |
-            LLAMA_CPP_REF=${{ env.LLAMA_CPP_REF }}
+      - name: Build Linux AMD64 image
+        run: |
+          docker build \
+            --platform linux/amd64 \
+            --build-arg LLAMA_CPP_VERSION="${LLAMA_CPP_VERSION}" \
+            -f docker/Dockerfile.linux-amd64 \
+            -t "${IMAGE_LINUX_AMD64}" \
+            .
+
+      - name: Smoke test baked llama-server
+        run: docker run --rm --entrypoint /app/bin/llama-server "${IMAGE_LINUX_AMD64}" --version
+
+      - name: Push Linux AMD64 image
+        run: docker push "${IMAGE_LINUX_AMD64}"
 
   thor-arm64:
-    name: Publish Thor ARM64 NVIDIA image
+    name: Build and publish Thor ARM64 NVIDIA image
     runs-on: [self-hosted, linux, ARM64, thor.lab]
     steps:
-      - name: Check out Cyber-Inference
+      - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Install llama.cpp build dependencies
+      - name: Install llama.cpp build prerequisites
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential ca-certificates cmake git ninja-build
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            ca-certificates \
+            cmake \
+            git \
+            ninja-build
 
-      - name: Clone and build llama.cpp for Thor
+      - name: Build llama.cpp natively on Thor
         run: |
-          git clone --depth 1 --branch "${LLAMA_CPP_REF}" https://github.com/ggml-org/llama.cpp llama.cpp
-          cd llama.cpp
+          rm -rf "${RUNNER_TEMP}/llama.cpp"
+          git clone --depth 1 --branch "${LLAMA_CPP_VERSION}" https://github.com/ggml-org/llama.cpp "${RUNNER_TEMP}/llama.cpp"
+          cd "${RUNNER_TEMP}/llama.cpp"
           cmake -B build -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release -G Ninja
           cmake --build build --config Release -j$(nproc)
 
-      - name: Stage llama.cpp runtime files
-        run: |
-          rm -rf docker/build/llama-bin
-          docker/scripts/stage-llama-runtime.sh llama.cpp/build docker/build/llama-bin
-          docker/build/llama-bin/llama-server --version
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Stage llama.cpp runtime bundle
+        run: docker/scripts/stage-llama-runtime.sh "${RUNNER_TEMP}/llama.cpp/build" docker/build/llama-bin
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-      - name: Build and push thor-arm64 image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: docker/Dockerfile.thor-arm64
-          platforms: linux/arm64
-          push: true
-          tags: ${{ env.IMAGE_NAME }}:thor-arm64
+      - name: Build Thor ARM64 image
+        run: |
+          docker build \
+            --platform linux/arm64 \
+            -f docker/Dockerfile.thor-arm64 \
+            -t "${IMAGE_THOR_ARM64}" \
+            .
+
+      - name: Smoke test Thor image with NVIDIA runtime
+        run: docker run --rm --runtime nvidia --entrypoint /app/bin/llama-server "${IMAGE_THOR_ARM64}" --version
+
+      - name: Push Thor ARM64 image
+        run: docker push "${IMAGE_THOR_ARM64}"

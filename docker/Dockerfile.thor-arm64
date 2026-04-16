@@ -1,9 +1,11 @@
-# syntax=docker/dockerfile:1.7
-# Thor ARM64 NVIDIA image for Cyber-Inference.
-# Consumes llama.cpp binaries staged by the self-hosted thor.lab workflow.
+# syntax=docker/dockerfile:1
+# Cyber-Inference NVIDIA image for Thor ARM64.
+# The self-hosted thor.lab workflow builds llama.cpp natively, stages the
+# resulting llama-server bundle under docker/build/llama-bin, and this image
+# consumes that prepared artifact without compiling inside Docker.
 
-ARG BASE_IMAGE=nvcr.io/nvidia/cuda:13.0.0-runtime-ubuntu24.04
-FROM ${BASE_IMAGE}
+ARG BASE_IMAGE=nvcr.io/nvidia/l4t-cuda:12.6.68-devel
+FROM ${BASE_IMAGE} AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -18,7 +20,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     NVIDIA_VISIBLE_DEVICES=all \
     NVIDIA_DRIVER_CAPABILITIES=compute,utility \
     LD_LIBRARY_PATH=/app/bin:${LD_LIBRARY_PATH} \
-    PATH=/app/bin:/root/.local/bin:/root/.cargo/bin:${PATH}
+    PATH=/app/bin:/root/.local/bin:/root/.cargo/bin:/app/.venv/bin:${PATH}
 
 WORKDIR /app
 
@@ -28,7 +30,7 @@ RUN set -eux; \
         ca-certificates \
         curl \
         git \
-        libcurl4 \
+        libcurl4-openssl-dev \
         libgomp1 \
         python3 \
         python3-dev \
@@ -37,22 +39,22 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*; \
     curl -LsSf https://astral.sh/uv/install.sh | sh
 
-COPY docker/build/llama-bin/ /app/bin/
 COPY pyproject.toml uv.lock README.md start.sh .python-version ./
 COPY src/ ./src/
+COPY docker/build/llama-bin/ /app/bin/
 
 RUN set -eux; \
     test -x /app/bin/llama-server; \
-    chmod +x /app/start.sh /app/bin/llama-server; \
+    chmod +x start.sh /app/bin/llama-server; \
     mkdir -p /app/data/logs /app/models; \
-    uv sync --frozen --no-dev; \
+    uv sync --frozen; \
     which llama-server; \
     /app/bin/llama-server --version
 
 EXPOSE 8337
 VOLUME ["/app/data", "/app/models"]
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=300s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=180s --retries=3 \
     CMD curl -f http://localhost:8337/health || exit 1
 
 CMD ["./start.sh"]
