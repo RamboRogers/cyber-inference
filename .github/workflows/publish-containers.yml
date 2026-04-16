@@ -1,0 +1,95 @@
+name: Publish containers
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/publish-containers.yml
+      - docker/**
+      - src/**
+      - pyproject.toml
+      - uv.lock
+      - start.sh
+      - README.md
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE_LINUX_AMD64: ghcr.io/ramborogers/cyber-inference:linux-amd64
+  IMAGE_THOR_ARM64: ghcr.io/ramborogers/cyber-inference:thor-arm64
+  LLAMA_CPP_VERSION: b8816
+
+jobs:
+  linux-amd64:
+    name: Build and publish Linux AMD64 NVIDIA image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build Linux AMD64 image
+        run: |
+          docker build \
+            --platform linux/amd64 \
+            --build-arg LLAMA_CPP_VERSION="${LLAMA_CPP_VERSION}" \
+            -f docker/Dockerfile.linux-amd64 \
+            -t "${IMAGE_LINUX_AMD64}" \
+            .
+
+      - name: Smoke test baked llama-server
+        run: docker run --rm --entrypoint /app/bin/llama-server "${IMAGE_LINUX_AMD64}" --version
+
+      - name: Push Linux AMD64 image
+        run: docker push "${IMAGE_LINUX_AMD64}"
+
+  thor-arm64:
+    name: Build and publish Thor ARM64 NVIDIA image
+    runs-on: [self-hosted, linux, ARM64, thor.lab]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install llama.cpp build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            ca-certificates \
+            cmake \
+            git \
+            ninja-build
+
+      - name: Build llama.cpp natively on Thor
+        run: |
+          rm -rf "${RUNNER_TEMP}/llama.cpp"
+          git clone --depth 1 --branch "${LLAMA_CPP_VERSION}" https://github.com/ggml-org/llama.cpp "${RUNNER_TEMP}/llama.cpp"
+          cd "${RUNNER_TEMP}/llama.cpp"
+          cmake -B build -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release -G Ninja
+          cmake --build build --config Release -j$(nproc)
+
+      - name: Stage llama.cpp runtime bundle
+        run: docker/scripts/stage-llama-runtime.sh "${RUNNER_TEMP}/llama.cpp/build" docker/build/llama-bin
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build Thor ARM64 image
+        run: |
+          docker build \
+            --platform linux/arm64 \
+            -f docker/Dockerfile.thor-arm64 \
+            -t "${IMAGE_THOR_ARM64}" \
+            .
+
+      - name: Smoke test Thor image with NVIDIA runtime
+        run: docker run --rm --runtime nvidia --entrypoint /app/bin/llama-server "${IMAGE_THOR_ARM64}" --version
+
+      - name: Push Thor ARM64 image
+        run: docker push "${IMAGE_THOR_ARM64}"
