@@ -1,39 +1,11 @@
 # syntax=docker/dockerfile:1
 # Cyber-Inference NVIDIA image for Linux AMD64.
-# Builds a pinned CUDA-enabled llama.cpp release from source and bakes
-# llama-server plus its runtime libraries into /app/bin.
+# This lane intentionally does not bundle llama.cpp; Cyber-Inference installs the
+# latest compatible llama-server into /app/bin at runtime when it is first needed.
 
-ARG CUDA_IMAGE=nvcr.io/nvidia/cuda:13.0.0-devel-ubuntu24.04
-ARG LLAMA_CPP_VERSION=b8816
+ARG CUDA_RUNTIME_IMAGE=nvcr.io/nvidia/cuda:13.0.0-runtime-ubuntu24.04
 
-FROM ${CUDA_IMAGE} AS llama-builder
-ARG LLAMA_CPP_VERSION
-ENV DEBIAN_FRONTEND=noninteractive
-
-RUN set -eux; \
-    apt-get update; \
-    apt-get install -y --no-install-recommends \
-        ca-certificates \
-        cmake \
-        curl \
-        g++ \
-        git \
-        libc6-dev \
-        ninja-build; \
-    rm -rf /var/lib/apt/lists/*
-
-WORKDIR /tmp
-RUN set -eux; \
-    git clone --depth 1 --branch "${LLAMA_CPP_VERSION}" https://github.com/ggml-org/llama.cpp llama.cpp; \
-    cmake -S llama.cpp -B llama.cpp/build -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release -G Ninja; \
-    cmake --build llama.cpp/build --config Release -j"$(nproc)" --target llama-server; \
-    mkdir -p /opt/llama-bin; \
-    cp -a llama.cpp/build/bin/llama-server /opt/llama-bin/; \
-    find llama.cpp/build -type f \( -name 'libggml*.so*' -o -name 'libllama*.so*' -o -name 'libmtmd*.so*' \) -exec cp -a {} /opt/llama-bin/ \;; \
-    find llama.cpp/build -type l \( -name 'libggml*.so*' -o -name 'libllama*.so*' -o -name 'libmtmd*.so*' \) -exec cp -a {} /opt/llama-bin/ \;; \
-    LD_LIBRARY_PATH=/opt/llama-bin:${LD_LIBRARY_PATH:-} /opt/llama-bin/llama-server --version
-
-FROM ${CUDA_IMAGE} AS runtime
+FROM ${CUDA_RUNTIME_IMAGE} AS runtime
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -56,7 +28,6 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
-        git \
         libcurl4-openssl-dev \
         libgomp1 \
         python3 \
@@ -68,14 +39,12 @@ RUN set -eux; \
 
 COPY pyproject.toml uv.lock README.md start.sh .python-version ./
 COPY src/ ./src/
-COPY --from=llama-builder /opt/llama-bin/ /app/bin/
 
 RUN set -eux; \
-    chmod +x start.sh /app/bin/llama-server; \
-    mkdir -p /app/data/logs /app/models; \
-    uv sync --frozen; \
-    which llama-server; \
-    /app/bin/llama-server --version
+    chmod +x start.sh; \
+    mkdir -p /app/bin /app/data/logs /app/models; \
+    uv sync --frozen --no-dev; \
+    uv run cyber-inference --help >/dev/null
 
 EXPOSE 8337
 VOLUME ["/app/data", "/app/models"]

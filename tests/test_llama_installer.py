@@ -28,6 +28,46 @@ def test_select_github_asset_does_not_choose_wrong_arch(tmp_path: Path) -> None:
     assert selected is None
 
 
+def test_select_github_asset_accepts_ubuntu_x64_cpu_assets(tmp_path: Path) -> None:
+    """Linux x64 should accept current upstream ubuntu-x64 asset naming."""
+    installer = LlamaInstaller(bin_dir=tmp_path)
+    installer._platform = "linux"
+    installer._arch = "x86_64"
+
+    release = {
+        "assets": [
+            {
+                "name": "llama-b9999-bin-ubuntu-x64.tar.gz",
+                "browser_download_url": "https://example/ubuntu-x64",
+            }
+        ]
+    }
+
+    selected = installer._select_github_asset(release, backend="cpu")
+    assert selected is not None
+    assert selected["name"] == "llama-b9999-bin-ubuntu-x64.tar.gz"
+
+
+def test_select_github_asset_linux_cuda_falls_back_to_ubuntu_x64_cpu_asset(tmp_path: Path) -> None:
+    """Linux CUDA fallback should still select the upstream ubuntu-x64 CPU asset."""
+    installer = LlamaInstaller(bin_dir=tmp_path)
+    installer._platform = "linux"
+    installer._arch = "x86_64"
+
+    release = {
+        "assets": [
+            {
+                "name": "llama-b9999-bin-ubuntu-x64.tar.gz",
+                "browser_download_url": "https://example/ubuntu-x64",
+            }
+        ]
+    }
+
+    selected = installer._select_github_asset(release, backend="cuda")
+    assert selected is not None
+    assert selected["name"] == "llama-b9999-bin-ubuntu-x64.tar.gz"
+
+
 def test_get_managed_binary_path_ignores_system_path(tmp_path: Path) -> None:
     """Managed binary path should always point inside bin_dir."""
     installer = LlamaInstaller(bin_dir=tmp_path)

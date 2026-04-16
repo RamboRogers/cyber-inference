@@ -4,7 +4,7 @@
 # resulting llama-server bundle under docker/build/llama-bin, and this image
 # consumes that prepared artifact without compiling inside Docker.
 
-ARG BASE_IMAGE=nvcr.io/nvidia/l4t-cuda:12.6.68-devel
+ARG BASE_IMAGE=nvcr.io/nvidia/cuda:13.0.0-runtime-ubuntu24.04
 FROM ${BASE_IMAGE} AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -29,7 +29,6 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
-        git \
         libcurl4-openssl-dev \
         libgomp1 \
         python3 \
@@ -47,7 +46,7 @@ RUN set -eux; \
     test -x /app/bin/llama-server; \
     chmod +x start.sh /app/bin/llama-server; \
     mkdir -p /app/data/logs /app/models; \
-    uv sync --frozen; \
+    uv sync --frozen --no-dev; \
     which llama-server; \
     /app/bin/llama-server --version
 

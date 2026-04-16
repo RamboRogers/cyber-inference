@@ -144,16 +144,17 @@ class LlamaInstaller:
 
         elif self._platform == "linux":
             # Linux
+            linux_distros = "(?:linux|ubuntu)"
             if backend == "cuda":
                 if self._arch in ("arm64", "aarch64"):
                     # Jetson or ARM with CUDA
-                    return "llama-.*-linux-arm64-cuda"
+                    return rf"llama-.*-{linux_distros}-arm64-cuda"
                 else:
-                    return "llama-.*-linux-x64-cuda"
+                    return rf"llama-.*-{linux_distros}-x64-cuda"
             elif self._arch in ("arm64", "aarch64"):
-                return "llama-.*-linux-arm64"
+                return rf"llama-.*-{linux_distros}-arm64"
             else:
-                return "llama-.*-linux-x64"
+                return rf"llama-.*-{linux_distros}-x64"
 
         elif self._platform == "windows":
             if backend == "cuda":
@@ -303,7 +304,10 @@ class LlamaInstaller:
             if not isinstance(name, str):
                 continue
             name_lower = name.lower()
-            if self._platform not in name_lower:
+            if self._platform == "linux":
+                if "linux" not in name_lower and "ubuntu" not in name_lower:
+                    continue
+            elif self._platform not in name_lower:
                 continue
             if not self._matches_arch(name_lower):
                 continue

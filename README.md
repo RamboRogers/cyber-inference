@@ -136,6 +136,11 @@ Both images expect durable host directories mounted into the container:
 - `./data` → `/app/data` for the database and logs
 - `./models` → `/app/models` for downloaded model files
 
+The Linux AMD64 image does not ship a bundled `llama.cpp`; on startup, Cyber-Inference attempts to
+download the latest compatible `llama-server` into `/app/bin`, so the container needs outbound
+network access on first boot. The Thor image bakes in the current `llama.cpp` build produced on
+`thor.lab` during the publish workflow.
+
 Docker is **not** the recommended path for macOS Apple Silicon MPS. On macOS, use the native local
 startup flow above so Metal/MPS support is available directly from the host.
 

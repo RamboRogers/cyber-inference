@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches:
+      - master
       - main
     paths:
       - .github/workflows/publish-containers.yml
@@ -21,7 +22,6 @@ permissions:
 env:
   IMAGE_LINUX_AMD64: ghcr.io/ramborogers/cyber-inference:linux-amd64
   IMAGE_THOR_ARM64: ghcr.io/ramborogers/cyber-inference:thor-arm64
-  LLAMA_CPP_VERSION: b8816
 
 jobs:
   linux-amd64:
@@ -38,20 +38,23 @@ jobs:
         run: |
           docker build \
             --platform linux/amd64 \
-            --build-arg LLAMA_CPP_VERSION="${LLAMA_CPP_VERSION}" \
             -f docker/Dockerfile.linux-amd64 \
             -t "${IMAGE_LINUX_AMD64}" \
             .
 
-      - name: Smoke test baked llama-server
-        run: docker run --rm --entrypoint /app/bin/llama-server "${IMAGE_LINUX_AMD64}" --version
+      - name: Smoke test runtime llama.cpp install path
+        run: |
+          docker run --rm --entrypoint /bin/bash "${IMAGE_LINUX_AMD64}" -lc '
+            uv run cyber-inference install-llama &&
+            /app/bin/llama-server --version
+          '
 
       - name: Push Linux AMD64 image
         run: docker push "${IMAGE_LINUX_AMD64}"
 
   thor-arm64:
     name: Build and publish Thor ARM64 NVIDIA image
-    runs-on: [self-hosted, linux, ARM64, thor.lab]
+    runs-on: [self-hosted, Linux, ARM64, NVIDIA, Thor]
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -69,7 +72,7 @@ jobs:
       - name: Build llama.cpp natively on Thor
         run: |
           rm -rf "${RUNNER_TEMP}/llama.cpp"
-          git clone --depth 1 --branch "${LLAMA_CPP_VERSION}" https://github.com/ggml-org/llama.cpp "${RUNNER_TEMP}/llama.cpp"
+          git clone --depth 1 https://github.com/ggml-org/llama.cpp "${RUNNER_TEMP}/llama.cpp"
           cd "${RUNNER_TEMP}/llama.cpp"
           cmake -B build -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release -G Ninja
           cmake --build build --config Release -j$(nproc)
