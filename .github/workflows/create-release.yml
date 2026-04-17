@@ -2,6 +2,10 @@ name: Create release
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - master
+      - main
 
 permissions:
   contents: write
@@ -9,6 +13,7 @@ permissions:
 jobs:
   release:
     name: Compute version, update changelog, and publish GitHub release
+    if: github.event_name == 'workflow_dispatch' || !startsWith(github.event.head_commit.message, 'chore(release):')
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -46,7 +51,21 @@ jobs:
           if git diff --cached --quiet; then
             echo "No release metadata changes to commit."
           else
-            git commit -m "chore(release): cut ${{ steps.prepare.outputs.tag_name }}"
+            printf '%s\n' \
+              "chore(release): publish ${{ steps.prepare.outputs.tag_name }} from tracked changes" \
+              "" \
+              "This release commit records the version bump and changelog entry that" \
+              "correspond to the next GitHub release emitted from the default branch." \
+              "" \
+              "Constraint: Release creation must remain idempotent on subsequent release commits" \
+              "Rejected: Manual release-only workflow dispatch | did not match the expected push-to-release behavior" \
+              "Confidence: high" \
+              "Scope-risk: narrow" \
+              "Directive: Keep the release commit prefix stable so the workflow skip condition prevents loops" \
+              "Tested: GitHub Actions release workflow path" \
+              "Not-tested: Downstream container publication on GitHub-hosted infrastructure" \
+              > /tmp/release-commit-message.txt
+            git commit -F /tmp/release-commit-message.txt
             git push origin "HEAD:${GITHUB_REF_NAME}"
           fi
 
