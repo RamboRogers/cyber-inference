@@ -49,6 +49,32 @@ Cyber-Inference is a web GUI and API server for running local inference engines 
 
 ### One-shot startup
 
+You have a NVIDIA Thor/DGX Spark ARM64 host and want to run Cyber-Inference.
+> [!TIP] The latest llama.cpp is built natively on Thor and baked into the container image.
+```bash
+docker pull ghcr.io/ramborogers/cyber-inference:v0.2.0-thor-arm64
+
+docker run -d --name cyber-inference \
+  --runtime nvidia \
+  -p 8337:8337 \
+  -v "$PWD/data:/app/data" \
+  -v "$PWD/models:/app/models" \
+  ghcr.io/ramborogers/cyber-inference:thor-arm64
+```
+Quick Update:
+```bash
+docker pull ghcr.io/ramborogers/cyber-inference:v0.2.0-thor-arm64
+docker rm -rf cyber-inference
+docker run -d --name cyber-inference \
+  --runtime nvidia \
+  -p 8337:8337 \
+  -v "$PWD/data:/app/data" \
+  -v "$PWD/models:/app/models" \
+  ghcr.io/ramborogers/cyber-inference:thor-arm64
+
+```
+
+### Local development
 ```bash
 git clone https://github.com/ramborogers/cyber-inference.git
 cd cyber-inference
@@ -74,6 +100,8 @@ uv run cyber-inference serve --reload
 Open the UI at `http://localhost:8337`.
 
 ## Model Download
+
+![download.png](download.png)
 
 Use the **Models** page in the UI or the CLI.
 
