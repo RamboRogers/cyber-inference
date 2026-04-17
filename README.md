@@ -61,7 +61,7 @@ docker run -d --name cyber-inference \
   -v "$PWD/models:/app/models" \
   ghcr.io/ramborogers/cyber-inference:thor-arm64
 ```
-Quick Update:
+Quick ⚡️ Update:
 ```bash
 docker pull ghcr.io/ramborogers/cyber-inference:v0.2.0-thor-arm64
 docker rm -rf cyber-inference
@@ -109,25 +109,6 @@ Cyber-Inference handles GGUF repositories that publish one model across multiple
 `Model-00001-of-00003.gguf`, `Model-00002-of-00003.gguf`, and `Model-00003-of-00003.gguf`.
 The downloader presents the shard set as one logical model choice, downloads any missing shards,
 skips complete shards on repeat runs, and registers one canonical model entry.
-
-### CLI examples
-
-```bash
-# Auto-select engine (GGUF for GGUF repos, transformers for full HF repos)
-uv run cyber-inference download-model ggml-org/Qwen3-4B-GGUF
-uv run cyber-inference download-model Qwen/Qwen2.5-7B-Instruct
-
-# Force engine
-uv run cyber-inference download-model ggml-org/gpt-oss-20b-GGUF --engine gguf
-uv run cyber-inference download-model nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8 --engine transformers
-
-# Split GGUF repos are handled as one logical model.
-# Passing the first shard or a later shard downloads the full shard set.
-uv run cyber-inference download-model <org>/<split-gguf-repo> --filename Model-00001-of-00003.gguf
-
-# List local models
-uv run cyber-inference list-models
-```
 
 ## API Usage
 
@@ -237,7 +218,9 @@ For Thor hosts that require the NVIDIA runtime flag instead of `--gpus all`, rep
 
 ## Configuration
 
-Environment variables use the `CYBER_INFERENCE_` prefix.
+![config.png](config.png)
+
+Environment variables use the `CYBER_INFERENCE_` prefix, or you can just use the UI.
 
 | Variable | Default | Description |
 | --- | --- | --- |
@@ -284,15 +267,6 @@ cache-clear hook before startup.
 - `GET /admin/config`
 - `PUT /admin/config/{key}`
 
-## Development
-
-```bash
-uv sync
-uv run pytest
-uv run ruff check .
-uv run mypy src/
-```
 
 ## License
-
 GPL-3.0
