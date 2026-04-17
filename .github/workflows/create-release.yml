@@ -8,6 +8,7 @@ on:
       - main
 
 permissions:
+  actions: write
   contents: write
 
 jobs:
@@ -81,3 +82,12 @@ jobs:
           gh release create "${{ steps.prepare.outputs.tag_name }}" \
             --title "${{ steps.prepare.outputs.tag_name }}" \
             --notes-file "${RUNNER_TEMP}/release-notes.md"
+
+      - name: Dispatch container publishing
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run publish-containers.yml \
+            --repo "${{ github.repository }}" \
+            --ref "${GITHUB_REF_NAME}" \
+            -f release_tag="${{ steps.prepare.outputs.tag_name }}"
