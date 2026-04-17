@@ -1,27 +1,17 @@
 name: Publish containers
 
 on:
-  workflow_dispatch:
-  push:
-    branches:
-      - master
-      - main
-    paths:
-      - .github/workflows/publish-containers.yml
-      - docker/**
-      - src/**
-      - pyproject.toml
-      - uv.lock
-      - start.sh
-      - README.md
+  release:
+    types:
+      - published
 
 permissions:
   contents: read
   packages: write
 
 env:
-  IMAGE_LINUX_AMD64: ghcr.io/ramborogers/cyber-inference:linux-amd64
-  IMAGE_THOR_ARM64: ghcr.io/ramborogers/cyber-inference:thor-arm64
+  IMAGE_REPO: ghcr.io/ramborogers/cyber-inference
+  RELEASE_TAG: ${{ github.event.release.tag_name }}
 
 jobs:
   linux-amd64:
@@ -30,27 +20,42 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
 
       - name: Log in to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
       - name: Build Linux AMD64 image
+        env:
+          IMAGE_RELEASE: ${{ env.IMAGE_REPO }}:${{ env.RELEASE_TAG }}-linux-amd64
+          IMAGE_FLOATING: ${{ env.IMAGE_REPO }}:linux-amd64
         run: |
           docker build \
             --platform linux/amd64 \
             -f docker/Dockerfile.linux-amd64 \
-            -t "${IMAGE_LINUX_AMD64}" \
+            --label "org.opencontainers.image.version=${RELEASE_TAG}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            -t "${IMAGE_RELEASE}" \
+            -t "${IMAGE_FLOATING}" \
             .
 
       - name: Smoke test runtime llama.cpp install path
+        env:
+          IMAGE_RELEASE: ${{ env.IMAGE_REPO }}:${{ env.RELEASE_TAG }}-linux-amd64
         run: |
-          docker run --rm --entrypoint /bin/bash "${IMAGE_LINUX_AMD64}" -lc '
+          docker run --rm --entrypoint /bin/bash "${IMAGE_RELEASE}" -lc '
             uv run cyber-inference install-llama &&
             /app/bin/llama-server --version
           '
 
       - name: Push Linux AMD64 image
-        run: docker push "${IMAGE_LINUX_AMD64}"
+        env:
+          IMAGE_RELEASE: ${{ env.IMAGE_REPO }}:${{ env.RELEASE_TAG }}-linux-amd64
+          IMAGE_FLOATING: ${{ env.IMAGE_REPO }}:linux-amd64
+        run: |
+          docker push "${IMAGE_RELEASE}"
+          docker push "${IMAGE_FLOATING}"
 
   thor-arm64:
     name: Build and publish Thor ARM64 NVIDIA image
@@ -58,6 +63,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
 
       - name: Install llama.cpp build prerequisites
         run: |
@@ -84,15 +91,28 @@ jobs:
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
       - name: Build Thor ARM64 image
+        env:
+          IMAGE_RELEASE: ${{ env.IMAGE_REPO }}:${{ env.RELEASE_TAG }}-thor-arm64
+          IMAGE_FLOATING: ${{ env.IMAGE_REPO }}:thor-arm64
         run: |
           docker build \
             --platform linux/arm64 \
             -f docker/Dockerfile.thor-arm64 \
-            -t "${IMAGE_THOR_ARM64}" \
+            --label "org.opencontainers.image.version=${RELEASE_TAG}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            -t "${IMAGE_RELEASE}" \
+            -t "${IMAGE_FLOATING}" \
             .
 
       - name: Smoke test Thor image with NVIDIA runtime
-        run: docker run --rm --runtime nvidia --entrypoint /app/bin/llama-server "${IMAGE_THOR_ARM64}" --version
+        env:
+          IMAGE_RELEASE: ${{ env.IMAGE_REPO }}:${{ env.RELEASE_TAG }}-thor-arm64
+        run: docker run --rm --runtime nvidia --entrypoint /app/bin/llama-server "${IMAGE_RELEASE}" --version
 
       - name: Push Thor ARM64 image
-        run: docker push "${IMAGE_THOR_ARM64}"
+        env:
+          IMAGE_RELEASE: ${{ env.IMAGE_REPO }}:${{ env.RELEASE_TAG }}-thor-arm64
+          IMAGE_FLOATING: ${{ env.IMAGE_REPO }}:thor-arm64
+        run: |
+          docker push "${IMAGE_RELEASE}"
+          docker push "${IMAGE_FLOATING}"

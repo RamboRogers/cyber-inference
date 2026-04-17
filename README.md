@@ -19,8 +19,6 @@ Cyber-Inference is a web GUI and API server for running local inference engines 
 - `transformers` for full HuggingFace model directories
 - `whisper.cpp` for transcription/translation
 
-Current release: `0.2.0`
-
 ## Features
 
 - OpenAI-compatible API (`/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/v1/audio/*`)
@@ -30,6 +28,14 @@ Current release: `0.2.0`
 - Optional admin auth (JWT)
 - NVIDIA-only published container images for Linux AMD64 and Thor ARM64
 - Native local startup paths for macOS Apple Silicon and non-container development
+
+## Releases
+
+- GitHub Releases are the canonical release surface for Cyber-Inference.
+- `CHANGELOG.md` is the repo release log.
+- Release notes are generated from commits since the previous release plus the core-functions summary in this README.
+- Versioning is patch-by-default. Use `release:minor` or `feat:` to force a minor bump, and `release:major`, `BREAKING CHANGE`, or `type!:` to force a major bump.
+- Container images publish from the GitHub release event and receive immutable versioned tags such as `v0.2.0-linux-amd64` and `v0.2.0-thor-arm64`, alongside the floating platform tags.
 
 ## Inference Engines
 

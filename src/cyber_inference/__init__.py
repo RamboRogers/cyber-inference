@@ -9,11 +9,33 @@ This package provides:
 - HuggingFace integration for model downloads
 """
 
-__version__ = "0.2.0"
+import tomllib
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as package_version
+from pathlib import Path
+
 __author__ = "Matthew Rogers"
 __license__ = "GPL-3.0"
 
-from cyber_inference.core.logging import get_logger
+
+def _load_version() -> str:
+    pyproject_path = Path(__file__).resolve().parents[2] / "pyproject.toml"
+    if pyproject_path.exists():
+        with pyproject_path.open("rb") as handle:
+            data = tomllib.load(handle)
+        version = data.get("project", {}).get("version")
+        if isinstance(version, str):
+            return version
+
+    try:
+        return package_version("cyber-inference")
+    except PackageNotFoundError:
+        return "0.0.0"
+
+
+__version__ = _load_version()
+
+from cyber_inference.core.logging import get_logger  # noqa: E402
 
 logger = get_logger(__name__)
 logger.info(f"Cyber-Inference v{__version__} initializing...")
