@@ -21,8 +21,10 @@ import pytest
 from fastapi import HTTPException
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.orm import sessionmaker
 
-from cyber_inference.core.database import get_db
+from cyber_inference.core.database import Base, get_db
 from cyber_inference.main import app
 from cyber_inference.models.db_models import Configuration, Model
 from cyber_inference.models.schemas import ChatCompletionRequest, ChatMessage
@@ -308,22 +310,77 @@ async def test_admin_resources_endpoint():
 @pytest.mark.asyncio
 async def test_admin_models_list():
     """Test listing models via admin API."""
-    session = MagicMock()
-    result = MagicMock()
-    result.scalars.return_value.all.return_value = []
-    session.execute = AsyncMock(return_value=result)
+    manager = MagicMock()
+    manager.list_models = AsyncMock(return_value=[])
 
-    @asynccontextmanager
-    async def override_get_db_session():
-        yield session
-
-    with patch("cyber_inference.api.admin.get_db_session", override_get_db_session):
+    with patch("cyber_inference.api.admin.ModelManager", return_value=manager):
         async with make_test_client() as client:
             response = await client.get("/admin/models")
 
     assert response.status_code == 200
     data = response.json()
     assert isinstance(data, list)
+
+
+@pytest.mark.asyncio
+async def test_admin_models_list_resolves_relative_paths(tmp_path: Path):
+    """Admin models response should expose resolved absolute paths even when DB storage is relative."""
+    from cyber_inference.services.model_manager import ModelManager
+
+    models_dir = tmp_path / "models"
+    nested_dir = models_dir / "nested"
+    nested_dir.mkdir(parents=True, exist_ok=True)
+    model_path = nested_dir / "demo.gguf"
+    mmproj_path = nested_dir / "mmproj-demo.gguf"
+    model_path.write_bytes(b"demo")
+    mmproj_path.write_bytes(b"mmproj")
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'api-relative.db'}")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+    @asynccontextmanager
+    async def db_session():
+        async with async_session() as session:
+            try:
+                yield session
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                raise
+
+    async with db_session() as session:
+        session.add(
+            Model(
+                name="demo-model",
+                filename="demo.gguf",
+                file_path="nested/demo.gguf",
+                mmproj_path="nested/mmproj-demo.gguf",
+                size_bytes=4,
+                context_length=4096,
+                is_downloaded=True,
+                is_enabled=True,
+                download_progress=100.0,
+            )
+        )
+
+    manager = ModelManager(models_dir=models_dir)
+
+    with (
+        patch("cyber_inference.api.admin.ModelManager", return_value=manager),
+        patch("cyber_inference.services.model_manager.get_db_session", db_session),
+    ):
+        async with make_test_client() as client:
+            response = await client.get("/admin/models")
+
+    await engine.dispose()
+
+    assert response.status_code == 200
+    data = response.json()
+    assert Path(data[0]["file_path"]) == model_path.resolve(strict=False)
+    assert Path(data[0]["mmproj_path"]) == mmproj_path.resolve(strict=False)
 
 
 @pytest.mark.asyncio

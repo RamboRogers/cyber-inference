@@ -361,38 +361,38 @@ async def list_models(
     """
     logger.info("[info]GET /admin/models[/info]")
 
-    async with get_db_session() as session:
-        result = await session.execute(select(Model))
-        models = result.scalars().all()
+    mm = ModelManager()
+    models = await mm.list_models(include_file_metadata=False)
 
-        return [
-            ModelResponse(
-                id=m.id,
-                name=m.name,
-                filename=m.filename,
-                file_path=m.file_path,
-                hf_repo_id=m.hf_repo_id,
-                size_bytes=m.size_bytes,
-                quantization=m.quantization,
-                context_length=m.context_length,
-                model_type=m.model_type,
-                engine_type=m.engine_type,
-                mmproj_path=m.mmproj_path,
-                is_split_gguf=m.is_split_gguf,
-                gguf_shard_count=m.gguf_shard_count,
-                gguf_shard_filenames=m.gguf_shard_filenames,
-                tool_template_mode=m.tool_template_mode,
-                tool_template_name=m.tool_template_name,
-                tool_template_path=m.tool_template_path,
-                tool_jinja_enabled=m.tool_jinja_enabled,
-                is_downloaded=m.is_downloaded,
-                is_enabled=m.is_enabled,
-                download_progress=m.download_progress,
-                created_at=m.created_at,
-                last_used_at=m.last_used_at,
-            )
-            for m in models
-        ]
+    return [
+        ModelResponse(
+            id=m["id"],
+            name=m["name"],
+            filename=m["filename"],
+            file_path=m["path"],
+            hf_repo_id=m["hf_repo_id"],
+            size_bytes=m["size_bytes"],
+            quantization=m["quantization"],
+            context_length=m["context_length"],
+            model_type=m["model_type"],
+            engine_type=m["engine_type"],
+            mmproj_path=m["mmproj_path"],
+            is_split_gguf=m["is_split_gguf"],
+            gguf_shard_count=m["gguf_shard_count"],
+            gguf_shard_filenames=m["gguf_shard_filenames"],
+            tool_template_mode=m["tool_template_mode"],
+            tool_template_name=m["tool_template_name"],
+            tool_template_path=m["tool_template_path"],
+            tool_jinja_enabled=m["tool_jinja_enabled"],
+            is_downloaded=m["is_downloaded"],
+            is_enabled=m["is_enabled"],
+            download_progress=m["download_progress"],
+            created_at=m["created_at"],
+            last_used_at=m["last_used_at"],
+        )
+        for m in models
+        if m["registered"] and m["id"] is not None
+    ]
 
 
 @router.get("/models/repo-files")

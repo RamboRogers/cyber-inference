@@ -100,6 +100,31 @@ class ModelManager:
         logger.debug(f"  Models directory: {self.models_dir}")
         logger.debug(f"  HuggingFace token: {'configured' if self._hf_token else 'not set'}")
 
+    def _path_for_storage(self, path: Path | None) -> str | None:
+        """Return the DB storage form for a path."""
+        if path is None:
+            return None
+
+        path_obj = Path(path)
+        if not path_obj.is_absolute():
+            return path_obj.as_posix()
+
+        try:
+            rel = path_obj.resolve(strict=False).relative_to(self.models_dir.resolve(strict=False))
+            return rel.as_posix()
+        except ValueError:
+            return str(path_obj)
+
+    def _resolve_stored_path(self, path_str: str | None) -> Path | None:
+        """Resolve a stored DB path string to a usable filesystem path."""
+        if not path_str:
+            return None
+
+        path_obj = Path(path_str)
+        if path_obj.is_absolute():
+            return path_obj
+        return (self.models_dir / path_obj).resolve(strict=False)
+
     @staticmethod
     def _read_gguf_metadata_summary(file_path: Path) -> dict[str, Any] | None:
         def read_exact(handle, size: int) -> bytes:
@@ -1530,7 +1555,7 @@ class ModelManager:
         winner = candidates[0]
         winner.name = canonical_name
         winner.filename = filename
-        winner.file_path = str(file_path)
+        winner.file_path = self._path_for_storage(file_path) or str(file_path)
         logger.info(f"  Reconciled split GGUF model identity: {canonical_name}")
         return canonical_name
 
@@ -1589,7 +1614,7 @@ class ModelManager:
             context_length = self._read_transformers_context_length(file_path)
 
         # Convert mmproj_path to string if provided
-        mmproj_path_str = str(mmproj_path) if mmproj_path else None
+        mmproj_path_str = self._path_for_storage(mmproj_path)
 
         # Determine engine_type if not provided
         if not engine_type:
@@ -1612,7 +1637,7 @@ class ModelManager:
 
             if existing:
                 # Update existing record
-                existing.file_path = str(file_path)
+                existing.file_path = self._path_for_storage(file_path) or str(file_path)
                 existing.size_bytes = size_bytes
                 existing.is_downloaded = True
                 existing.download_progress = 100.0
@@ -1687,7 +1712,7 @@ class ModelManager:
             model = Model(
                 name=model_name,
                 filename=filename,
-                file_path=str(file_path),
+                file_path=self._path_for_storage(file_path) or str(file_path),
                 hf_repo_id=repo_id,
                 hf_filename=filename,
                 size_bytes=size_bytes,
@@ -1734,7 +1759,7 @@ class ModelManager:
             updated = False
             for model in db_models:
                 metadata_summary: dict[str, Any] = {}
-                file_path = Path(model.file_path) if model.file_path else None
+                file_path = self._resolve_stored_path(model.file_path)
                 split_metadata = (
                     self._local_split_gguf_metadata(file_path)
                     if file_path and file_path.suffix == ".gguf"
@@ -1753,7 +1778,10 @@ class ModelManager:
                     if model.name != canonical_name and canonical_name not in db_model_names:
                         model.name = canonical_name
                         model.filename = split_metadata["primary_filename"]
-                        model.file_path = str(split_metadata["primary_path"])
+                        model.file_path = (
+                            self._path_for_storage(split_metadata["primary_path"])
+                            or str(split_metadata["primary_path"])
+                        )
                         db_model_names.add(canonical_name)
                         updated = True
                     model.is_split_gguf = True
@@ -1764,7 +1792,9 @@ class ModelManager:
 
                 # Backfill context_length for models that still have the 4096 default
                 if model.file_path:
-                    file_path = Path(model.file_path)
+                    file_path = self._resolve_stored_path(model.file_path)
+                    if file_path is None:
+                        continue
                     if include_file_metadata and file_path.exists() and file_path.suffix == ".gguf":
                         metadata_summary = self._read_gguf_metadata_summary_cached(file_path) or {}
                     elif file_path.is_dir():
@@ -1781,26 +1811,34 @@ class ModelManager:
                 engine_type = model.engine_type or "llama"
                 is_vlm = bool(model.mmproj_path)
                 if engine_type == "transformers":
-                    is_vlm = self._detect_vlm_from_config(Path(model.file_path)) == "vlm"
+                    resolved_path = self._resolve_stored_path(model.file_path)
+                    is_vlm = bool(resolved_path and self._detect_vlm_from_config(resolved_path) == "vlm")
+
+                resolved_file_path = self._resolve_stored_path(model.file_path)
+                resolved_mmproj_path = self._resolve_stored_path(model.mmproj_path)
 
                 models.append({
                     "id": model.id,
                     "name": model.name,
                     "filename": model.filename,
-                    "path": model.file_path,
+                    "path": str(resolved_file_path) if resolved_file_path else model.file_path,
                     "hf_repo_id": model.hf_repo_id,
                     "size_bytes": model.size_bytes,
                     "quantization": model.quantization,
                     "context_length": model.context_length,
                     "model_type": model.model_type,
                     "engine_type": engine_type,
-                    "mmproj_path": model.mmproj_path,
+                    "mmproj_path": (
+                        str(resolved_mmproj_path) if resolved_mmproj_path else model.mmproj_path
+                    ),
                     "is_split_gguf": bool(model.is_split_gguf),
                     "gguf_shard_count": model.gguf_shard_count,
                     "gguf_shard_filenames": model.gguf_shard_filenames,
                     "is_vlm": is_vlm,
                     "is_downloaded": model.is_downloaded,
                     "is_enabled": model.is_enabled,
+                    "download_progress": model.download_progress,
+                    "created_at": model.created_at,
                     "last_used_at": model.last_used_at,
                     "registered": True,
                     "default_context_size": model.default_context_size,
@@ -1883,6 +1921,8 @@ class ModelManager:
                     "is_vlm": bool(mmproj_path),
                     "is_downloaded": True,
                     "is_enabled": True,
+                    "download_progress": 100.0,
+                    "created_at": None,
                     "last_used_at": None,
                     "registered": False,
                     "default_context_size": None,
@@ -1990,7 +2030,7 @@ class ModelManager:
         """
         model = await self.get_model(name)
         if model and model["is_downloaded"]:
-            return Path(model["path"])
+            return self._resolve_stored_path(model["path"])
         return None
 
     async def delete_model(self, name: str) -> bool:
@@ -2013,7 +2053,10 @@ class ModelManager:
             return False
 
         # Delete file or directory (ignore if already gone)
-        file_path = Path(model["path"])
+        file_path = self._resolve_stored_path(model["path"])
+        if file_path is None:
+            logger.warning(f"Model path missing for {name}")
+            return False
         try:
             if file_path.exists():
                 if file_path.is_dir():

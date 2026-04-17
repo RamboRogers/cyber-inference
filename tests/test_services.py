@@ -574,6 +574,116 @@ class TestModelManager:
         assert len(stored_rows) == 2
 
     @pytest.mark.asyncio
+    async def test_register_model_stores_relative_paths_and_lists_resolved_paths(self, temp_models_dir):
+        """Models under models_dir should be stored relatively and listed as resolved paths."""
+        from cyber_inference.services.model_manager import ModelManager
+
+        model_path = temp_models_dir / "nested" / "demo.gguf"
+        mmproj_path = temp_models_dir / "nested" / "mmproj-demo.gguf"
+        model_path.parent.mkdir(parents=True, exist_ok=True)
+        model_path.write_bytes(b"demo")
+        mmproj_path.write_bytes(b"mmproj")
+
+        engine = create_async_engine(f"sqlite+aiosqlite:///{temp_models_dir / 'relative.db'}")
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        @asynccontextmanager
+        async def db_session():
+            async with async_session() as session:
+                try:
+                    yield session
+                    await session.commit()
+                except Exception:
+                    await session.rollback()
+                    raise
+
+        manager = ModelManager(models_dir=temp_models_dir)
+        with patch("cyber_inference.services.model_manager.get_db_session", db_session):
+            await manager._register_model(
+                repo_id="demo/repo",
+                filename=model_path.name,
+                file_path=model_path,
+                mmproj_path=mmproj_path,
+            )
+
+            async with db_session() as session:
+                result = await session.execute(select(Model))
+                stored = result.scalar_one()
+                assert stored.file_path == "nested/demo.gguf"
+                assert stored.mmproj_path == "nested/mmproj-demo.gguf"
+
+            models = await manager.list_models(include_file_metadata=False)
+            model = models[0]
+            assert Path(model["path"]) == model_path.resolve(strict=False)
+            assert Path(model["mmproj_path"]) == mmproj_path.resolve(strict=False)
+            assert await manager.get_model_path(model["name"]) == model_path.resolve(strict=False)
+
+        await engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_list_models_keeps_split_paths_relative_in_db_but_resolves_for_runtime(
+        self,
+        temp_models_dir,
+    ):
+        """Nested split GGUF rows should stay relative in DB while runtime paths resolve absolutely."""
+        from cyber_inference.services.model_manager import ModelManager
+
+        shard_dir = temp_models_dir / "MXFP4_MOE"
+        shard_dir.mkdir(parents=True, exist_ok=True)
+        shard_paths = [
+            shard_dir / "Model-00001-of-00002.gguf",
+            shard_dir / "Model-00002-of-00002.gguf",
+        ]
+        for shard_path in shard_paths:
+            shard_path.write_bytes(b"x" * 10)
+
+        engine = create_async_engine(f"sqlite+aiosqlite:///{temp_models_dir / 'split-relative.db'}")
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+        async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+        @asynccontextmanager
+        async def db_session():
+            async with async_session() as session:
+                try:
+                    yield session
+                    await session.commit()
+                except Exception:
+                    await session.rollback()
+                    raise
+
+        async with db_session() as session:
+            session.add(
+                Model(
+                    name="Model",
+                    filename=shard_paths[0].name,
+                    file_path="MXFP4_MOE/Model-00001-of-00002.gguf",
+                    size_bytes=20,
+                    context_length=4096,
+                    is_split_gguf=True,
+                    gguf_shard_count=2,
+                    gguf_shard_filenames=[path.name for path in shard_paths],
+                    is_downloaded=True,
+                )
+            )
+
+        manager = ModelManager(models_dir=temp_models_dir)
+        with patch("cyber_inference.services.model_manager.get_db_session", db_session):
+            models = await manager.list_models(include_file_metadata=False)
+            assert Path(models[0]["path"]) == shard_paths[0].resolve(strict=False)
+
+            async with db_session() as session:
+                result = await session.execute(select(Model))
+                stored = result.scalar_one()
+                assert stored.file_path == "MXFP4_MOE/Model-00001-of-00002.gguf"
+
+        await engine.dispose()
+
+    @pytest.mark.asyncio
     async def test_database_init_adds_split_gguf_columns_idempotently(self, temp_models_dir):
         """Startup migration should add split metadata columns and tolerate repeat runs."""
         db_path = temp_models_dir / "migration.db"
