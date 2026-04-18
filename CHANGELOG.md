@@ -94,3 +94,21 @@ Changes since `v0.2.4`:
 - Optional admin auth (JWT)
 - NVIDIA-only published container images for Linux AMD64 and Thor ARM64
 - Native local startup paths for macOS Apple Silicon and non-container development
+
+## [0.2.6] - 2026-04-18
+
+### Release Notes
+
+Changes since `v0.2.5`:
+
+- Fix Thor smoke quoting so CUDA verification runs to completion
+
+### Core Functions
+
+- OpenAI-compatible API (`/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/v1/audio/*`)
+- Model download + registration from HuggingFace, including split GGUF shard sets
+- Automatic lazy loading and idle unloading
+- Web dashboard for model and resource management
+- Optional admin auth (JWT)
+- NVIDIA-only published container images for Linux AMD64 and Thor ARM64
+- Native local startup paths for macOS Apple Silicon and non-container development
