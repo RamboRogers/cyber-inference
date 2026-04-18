@@ -150,7 +150,7 @@ jobs:
               echo "whisper libraries were flattened into /app/bin" >&2
               exit 1
             fi
-            uv run python -c "import glob, os, torch; print(torch.cuda.is_available(), torch.version.cuda); assert torch.cuda.is_available(); assert torch.version.cuda; assert not glob.glob('/app/bin/transformers*'); assert not os.path.isdir('/app/bin/transformers')"
+            /app/.venv/bin/python -c "import glob, os, torch; print(torch.cuda.is_available(), torch.version.cuda); assert torch.cuda.is_available(); assert torch.version.cuda; assert not glob.glob(\"/app/bin/transformers*\"); assert not os.path.isdir(\"/app/bin/transformers\")"
           '
 
       - name: Push Thor ARM64 image
