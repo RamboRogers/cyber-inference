@@ -29,6 +29,7 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
+        ffmpeg \
         libcurl4-openssl-dev \
         libgomp1 \
         python3 \
@@ -41,13 +42,18 @@ RUN set -eux; \
 COPY pyproject.toml uv.lock README.md start.sh .python-version ./
 COPY src/ ./src/
 COPY docker/build/llama-bin/ /app/bin/
+COPY docker/build/whisper-bin/ /app/bin/
 
 RUN set -eux; \
     test -x /app/bin/llama-server; \
-    chmod +x start.sh /app/bin/llama-server; \
+    test -x /app/bin/whisper-server; \
+    test -x /app/bin/whisper/whisper-server; \
+    test -f /app/bin/whisper/BUILD_INFO; \
+    chmod +x start.sh /app/bin/llama-server /app/bin/whisper-server /app/bin/whisper/whisper-server; \
     mkdir -p /app/data/logs /app/models; \
     uv sync --frozen --no-dev; \
-    which llama-server
+    which llama-server; \
+    which whisper-server
 
 EXPOSE 8337
 VOLUME ["/app/data", "/app/models"]

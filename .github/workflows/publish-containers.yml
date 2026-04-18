@@ -80,7 +80,12 @@ jobs:
             ca-certificates \
             cmake \
             git \
-            ninja-build
+            libavcodec-dev \
+            libavformat-dev \
+            libavutil-dev \
+            libswresample-dev \
+            ninja-build \
+            pkg-config
 
       - name: Build llama.cpp natively on Thor
         run: |
@@ -92,6 +97,23 @@ jobs:
 
       - name: Stage llama.cpp runtime bundle
         run: docker/scripts/stage-llama-runtime.sh "${RUNNER_TEMP}/llama.cpp/build" docker/build/llama-bin
+
+      - name: Build whisper.cpp natively on Thor
+        run: |
+          rm -rf "${RUNNER_TEMP}/whisper.cpp"
+          git clone --depth 1 https://github.com/ggml-org/whisper.cpp "${RUNNER_TEMP}/whisper.cpp"
+          cd "${RUNNER_TEMP}/whisper.cpp"
+          WHISPER_COMMIT=$(git rev-parse HEAD)
+          echo "WHISPER_CPP_COMMIT=${WHISPER_COMMIT}" >> "${GITHUB_ENV}"
+          cmake -B build -DGGML_CUDA=ON -DWHISPER_FFMPEG=ON -DCMAKE_BUILD_TYPE=Release -G Ninja
+          cmake --build build --config Release -j$(nproc)
+
+      - name: Stage whisper.cpp runtime bundle
+        run: |
+          docker/scripts/stage-whisper-runtime.sh "${RUNNER_TEMP}/whisper.cpp/build" docker/build/whisper-bin
+          printf 'repo=https://github.com/ggml-org/whisper.cpp\ncommit=%s\n' \
+            "${WHISPER_CPP_COMMIT}" \
+            > docker/build/whisper-bin/whisper/BUILD_INFO
 
       - name: Log in to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
@@ -106,6 +128,7 @@ jobs:
             -f docker/Dockerfile.thor-arm64 \
             --label "org.opencontainers.image.version=${RELEASE_TAG}" \
             --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --label "org.cyberinference.whisper-cpp.revision=${WHISPER_CPP_COMMIT}" \
             -t "${IMAGE_RELEASE}" \
             -t "${IMAGE_FLOATING}" \
             .
@@ -113,7 +136,22 @@ jobs:
       - name: Smoke test Thor image with NVIDIA runtime
         env:
           IMAGE_RELEASE: ${{ env.IMAGE_REPO }}:${{ env.RELEASE_TAG }}-thor-arm64
-        run: docker run --rm --runtime nvidia --entrypoint /app/bin/llama-server "${IMAGE_RELEASE}" --version
+        run: |
+          docker run --rm --runtime nvidia --entrypoint /bin/bash "${IMAGE_RELEASE}" -lc '
+            set -euo pipefail
+            test -x /app/bin/llama-server
+            test -x /app/bin/whisper-server
+            test -x /app/bin/whisper/whisper-server
+            test -f /app/bin/whisper/BUILD_INFO
+            /app/bin/llama-server --version
+            command -v whisper-server
+            whisper-server --version || whisper-server --help >/dev/null
+            if find /app/bin -maxdepth 1 -type f -name "libwhisper*.so*" | grep -q .; then
+              echo "whisper libraries were flattened into /app/bin" >&2
+              exit 1
+            fi
+            uv run python -c "import glob, os, torch; print(torch.cuda.is_available(), torch.version.cuda); assert torch.cuda.is_available(); assert torch.version.cuda; assert not glob.glob('/app/bin/transformers*'); assert not os.path.isdir('/app/bin/transformers')"
+          '
 
       - name: Push Thor ARM64 image
         env:

@@ -14,19 +14,27 @@ Cyber-Inference ships two NVIDIA-only container targets:
 - CUDA 13 runtime base
 - Cyber-Inference app and Python environment
 - empty `/app/bin` for runtime-installed `llama-server`
+- runtime-installed `whisper-server` when transcription is first requested
+- Python-managed `transformers` runtime backed by the app environment and CUDA PyTorch
 
-This image does **not** bundle `llama.cpp`. On startup, Cyber-Inference attempts to install a
-compatible `llama-server` into `/app/bin`.
+This image does **not** bundle `llama.cpp` or `whisper.cpp`. On demand, Cyber-Inference attempts to
+install a compatible `llama-server` or `whisper-server` into `/app/bin`.
 
 ### Thor / DGX Spark ARM64
 
 - CUDA 13 runtime base
 - Cyber-Inference app and Python environment
 - `llama-server` built natively on `thor.lab` and baked into `/app/bin`
+- isolated `whisper-server` runtime built natively on `thor.lab` under `/app/bin/whisper/`
+- `/app/bin/whisper-server` wrapper that prepends the isolated whisper runtime to `LD_LIBRARY_PATH`
+- Python-managed `transformers` runtime backed by the app environment and CUDA PyTorch
 
 The Thor publish workflow clones the current `llama.cpp` default branch, builds it on Thor hardware,
-stages the runtime files into `docker/build/llama-bin`, builds the image, and then runs
-`/app/bin/llama-server --version` with the NVIDIA runtime enabled. The GitHub
+clones the current `whisper.cpp` default branch, stages both runtime bundles into
+`docker/build/llama-bin` and `docker/build/whisper-bin`, builds the image, and then runs
+`/app/bin/llama-server --version`, `whisper-server --version || whisper-server --help`, and a CUDA
+PyTorch check with the NVIDIA runtime enabled. Each whisper build records its upstream commit in
+`/app/bin/whisper/BUILD_INFO`. The GitHub
 Actions job is routed to the self-hosted runner registered with the labels
 `self-hosted`, `Linux`, `ARM64`, `NVIDIA`, and `Thor`.
 
@@ -104,3 +112,5 @@ The publish workflow lives at `.github/workflows/publish-containers.yml`.
 - Thor ARM64 builds on the self-hosted GitHub runner labeled `self-hosted`, `Linux`, `ARM64`,
   `NVIDIA`, `Thor`.
 - Both publish to GHCR under the tags above.
+- Whisper CUDA readiness still requires a transcription smoke on Thor before release if that check
+  is not automated in CI.

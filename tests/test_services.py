@@ -925,6 +925,33 @@ class TestProcessManager:
         )
 
     @pytest.mark.asyncio
+    async def test_start_whisper_server_skips_install_when_binary_present(self, temp_dirs):
+        from cyber_inference.services.process_manager import ProcessManager
+
+        models_dir, bin_dir = temp_dirs
+        pm = ProcessManager(models_dir=models_dir, bin_dir=bin_dir)
+        settings = MagicMock(llama_threads=None, model_load_timeout=555)
+        wait_for_whisper_ready = AsyncMock()
+        install = AsyncMock()
+
+        with (
+            patch("cyber_inference.services.process_manager.get_settings", return_value=settings),
+            patch.object(pm._whisper_installer, "is_installed", return_value=True),
+            patch.object(pm._whisper_installer, "install", install),
+            patch.object(pm._whisper_installer, "get_binary_path", return_value=Path("/tmp/whisper-server")),
+            patch.object(pm, "_find_available_port", return_value=9339),
+            patch(
+                "asyncio.create_subprocess_exec",
+                AsyncMock(return_value=MagicMock(pid=1, returncode=None, stdout=None)),
+            ),
+            patch.object(pm, "_wait_for_whisper_ready", wait_for_whisper_ready),
+        ):
+            await pm.start_whisper_server("whisper", Path("/tmp/whisper.bin"))
+
+        install.assert_not_awaited()
+        wait_for_whisper_ready.assert_awaited_once_with("whisper", 9339, timeout=555.0)
+
+    @pytest.mark.asyncio
     async def test_cleanup_failed_start_terminates_and_removes_owned_process(self, temp_dirs):
         from cyber_inference.services.process_manager import LlamaProcess, ProcessManager
 
