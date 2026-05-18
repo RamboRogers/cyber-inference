@@ -151,3 +151,22 @@ Changes since `v0.2.8`:
 - Optional admin auth (JWT)
 - NVIDIA-only published container images for Linux AMD64 and Thor ARM64
 - Native local startup paths for macOS Apple Silicon and non-container development
+
+## [0.2.10] - 2026-05-18
+
+### Release Notes
+
+Changes since `v0.2.9`:
+
+- No user-facing changes were recorded for this release.
+
+### Core Functions
+
+- OpenAI-compatible API (`/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/v1/audio/*`)
+- Model download + registration from HuggingFace, including split GGUF shard sets
+- Automatic MTP speculative decoding for detected GGUF models, with managed llama.cpp upgrade when needed
+- Automatic lazy loading and idle unloading
+- Web dashboard for model and resource management
+- Optional admin auth (JWT)
+- NVIDIA-only published container images for Linux AMD64 and Thor ARM64
+- Native local startup paths for macOS Apple Silicon and non-container development
