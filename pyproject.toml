@@ -1,6 +1,6 @@
 [project]
 name = "cyber-inference"
-version = "0.2.7"
+version = "0.2.8"
 description = "A web GUI management tool for running v1 compatible inference servers"
 readme = "README.md"
 license = { text = "GPL-3.0" }
