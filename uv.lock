@@ -424,7 +424,7 @@ wheels = [
 
 [[package]]
 name = "cyber-inference"
-version = "0.2.10"
+version = "0.2.11"
 source = { editable = "." }
 dependencies = [
     { name = "accelerate" },
