@@ -10,6 +10,7 @@ Manages:
 """
 
 import asyncio
+import json
 import re
 import socket
 from dataclasses import dataclass, field
@@ -378,6 +379,7 @@ class ProcessManager:
         mtp_enabled = bool(launch_config.get("mtp_enabled")) and not embedding
         template_name = launch_config.get("tool_template_name")
         template_path = launch_config.get("tool_template_path")
+        chat_template_kwargs = launch_config.get("chat_template_kwargs")
 
         if mmproj_path and mmproj_path.exists() and not mtp_enabled:
             cmd.extend(["--mmproj", str(mmproj_path)])
@@ -388,6 +390,15 @@ class ProcessManager:
                 cmd.extend(["--chat-template", str(template_name)])
             elif template_path:
                 cmd.extend(["--chat-template-file", str(template_path)])
+            if chat_template_kwargs:
+                if isinstance(chat_template_kwargs, dict):
+                    kwargs_value = json.dumps(
+                        chat_template_kwargs,
+                        separators=(",", ":"),
+                    )
+                else:
+                    kwargs_value = str(chat_template_kwargs)
+                cmd.extend(["--chat-template-kwargs", kwargs_value])
 
         if n_threads:
             cmd.extend(["--threads", str(n_threads)])
@@ -399,10 +410,12 @@ class ProcessManager:
             spec_type = str(launch_config.get("mtp_spec_type") or "draft-mtp")
             draft_n_max = self._parse_positive_int(
                 launch_config.get("mtp_spec_draft_n_max"),
-                default=6,
+                default=2,
             )
             parallel = self._parse_positive_int(launch_config.get("parallel"), default=1)
             cmd.extend(["--parallel", str(parallel)])
+            if flash_attn := launch_config.get("flash_attn"):
+                cmd.extend(["--flash-attn", str(flash_attn)])
             cmd.extend(["--spec-type", spec_type])
             cmd.extend(["--spec-draft-n-max", str(draft_n_max)])
         return cmd

@@ -22,6 +22,9 @@ from cyber_inference.models.db_models import Configuration
 
 logger = get_logger(__name__)
 
+DEFAULT_MTP_DRAFT_N_MAX = 2
+LEGACY_MTP_DRAFT_N_MAX = 6
+
 
 def _parse_bool(value: object) -> bool:
     """Parse bool-like config values from DB/env writes."""
@@ -135,7 +138,7 @@ class Settings(BaseSettings):
         description="Automatically enable llama.cpp MTP speculative decoding for capable GGUFs",
     )
     llama_mtp_default_draft_n_max: int = Field(
-        default=6,
+        default=DEFAULT_MTP_DRAFT_N_MAX,
         description="Default number of draft tokens for llama.cpp MTP speculative decoding",
     )
 

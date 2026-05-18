@@ -106,6 +106,7 @@ class TestSettings:
         assert settings.pre_model_load_command == "sudo sysctl -w vm.drop_caches=3"
         assert settings.pre_model_load_command_timeout == 15
         assert settings.max_loaded_models == 1
+        assert settings.llama_mtp_default_draft_n_max == 2
 
     def test_settings_from_env(self, monkeypatch):
         """Test settings from environment variables."""
@@ -770,6 +771,49 @@ class TestModelManager:
             "mtp_spec_draft_n_max",
         } <= columns
 
+    @pytest.mark.asyncio
+    async def test_database_init_migrates_legacy_mtp_draft_defaults(self, temp_models_dir):
+        """Startup migration should retune old auto-populated MTP draft settings."""
+        db_path = temp_models_dir / "mtp-defaults.db"
+
+        await init_database(db_path)
+        await close_database()
+
+        with sqlite3.connect(db_path) as connection:
+            connection.execute(
+                """
+                INSERT INTO configurations (key, value, value_type)
+                VALUES ('llama_mtp_default_draft_n_max', '6', 'int')
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO models (
+                    name, filename, file_path, size_bytes, context_length,
+                    mtp_capable, mtp_mode, mtp_spec_draft_n_max,
+                    is_downloaded, is_enabled, download_progress
+                )
+                VALUES (
+                    'qwen-mtp', 'qwen-mtp.gguf', '/tmp/qwen-mtp.gguf', 10, 4096,
+                    1, 'auto', 6, 1, 1, 100.0
+                )
+                """
+            )
+
+        await init_database(db_path)
+        await close_database()
+
+        with sqlite3.connect(db_path) as connection:
+            config_value = connection.execute(
+                "SELECT value FROM configurations WHERE key = 'llama_mtp_default_draft_n_max'"
+            ).fetchone()[0]
+            model_value = connection.execute(
+                "SELECT mtp_spec_draft_n_max FROM models WHERE name = 'qwen-mtp'"
+            ).fetchone()[0]
+
+        assert config_value == "2"
+        assert model_value == 2
+
 
 class TestProcessManager:
     """Tests for process manager."""
@@ -905,15 +949,19 @@ class TestProcessManager:
             {
                 "mtp_enabled": True,
                 "mtp_spec_type": "draft-mtp",
-                "mtp_spec_draft_n_max": 6,
+                "mtp_spec_draft_n_max": 2,
                 "parallel": 1,
+                "flash_attn": "on",
+                "chat_template_kwargs": {"preserve_thinking": True},
             },
         )
 
         assert "--mmproj" not in cmd
         assert cmd[cmd.index("--parallel") + 1] == "1"
         assert cmd[cmd.index("--spec-type") + 1] == "draft-mtp"
-        assert cmd[cmd.index("--spec-draft-n-max") + 1] == "6"
+        assert cmd[cmd.index("--spec-draft-n-max") + 1] == "2"
+        assert cmd[cmd.index("--flash-attn") + 1] == "on"
+        assert cmd[cmd.index("--chat-template-kwargs") + 1] == '{"preserve_thinking":true}'
 
     def test_build_llama_server_command_skips_tool_flags_for_embeddings(self, temp_dirs):
         """Embedding launches should keep embedding mode and skip chat tool flags."""
@@ -1534,6 +1582,9 @@ class TestAutoLoader:
         effective_config = process_manager.start_server.await_args.kwargs["effective_config"]
         assert effective_config["mtp"]["enabled"] is True
         assert effective_config["launch_config"]["mtp_spec_type"] == "draft-mtp"
+        assert effective_config["launch_config"]["mtp_spec_draft_n_max"] == 2
+        assert effective_config["launch_config"]["flash_attn"] == "on"
+        assert effective_config["launch_config"]["chat_template_kwargs"] == {"preserve_thinking": True}
         assert effective_config["vision"]["suppressed_by_mtp"] is True
 
     @pytest.mark.asyncio

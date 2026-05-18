@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
-from cyber_inference.core.config import get_settings
+from cyber_inference.core.config import LEGACY_MTP_DRAFT_N_MAX, get_settings
 from cyber_inference.core.logging import get_logger
 from cyber_inference.services.model_manager import ModelManager
 from cyber_inference.services.process_manager import LlamaProcess, ProcessManager
@@ -59,6 +59,7 @@ GLOBAL_RELOAD_KEYS = {
 
 TOOL_TEMPLATE_MODES = {"inherit", "disabled", "explicit", "auto"}
 MTP_MODES = {"auto", "enabled", "disabled"}
+QWEN36_IDENTITY_MARKERS = ("qwen3.6", "qwen36")
 
 
 def _normalize_optional_string(value: object) -> str | None:
@@ -90,6 +91,15 @@ def _parse_optional_int(value: object) -> int | None:
         return int(str(value).strip())
     except (TypeError, ValueError):
         return None
+
+
+def _is_qwen36_identity(model_info: dict[str, Any]) -> bool:
+    """Return whether model identity points to Qwen 3.6 runtime behavior."""
+    identity = " ".join(
+        str(model_info.get(key) or "")
+        for key in ("name", "filename", "hf_repo_id", "hf_filename")
+    ).lower()
+    return any(marker in identity for marker in QWEN36_IDENTITY_MARKERS)
 
 
 def _normalize_family_hint(model_name: str, repo_id: str) -> str | None:
@@ -592,14 +602,17 @@ class AutoLoader:
             detection_source = detection_source or "configured"
 
         nextn_predict_layers = _parse_optional_int(model_info.get("mtp_nextn_predict_layers"))
-        draft_n_max = (
-            _parse_optional_int(model_info.get("mtp_spec_draft_n_max"))
-            or settings.llama_mtp_default_draft_n_max
-            or 6
-        )
+        draft_n_max_override = _parse_optional_int(model_info.get("mtp_spec_draft_n_max"))
+        if (
+            draft_n_max_override == LEGACY_MTP_DRAFT_N_MAX
+            and capable
+            and mode == "auto"
+        ):
+            draft_n_max_override = None
+        draft_n_max = draft_n_max_override or settings.llama_mtp_default_draft_n_max or 2
         if draft_n_max < 1 or draft_n_max > 64:
             fail_or_warn("MTP spec draft tokens must be between 1 and 64.")
-            draft_n_max = 6
+            draft_n_max = 2
 
         unsupported = server_type != "llama" or bool(is_embedding) or bool(is_transcription)
         requested = mode == "enabled" or (mode == "auto" and settings.llama_mtp_auto_enable)
@@ -616,8 +629,11 @@ class AutoLoader:
                     "mtp_spec_type": "draft-mtp",
                     "mtp_spec_draft_n_max": draft_n_max,
                     "parallel": 1,
+                    "flash_attn": "on",
                 }
             )
+            if _is_qwen36_identity(model_info):
+                launch_config["chat_template_kwargs"] = {"preserve_thinking": True}
 
         mtp = {
             "capable": capable,

@@ -23,7 +23,7 @@ from huggingface_hub import HfApi, hf_hub_url, list_repo_files, snapshot_downloa
 from sqlalchemy import select
 from tqdm.auto import tqdm as base_tqdm
 
-from cyber_inference.core.config import get_settings
+from cyber_inference.core.config import LEGACY_MTP_DRAFT_N_MAX, get_settings
 from cyber_inference.core.database import get_db_session
 from cyber_inference.core.logging import get_logger
 from cyber_inference.models.db_models import Model
@@ -1784,7 +1784,7 @@ class ModelManager:
                 if mtp_capable:
                     if not existing.mtp_mode:
                         existing.mtp_mode = "auto"
-                    if existing.mtp_spec_draft_n_max is None:
+                    if existing.mtp_spec_draft_n_max in (None, LEGACY_MTP_DRAFT_N_MAX):
                         existing.mtp_spec_draft_n_max = (
                             get_settings().llama_mtp_default_draft_n_max
                         )
@@ -1979,7 +1979,10 @@ class ModelManager:
                     if mtp_capable and not model.mtp_mode:
                         model.mtp_mode = "auto"
                         updated = True
-                    if mtp_capable and model.mtp_spec_draft_n_max is None:
+                    if mtp_capable and model.mtp_spec_draft_n_max in (
+                        None,
+                        LEGACY_MTP_DRAFT_N_MAX,
+                    ):
                         model.mtp_spec_draft_n_max = (
                             get_settings().llama_mtp_default_draft_n_max
                         )

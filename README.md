@@ -114,9 +114,10 @@ skips complete shards on repeat runs, and registers one canonical model entry.
 MTP-capable speculative GGUF repositories are detected automatically. Repos such as
 `unsloth/Qwen3.6-27B-MTP-GGUF` and `unsloth/Qwen3.6-35B-A3B-MTP-GGUF` default to MTP text mode,
 prefer the balanced `UD-Q4_K_XL` quantization when present, and launch llama.cpp with
-`--spec-type draft-mtp`, `--spec-draft-n-max 6`, and `--parallel 1`. If a repo also publishes
-`mmproj` files, MTP takes priority and the projector is not downloaded or launched unless explicitly
-selected; disable MTP in the model settings to use vision/projector mode.
+`--parallel 1`, `--flash-attn on`, `--spec-type draft-mtp`, and `--spec-draft-n-max 2`.
+Qwen3.6 MTP models also receive `--chat-template-kwargs '{"preserve_thinking":true}'`.
+If a repo also publishes `mmproj` files, MTP takes priority and the projector is not downloaded
+or launched unless explicitly selected; disable MTP in the model settings to use vision/projector mode.
 
 ## API Usage
 
@@ -250,7 +251,7 @@ Environment variables use the `CYBER_INFERENCE_` prefix, or you can just use the
 | `CYBER_INFERENCE_MAX_MEMORY_PERCENT` | `80` | Memory pressure threshold |
 | `CYBER_INFERENCE_LLAMA_GPU_LAYERS` | `-1` | llama.cpp GPU layer setting |
 | `CYBER_INFERENCE_LLAMA_MTP_AUTO_ENABLE` | `true` | Auto-enable MTP for detected speculative GGUF models |
-| `CYBER_INFERENCE_LLAMA_MTP_DEFAULT_DRAFT_N_MAX` | `6` | Default llama.cpp MTP draft token count |
+| `CYBER_INFERENCE_LLAMA_MTP_DEFAULT_DRAFT_N_MAX` | `2` | Default llama.cpp MTP draft token count |
 | `CYBER_INFERENCE_ADMIN_PASSWORD` | unset | Enables admin auth when set |
 | `CYBER_INFERENCE_HF_TOKEN` | unset | HuggingFace token for private repos |
 

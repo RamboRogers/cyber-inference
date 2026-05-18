@@ -131,3 +131,23 @@ Changes since `v0.2.6`:
 - Optional admin auth (JWT)
 - NVIDIA-only published container images for Linux AMD64 and Thor ARM64
 - Native local startup paths for macOS Apple Silicon and non-container development
+
+## [0.2.9] - 2026-05-18
+
+### Release Notes
+
+Changes since `v0.2.8`:
+
+- Retune default MTP GGUF launches for llama.cpp's merged MTP path
+
+### Core Functions
+
+- OpenAI-compatible API (`/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/v1/audio/*`)
+- Model download + registration from HuggingFace, including split GGUF shard sets
+- Automatic MTP speculative decoding with `--parallel 1`, `--flash-attn on`, tuned draft tokens, and Qwen3.6 `preserve_thinking` chat-template kwargs
+- Graceful startup migration for legacy auto-populated MTP draft-token settings
+- Automatic lazy loading and idle unloading
+- Web dashboard for model and resource management
+- Optional admin auth (JWT)
+- NVIDIA-only published container images for Linux AMD64 and Thor ARM64
+- Native local startup paths for macOS Apple Silicon and non-container development

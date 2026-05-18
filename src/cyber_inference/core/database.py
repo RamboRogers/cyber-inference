@@ -7,12 +7,17 @@ Provides:
 - Connection pooling
 """
 
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncGenerator, Optional
 
 from sqlalchemy import event
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 from sqlalchemy.orm import DeclarativeBase
 
 from cyber_inference.core.logging import get_logger
@@ -26,8 +31,8 @@ class Base(DeclarativeBase):
 
 
 # Global engine and session factory
-_engine: Optional[create_async_engine] = None
-_session_factory: Optional[async_sessionmaker] = None
+_engine: AsyncEngine | None = None
+_session_factory: async_sessionmaker[AsyncSession] | None = None
 
 
 async def init_database(db_path: Path) -> None:
@@ -82,6 +87,7 @@ async def init_database(db_path: Path) -> None:
     # Migrate existing tables: add any missing columns (SQLite CREATE TABLE
     # IF NOT EXISTS won't add new columns to tables that already exist).
     await _migrate_add_missing_columns()
+    await _migrate_mtp_runtime_defaults()
 
     # Log table info
     for table_name in Base.metadata.tables.keys():
@@ -117,6 +123,52 @@ async def _migrate_add_missing_columns() -> None:
                     except Exception as e:
                         # Column may already exist (race condition) or other issue
                         logger.debug(f"  Migration skip {table_name}.{column.name}: {e}")
+
+
+async def _migrate_mtp_runtime_defaults() -> None:
+    """Retune legacy auto-populated MTP draft-token defaults."""
+    import sqlalchemy as sa
+
+    from cyber_inference.core.config import (
+        DEFAULT_MTP_DRAFT_N_MAX,
+        LEGACY_MTP_DRAFT_N_MAX,
+    )
+
+    async with _engine.begin() as conn:
+        config_result = await conn.execute(
+            sa.text(
+                """
+                UPDATE configurations
+                SET value = :new_value
+                WHERE key = 'llama_mtp_default_draft_n_max'
+                  AND trim(value) = :old_value
+                """
+            ),
+            {
+                "new_value": str(DEFAULT_MTP_DRAFT_N_MAX),
+                "old_value": str(LEGACY_MTP_DRAFT_N_MAX),
+            },
+        )
+        model_result = await conn.execute(
+            sa.text(
+                """
+                UPDATE models
+                SET mtp_spec_draft_n_max = :new_value
+                WHERE mtp_capable = 1
+                  AND coalesce(mtp_mode, 'auto') = 'auto'
+                  AND mtp_spec_draft_n_max = :old_value
+                """
+            ),
+            {
+                "new_value": DEFAULT_MTP_DRAFT_N_MAX,
+                "old_value": LEGACY_MTP_DRAFT_N_MAX,
+            },
+        )
+        if config_result.rowcount or model_result.rowcount:
+            logger.info(
+                "  Migration: retuned MTP draft defaults "
+                f"(config={config_result.rowcount}, models={model_result.rowcount})"
+            )
 
 
 async def close_database() -> None:
@@ -180,4 +232,3 @@ def get_engine():
     if _engine is None:
         raise RuntimeError("Database not initialized")
     return _engine
-
