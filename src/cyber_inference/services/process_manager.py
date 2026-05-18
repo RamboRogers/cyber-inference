@@ -269,13 +269,6 @@ class ProcessManager:
         n_gpu_layers = gpu_layers if gpu_layers is not None else settings.llama_gpu_layers
         n_threads = threads or settings.llama_threads
 
-        # Use provided mmproj_path or try to find one
-        if mmproj_path is None:
-            mmproj_path = self._find_mmproj(model_path)
-        elif not mmproj_path.exists():
-            logger.warning(f"[warning]Specified mmproj not found: {mmproj_path}[/warning]")
-            mmproj_path = self._find_mmproj(model_path)
-
         launch_config: dict[str, object] = {}
         if effective_config and isinstance(effective_config.get("launch_config"), dict):
             raw_launch_config = cast(dict[object, object], effective_config["launch_config"])
@@ -283,6 +276,16 @@ class ProcessManager:
                 str(key): value
                 for key, value in raw_launch_config.items()
             }
+        mtp_enabled = bool(launch_config.get("mtp_enabled"))
+
+        # Use provided mmproj_path or try to find one
+        if mtp_enabled:
+            mmproj_path = None
+        elif mmproj_path is None:
+            mmproj_path = self._find_mmproj(model_path)
+        elif not mmproj_path.exists():
+            logger.warning(f"[warning]Specified mmproj not found: {mmproj_path}[/warning]")
+            mmproj_path = self._find_mmproj(model_path)
 
         cmd = self._build_llama_server_command(
             llama_server,
@@ -371,12 +374,13 @@ class ProcessManager:
             "--n-gpu-layers", str(n_gpu_layers),
         ]
 
-        if mmproj_path and mmproj_path.exists():
-            cmd.extend(["--mmproj", str(mmproj_path)])
-
         launch_config = launch_config or {}
+        mtp_enabled = bool(launch_config.get("mtp_enabled")) and not embedding
         template_name = launch_config.get("tool_template_name")
         template_path = launch_config.get("tool_template_path")
+
+        if mmproj_path and mmproj_path.exists() and not mtp_enabled:
+            cmd.extend(["--mmproj", str(mmproj_path)])
 
         if not embedding:
             cmd.append("--jinja")
@@ -391,7 +395,26 @@ class ProcessManager:
         # Enable embedding endpoint for embedding models
         if embedding:
             cmd.append("--embedding")
+        elif mtp_enabled:
+            spec_type = str(launch_config.get("mtp_spec_type") or "draft-mtp")
+            draft_n_max = self._parse_positive_int(
+                launch_config.get("mtp_spec_draft_n_max"),
+                default=6,
+            )
+            parallel = self._parse_positive_int(launch_config.get("parallel"), default=1)
+            cmd.extend(["--parallel", str(parallel)])
+            cmd.extend(["--spec-type", spec_type])
+            cmd.extend(["--spec-draft-n-max", str(draft_n_max)])
         return cmd
+
+    @staticmethod
+    def _parse_positive_int(value: object, *, default: int) -> int:
+        """Parse a positive integer launch value with a safe fallback."""
+        try:
+            parsed = int(str(value))
+        except (TypeError, ValueError):
+            return default
+        return parsed if parsed > 0 else default
 
     async def get_server_props(self, port: int) -> dict[str, object]:
         """Fetch `/props` from a running llama server."""
@@ -403,6 +426,10 @@ class ProcessManager:
         if not isinstance(payload, dict):
             raise RuntimeError(f"Unexpected /props payload type: {type(payload).__name__}")
         return payload
+
+    async def ensure_draft_mtp_support(self) -> None:
+        """Ensure the active llama-server binary exposes draft-mtp support."""
+        await self._installer.ensure_draft_mtp_support()
 
     async def start_whisper_server(
         self,

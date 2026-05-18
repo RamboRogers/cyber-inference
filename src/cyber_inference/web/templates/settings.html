@@ -70,6 +70,10 @@
                     <div id="llamaCppInstalledVersion" class="text-white break-all">-</div>
                 </div>
                 <div class="bg-cyber-dark/50 rounded-lg p-4">
+                    <div class="text-gray-500 text-xs mb-1">MTP Support</div>
+                    <div id="llamaCppMtpSupport" class="text-white">-</div>
+                </div>
+                <div class="bg-cyber-dark/50 rounded-lg p-4">
                     <div class="text-gray-500 text-xs mb-1">Binary Path</div>
                     <div id="llamaCppBinaryPath" class="text-white break-all">-</div>
                 </div>
@@ -272,6 +276,23 @@
                                value="{{ settings.llama_gpu_layers }}"
                                class="cyber-input w-full px-4 py-2 rounded-lg font-mono" min="-1" required>
                         <p class="text-xs text-gray-500 mt-1">-1 = auto, 0 = CPU only</p>
+                    </div>
+                    <div class="space-y-3 border border-cyber-yellow/20 rounded-lg p-4 bg-cyber-dark/30">
+                        <label class="flex items-center gap-3">
+                            <input type="checkbox" id="llama_mtp_auto_enable" name="llama_mtp_auto_enable"
+                                   class="h-4 w-4 accent-cyber-neon"
+                                   {% if settings.llama_mtp_auto_enable %}checked{% endif %}>
+                            <span class="text-sm font-mono text-gray-300">
+                                Auto-enable MTP
+                            </span>
+                        </label>
+                        <div>
+                            <label class="block text-sm font-mono text-gray-400 mb-2">MTP Draft Tokens</label>
+                            <input type="number" id="llama_mtp_default_draft_n_max" name="llama_mtp_default_draft_n_max"
+                                   value="{{ settings.llama_mtp_default_draft_n_max }}"
+                                   class="cyber-input w-full px-4 py-2 rounded-lg font-mono"
+                                   min="1" max="64" required>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -650,6 +671,7 @@
 
         setText('llamaCppSource', source);
         setText('llamaCppInstalledVersion', data.installed_version || 'Not installed');
+        setText('llamaCppMtpSupport', data.supports_draft_mtp ? 'draft-mtp available' : 'draft-mtp unavailable');
         setText('llamaCppBinaryPath', data.binary_path || data.managed_binary_path);
         setText('llamaCppLatestRelease', latestLabel);
         setNotice('llamaCppUpdateBlockedReason', data.update_blocked_reason || '');
@@ -769,6 +791,8 @@
             const preModelLoadCommandTimeout = parseInt(document.getElementById('pre_model_load_command_timeout').value);
             const maxMemoryPercent = parseInt(document.getElementById('max_memory_percent').value);
             const llamaGpuLayers = parseInt(document.getElementById('llama_gpu_layers').value);
+            const llamaMtpAutoEnable = document.getElementById('llama_mtp_auto_enable').checked;
+            const llamaMtpDefaultDraftNMax = parseInt(document.getElementById('llama_mtp_default_draft_n_max').value);
             const modelIdleTimeoutInput = document.getElementById('model_idle_timeout');
             const modelIdleTimeout = modelIdleTimeoutInput ? parseInt(modelIdleTimeoutInput.value) : 300;
 
@@ -829,6 +853,13 @@
                 return;
             }
 
+            if (llamaMtpDefaultDraftNMax < 1 || llamaMtpDefaultDraftNMax > 64) {
+                showToast({ tone: 'warning', message: 'MTP draft tokens must be between 1 and 64.' });
+                saveBtn.disabled = false;
+                saveBtn.innerHTML = originalText;
+                return;
+            }
+
             // Settings to save
             const settings = [
                 { key: 'default_context_size', value: defaultContextSize },
@@ -842,6 +873,8 @@
                 { key: 'max_loaded_models', value: maxLoadedModels },
                 { key: 'max_memory_percent', value: maxMemoryPercent },
                 { key: 'llama_gpu_layers', value: llamaGpuLayers },
+                { key: 'llama_mtp_auto_enable', value: llamaMtpAutoEnable },
+                { key: 'llama_mtp_default_draft_n_max', value: llamaMtpDefaultDraftNMax },
             ];
 
             // Save each setting

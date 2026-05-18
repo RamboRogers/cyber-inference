@@ -23,6 +23,7 @@ Cyber-Inference is a web GUI and API server for running local inference engines 
 
 - OpenAI-compatible API (`/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/v1/audio/*`)
 - Model download + registration from HuggingFace, including split GGUF shard sets
+- Automatic MTP speculative decoding for detected GGUF models, with managed llama.cpp upgrade when needed
 - Automatic lazy loading and idle unloading
 - Web dashboard for model and resource management
 - Optional admin auth (JWT)
@@ -64,7 +65,7 @@ docker run -d --name cyber-inference \
 Quick ⚡️ Update:
 ```bash
 docker pull ghcr.io/ramborogers/cyber-inference:v0.2.0-thor-arm64
-docker rm -rf cyber-inference
+docker rm -f cyber-inference
 docker run -d --name cyber-inference \
   --runtime nvidia \
   -p 8337:8337 \
@@ -109,6 +110,13 @@ Cyber-Inference handles GGUF repositories that publish one model across multiple
 `Model-00001-of-00003.gguf`, `Model-00002-of-00003.gguf`, and `Model-00003-of-00003.gguf`.
 The downloader presents the shard set as one logical model choice, downloads any missing shards,
 skips complete shards on repeat runs, and registers one canonical model entry.
+
+MTP-capable speculative GGUF repositories are detected automatically. Repos such as
+`unsloth/Qwen3.6-27B-MTP-GGUF` and `unsloth/Qwen3.6-35B-A3B-MTP-GGUF` default to MTP text mode,
+prefer the balanced `UD-Q4_K_XL` quantization when present, and launch llama.cpp with
+`--spec-type draft-mtp`, `--spec-draft-n-max 6`, and `--parallel 1`. If a repo also publishes
+`mmproj` files, MTP takes priority and the projector is not downloaded or launched unless explicitly
+selected; disable MTP in the model settings to use vision/projector mode.
 
 ## API Usage
 
@@ -241,6 +249,8 @@ Environment variables use the `CYBER_INFERENCE_` prefix, or you can just use the
 | `CYBER_INFERENCE_MAX_LOADED_MODELS` | `1` | Max simultaneously loaded models |
 | `CYBER_INFERENCE_MAX_MEMORY_PERCENT` | `80` | Memory pressure threshold |
 | `CYBER_INFERENCE_LLAMA_GPU_LAYERS` | `-1` | llama.cpp GPU layer setting |
+| `CYBER_INFERENCE_LLAMA_MTP_AUTO_ENABLE` | `true` | Auto-enable MTP for detected speculative GGUF models |
+| `CYBER_INFERENCE_LLAMA_MTP_DEFAULT_DRAFT_N_MAX` | `6` | Default llama.cpp MTP draft token count |
 | `CYBER_INFERENCE_ADMIN_PASSWORD` | unset | Enables admin auth when set |
 | `CYBER_INFERENCE_HF_TOKEN` | unset | HuggingFace token for private repos |
 

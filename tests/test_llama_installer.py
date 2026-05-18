@@ -75,6 +75,19 @@ def test_get_managed_binary_path_ignores_system_path(tmp_path: Path) -> None:
     assert installer.get_managed_binary_path() == tmp_path / "llama-server"
 
 
+def test_supports_draft_mtp_reads_llama_help(tmp_path: Path) -> None:
+    """The support probe should key off llama-server help text."""
+    installer = LlamaInstaller(bin_dir=tmp_path)
+    binary = installer.get_managed_binary_path()
+    binary.write_text("#!/bin/sh\n")
+
+    with patch(
+        "cyber_inference.services.llama_installer.subprocess.run",
+        return_value=MagicMock(stdout="--spec-type draft-mtp\n", stderr=""),
+    ):
+        assert installer.supports_draft_mtp(binary) is True
+
+
 @pytest.mark.asyncio
 async def test_binary_status_reports_system_managed_path(tmp_path: Path) -> None:
     """A PATH binary outside bin_dir should be reported but not updateable."""

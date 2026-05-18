@@ -197,6 +197,11 @@ class ModelManager:
                 return True
             return False
 
+        def is_mtp_key(key: str) -> bool:
+            if key == "nextn_predict_layers":
+                return True
+            return key.endswith(".nextn_predict_layers")
+
         def skip_array(handle, elem_type: int, length: int) -> None:
             if elem_type == GGUF_STRING_TYPE:
                 for _ in range(length):
@@ -296,12 +301,21 @@ class ModelManager:
             architecture: str | None,
             chat_template: str | None,
             response_schema: str | None,
+            mtp_nextn_predict_layers: int | None,
         ) -> dict[str, Any]:
             chat_template_lower = chat_template.lower() if chat_template else ""
             response_schema_lower = response_schema.lower() if response_schema else ""
+            mtp_capable = (
+                mtp_nextn_predict_layers is not None and mtp_nextn_predict_layers > 0
+            )
             return {
                 "architecture": architecture,
                 "context_length": select_context_length(architecture, candidates),
+                "mtp_capable": mtp_capable,
+                "mtp_detection_source": (
+                    "metadata_nextn_predict_layers" if mtp_capable else None
+                ),
+                "mtp_nextn_predict_layers": mtp_nextn_predict_layers,
                 "has_chat_template": bool(chat_template),
                 "has_tool_call_tokens": any(
                     marker in chat_template_lower
@@ -331,6 +345,7 @@ class ModelManager:
                 candidates: dict[str, int] = {}
                 chat_template: str | None = None
                 response_schema: str | None = None
+                mtp_nextn_predict_layers: int | None = None
 
                 for _ in range(kv_count):
                     key = read_string(handle)
@@ -350,6 +365,12 @@ class ModelManager:
                             candidates[key_lower] = int(value)
                         continue
 
+                    if is_mtp_key(key_lower):
+                        value = read_numeric_value(handle, value_type)
+                        if value is not None:
+                            mtp_nextn_predict_layers = int(value)
+                        continue
+
                     if key_lower.endswith("chat_template") and value_type == GGUF_STRING_TYPE:
                         string_value = read_string(handle)
                         if string_value and chat_template is None:
@@ -364,7 +385,12 @@ class ModelManager:
 
                     skip_value(handle, value_type)
 
-                return summarize_tool_metadata(architecture, chat_template, response_schema)
+                return summarize_tool_metadata(
+                    architecture,
+                    chat_template,
+                    response_schema,
+                    mtp_nextn_predict_layers,
+                )
         except Exception as e:
             logger.debug(f"Failed to read GGUF metadata from {file_path.name}: {e}")
             return None
@@ -398,6 +424,63 @@ class ModelManager:
         summary = cls._read_gguf_metadata_summary_cached(file_path)
         context_length = summary.get("context_length") if summary else None
         return int(context_length) if isinstance(context_length, int) else None
+
+    @staticmethod
+    def _has_mtp_identity(identity: str) -> bool:
+        lowered = identity.lower()
+        return (
+            "-mtp" in lowered
+            or "_mtp" in lowered
+            or "/mtp" in lowered
+            or "mtp-gguf" in lowered
+            or "nextn" in lowered
+        )
+
+    @classmethod
+    def _is_mtp_candidate(
+        cls,
+        repo_id: str | None = None,
+        filename: str | None = None,
+        metadata_summary: dict[str, Any] | None = None,
+    ) -> bool:
+        if metadata_summary and metadata_summary.get("mtp_capable") is True:
+            return True
+        identity = " ".join(part for part in (repo_id, filename) if part)
+        return cls._has_mtp_identity(identity)
+
+    @classmethod
+    def _resolve_mtp_metadata(
+        cls,
+        repo_id: str | None,
+        filename: str | None,
+        metadata_summary: dict[str, Any] | None,
+    ) -> dict[str, object | None]:
+        metadata_summary = metadata_summary or {}
+        metadata_capable = metadata_summary.get("mtp_capable") is True
+        nextn_layers = metadata_summary.get("mtp_nextn_predict_layers")
+        mtp_nextn_predict_layers = (
+            int(nextn_layers) if isinstance(nextn_layers, int) and nextn_layers > 0 else None
+        )
+        if metadata_capable:
+            return {
+                "mtp_capable": True,
+                "mtp_detection_source": (
+                    metadata_summary.get("mtp_detection_source")
+                    or "metadata_nextn_predict_layers"
+                ),
+                "mtp_nextn_predict_layers": mtp_nextn_predict_layers,
+            }
+        if cls._is_mtp_candidate(repo_id, filename):
+            return {
+                "mtp_capable": True,
+                "mtp_detection_source": "repo_or_filename",
+                "mtp_nextn_predict_layers": None,
+            }
+        return {
+            "mtp_capable": False,
+            "mtp_detection_source": None,
+            "mtp_nextn_predict_layers": None,
+        }
 
     @staticmethod
     def _read_transformers_context_length(model_dir: Path) -> int | None:
@@ -1104,11 +1187,19 @@ class ModelManager:
             model_files = self._group_gguf_model_files(model_files)
 
             is_multimodal = len(mmproj_files) > 0
+            is_mtp_candidate = self._is_mtp_candidate(
+                repo_id,
+                " ".join(str(f["filename"]) for f in model_files),
+            )
 
             # Auto-suggest best model file (prefer Q4_K_M, then others)
             suggested_model: str | None = None
             if model_files:
-                preferred_quants = ["q4_k_m", "q4_k_s", "q5_k_m", "q5_k_s", "q4_0", "q8_0"]
+                preferred_quants = (
+                    ["q4_k_xl", "q4_k_m", "q4_k_s", "q5_k_m", "q5_k_s", "q4_0", "q8_0"]
+                    if is_mtp_candidate
+                    else ["q4_k_m", "q4_k_s", "q5_k_m", "q5_k_s", "q4_0", "q8_0"]
+                )
                 complete_files = [f for f in model_files if f.get("is_complete", True)]
                 for quant in preferred_quants:
                     for f in complete_files:
@@ -1126,7 +1217,7 @@ class ModelManager:
 
             # Auto-suggest mmproj for the suggested model
             suggested_mmproj = None
-            if suggested_model and mmproj_files:
+            if suggested_model and mmproj_files and not is_mtp_candidate:
                 suggested_mmproj = self._select_mmproj_file(
                     [str(f["filename"]) for f in mmproj_files],
                     suggested_model
@@ -1139,6 +1230,14 @@ class ModelManager:
                 "is_multimodal": is_multimodal,
                 "suggested_model": suggested_model,
                 "suggested_mmproj": suggested_mmproj,
+                "is_mtp_candidate": is_mtp_candidate,
+                "mtp_default_enabled": is_mtp_candidate,
+                "suggested_mtp_mode": "auto" if is_mtp_candidate else None,
+                "suggested_spec_draft_n_max": (
+                    get_settings().llama_mtp_default_draft_n_max
+                    if is_mtp_candidate
+                    else None
+                ),
             }
 
             logger.info(f"[success]Found {len(model_files)} model files, {len(mmproj_files)} mmproj files[/success]")
@@ -1207,6 +1306,10 @@ class ModelManager:
         repo_files = list_repo_files(repo_id, token=self._hf_token)
 
         files = await self.list_repo_files(repo_id, files=repo_files)
+        repo_mtp_candidate = self._is_mtp_candidate(
+            repo_id,
+            " ".join(str(file.get("filename") or "") for file in files),
+        )
 
         # If no filename specified, find the best GGUF file
         if filename is None:
@@ -1214,7 +1317,11 @@ class ModelManager:
                 raise ValueError(f"No GGUF files found in {repo_id}")
 
             # Prefer Q4_K_M or similar balanced quantization
-            preferred_quants = ["Q4_K_M", "Q4_K_S", "Q5_K_M", "Q5_K_S", "Q4_0"]
+            preferred_quants = (
+                ["Q4_K_XL", "Q4_K_M", "Q4_K_S", "Q5_K_M", "Q5_K_S", "Q4_0"]
+                if repo_mtp_candidate
+                else ["Q4_K_M", "Q4_K_S", "Q5_K_M", "Q5_K_S", "Q4_0"]
+            )
             complete_files = [file for file in files if file.get("is_complete", True)]
             if not complete_files:
                 raise ValueError(f"No complete GGUF files found in {repo_id}")
@@ -1243,6 +1350,8 @@ class ModelManager:
         is_split = bool(selected_file.get("is_split"))
         primary_filename = str(selected_file.get("primary_filename") or selected_file["filename"])
         filename = primary_filename
+        is_mtp_candidate = self._is_mtp_candidate(repo_id, filename)
+        should_download_mmproj = not is_mtp_candidate or mmproj_filename is not None
         expected_size = int(selected_file["size_bytes"]) if selected_file else None
         shard_filenames = list(selected_file.get("shard_filenames") or [filename])
         shard_sizes = {
@@ -1303,12 +1412,16 @@ class ModelManager:
                 )
 
             local_path = self.models_dir / primary_filename
-            mmproj_path = await self._download_mmproj(
-                repo_id, local_path,
-                repo_files=repo_files,
-                mmproj_filename=mmproj_filename,
-                force=force,
-                download_id=download_id,
+            mmproj_path = (
+                await self._download_mmproj(
+                    repo_id, local_path,
+                    repo_files=repo_files,
+                    mmproj_filename=mmproj_filename,
+                    force=force,
+                    download_id=download_id,
+                )
+                if should_download_mmproj
+                else None
             )
             await self._notify_progress(
                 repo_id,
@@ -1359,12 +1472,16 @@ class ModelManager:
             logger.info(f"[success]Model already exists: {local_path}[/success]")
 
             # Download mmproj and get path
-            mmproj_path = await self._download_mmproj(
-                repo_id, local_path,
-                repo_files=repo_files,
-                mmproj_filename=mmproj_filename,
-                force=force,
-                download_id=download_id,
+            mmproj_path = (
+                await self._download_mmproj(
+                    repo_id, local_path,
+                    repo_files=repo_files,
+                    mmproj_filename=mmproj_filename,
+                    force=force,
+                    download_id=download_id,
+                )
+                if should_download_mmproj
+                else None
             )
 
             # Ensure it's registered in DB with mmproj_path
@@ -1409,12 +1526,16 @@ class ModelManager:
             logger.info(f"[success]Download complete: {local_path}[/success]")
 
             # Download mmproj and get path
-            mmproj_path = await self._download_mmproj(
-                repo_id, local_path,
-                repo_files=repo_files,
-                mmproj_filename=mmproj_filename,
-                force=force,
-                download_id=download_id,
+            mmproj_path = (
+                await self._download_mmproj(
+                    repo_id, local_path,
+                    repo_files=repo_files,
+                    mmproj_filename=mmproj_filename,
+                    force=force,
+                    download_id=download_id,
+                )
+                if should_download_mmproj
+                else None
             )
 
             # Register in database with mmproj_path
@@ -1606,12 +1727,19 @@ class ModelManager:
         else:
             model_name = Path(filename).stem
 
-        # Read context length from model metadata
+        # Read context length and MTP support from model metadata
         context_length = None
+        metadata_summary: dict[str, Any] = {}
         if filename.endswith(".gguf") and file_path.is_file():
-            context_length = self._read_gguf_context_length(file_path)
+            metadata_summary = self._read_gguf_metadata_summary_cached(file_path) or {}
+            context_value = metadata_summary.get("context_length")
+            context_length = int(context_value) if isinstance(context_value, int) else None
         elif file_path.is_dir():
             context_length = self._read_transformers_context_length(file_path)
+        mtp_metadata = self._resolve_mtp_metadata(repo_id, filename, metadata_summary)
+        mtp_capable = bool(mtp_metadata["mtp_capable"])
+        mtp_detection_source = cast(str | None, mtp_metadata["mtp_detection_source"])
+        mtp_nextn_predict_layers = cast(int | None, mtp_metadata["mtp_nextn_predict_layers"])
 
         # Convert mmproj_path to string if provided
         mmproj_path_str = self._path_for_storage(mmproj_path)
@@ -1649,6 +1777,20 @@ class ModelManager:
                 existing.gguf_shard_filenames = gguf_shard_filenames if is_split_gguf else None
                 if context_length:
                     existing.context_length = context_length
+
+                existing.mtp_capable = mtp_capable
+                existing.mtp_detection_source = mtp_detection_source
+                existing.mtp_nextn_predict_layers = mtp_nextn_predict_layers
+                if mtp_capable:
+                    if not existing.mtp_mode:
+                        existing.mtp_mode = "auto"
+                    if existing.mtp_spec_draft_n_max is None:
+                        existing.mtp_spec_draft_n_max = (
+                            get_settings().llama_mtp_default_draft_n_max
+                        )
+                elif existing.mtp_mode not in {"enabled", "disabled"}:
+                    existing.mtp_mode = None
+                    existing.mtp_spec_draft_n_max = None
 
                 # Update mmproj_path
                 if mmproj_path_str:
@@ -1721,6 +1863,13 @@ class ModelManager:
                 model_type=model_type,
                 engine_type=engine_type,
                 mmproj_path=mmproj_path_str,
+                mtp_capable=mtp_capable,
+                mtp_mode="auto" if mtp_capable else None,
+                mtp_detection_source=mtp_detection_source,
+                mtp_nextn_predict_layers=mtp_nextn_predict_layers,
+                mtp_spec_draft_n_max=(
+                    get_settings().llama_mtp_default_draft_n_max if mtp_capable else None
+                ),
                 is_split_gguf=is_split_gguf,
                 gguf_shard_count=len(gguf_shard_filenames or []) if is_split_gguf else None,
                 gguf_shard_filenames=gguf_shard_filenames if is_split_gguf else None,
@@ -1807,6 +1956,34 @@ class ModelManager:
                     if isinstance(context_length, int) and context_length != model.context_length:
                         model.context_length = context_length
                         updated = True
+                    mtp_metadata = self._resolve_mtp_metadata(
+                        model.hf_repo_id,
+                        model.filename,
+                        metadata_summary,
+                    )
+                    mtp_capable = bool(mtp_metadata["mtp_capable"])
+                    mtp_detection_source = cast(str | None, mtp_metadata["mtp_detection_source"])
+                    mtp_nextn_predict_layers = cast(
+                        int | None,
+                        mtp_metadata["mtp_nextn_predict_layers"],
+                    )
+                    if model.mtp_capable != mtp_capable:
+                        model.mtp_capable = mtp_capable
+                        updated = True
+                    if model.mtp_detection_source != mtp_detection_source:
+                        model.mtp_detection_source = mtp_detection_source
+                        updated = True
+                    if model.mtp_nextn_predict_layers != mtp_nextn_predict_layers:
+                        model.mtp_nextn_predict_layers = mtp_nextn_predict_layers
+                        updated = True
+                    if mtp_capable and not model.mtp_mode:
+                        model.mtp_mode = "auto"
+                        updated = True
+                    if mtp_capable and model.mtp_spec_draft_n_max is None:
+                        model.mtp_spec_draft_n_max = (
+                            get_settings().llama_mtp_default_draft_n_max
+                        )
+                        updated = True
 
                 engine_type = model.engine_type or "llama"
                 is_vlm = bool(model.mmproj_path)
@@ -1831,6 +2008,11 @@ class ModelManager:
                     "mmproj_path": (
                         str(resolved_mmproj_path) if resolved_mmproj_path else model.mmproj_path
                     ),
+                    "mtp_capable": model.mtp_capable,
+                    "mtp_mode": model.mtp_mode,
+                    "mtp_detection_source": model.mtp_detection_source,
+                    "mtp_nextn_predict_layers": model.mtp_nextn_predict_layers,
+                    "mtp_spec_draft_n_max": model.mtp_spec_draft_n_max,
                     "is_split_gguf": bool(model.is_split_gguf),
                     "gguf_shard_count": model.gguf_shard_count,
                     "gguf_shard_filenames": model.gguf_shard_filenames,
@@ -1893,6 +2075,8 @@ class ModelManager:
                     self._read_gguf_metadata_summary_cached(file_path) if include_file_metadata else {}
                 ) or {}
                 context_length = metadata_summary.get("context_length")
+                mtp_metadata = self._resolve_mtp_metadata(None, file_path.name, metadata_summary)
+                mtp_capable = bool(mtp_metadata["mtp_capable"])
                 # Try to find associated mmproj file
                 mmproj_path = None
                 potential_mmproj = file_path.parent / f"mmproj-{file_path.stem}.gguf"
@@ -1913,6 +2097,15 @@ class ModelManager:
                     "model_type": None,
                     "engine_type": "llama",
                     "mmproj_path": mmproj_path,
+                    "mtp_capable": mtp_capable,
+                    "mtp_mode": "auto" if mtp_capable else None,
+                    "mtp_detection_source": mtp_metadata["mtp_detection_source"],
+                    "mtp_nextn_predict_layers": mtp_metadata["mtp_nextn_predict_layers"],
+                    "mtp_spec_draft_n_max": (
+                        get_settings().llama_mtp_default_draft_n_max
+                        if mtp_capable
+                        else None
+                    ),
                     "is_split_gguf": bool(split_metadata),
                     "gguf_shard_count": split_metadata["shard_count"] if split_metadata else None,
                     "gguf_shard_filenames": (
@@ -1973,6 +2166,11 @@ class ModelManager:
                         "model_type": None,
                         "engine_type": "transformers",
                         "mmproj_path": None,
+                        "mtp_capable": False,
+                        "mtp_mode": None,
+                        "mtp_detection_source": None,
+                        "mtp_nextn_predict_layers": None,
+                        "mtp_spec_draft_n_max": None,
                         "is_split_gguf": False,
                         "gguf_shard_count": None,
                         "gguf_shard_filenames": None,

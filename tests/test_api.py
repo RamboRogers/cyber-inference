@@ -49,6 +49,32 @@ async def test_health_endpoint():
 
 
 @pytest.mark.asyncio
+async def test_health_endpoint_remains_public_when_admin_password_is_set(monkeypatch):
+    """Container probes should not require admin credentials."""
+    from cyber_inference.core.config import reload_settings
+
+    monkeypatch.setenv("CYBER_INFERENCE_ADMIN_PASSWORD", "secret")
+    reload_settings()
+
+    try:
+        async with make_test_client() as client:
+            health_response = await client.get("/health")
+            admin_response = await client.get("/admin/status")
+    finally:
+        app.dependency_overrides.clear()
+        monkeypatch.delenv("CYBER_INFERENCE_ADMIN_PASSWORD", raising=False)
+        reload_settings()
+
+    assert health_response.status_code == 200
+    health_payload = health_response.json()
+    assert health_payload["status"] == "healthy"
+    assert health_payload["service"] == "cyber-inference"
+    assert "admin_password" not in health_payload
+    assert "jwt_secret" not in health_payload
+    assert admin_response.status_code == 401
+
+
+@pytest.mark.asyncio
 async def test_v1_models_endpoint():
     """Test the /v1/models endpoint."""
     async def override_get_db():
@@ -431,6 +457,7 @@ def _llama_binary_status(source: str = "managed") -> dict[str, object]:
         "binary_path": None if source == "missing" else binary_path,
         "managed_binary_path": "/tmp/bin/llama-server",
         "installed_version": None if source == "missing" else "version: 1000 (abc123)",
+        "supports_draft_mtp": source != "missing",
         "is_system_managed": is_system,
         "update_allowed": not is_system,
         "update_blocked_reason": "System-managed binary detected." if is_system else None,
@@ -464,6 +491,7 @@ async def test_admin_llama_cpp_status_reports_system_managed_binary():
     assert data["binary_path"] == "/usr/local/bin/llama-server"
     assert data["managed_binary_path"] == "/tmp/bin/llama-server"
     assert data["installed_version"] == "version: 1000 (abc123)"
+    assert data["supports_draft_mtp"] is True
     assert data["latest_release"]["tag_name"] == "b1001"
     assert data["update_allowed"] is False
     assert data["update_blocked_reason"] == "System-managed binary detected."
@@ -1621,6 +1649,7 @@ def test_settings_template_shows_llama_cpp_runtime_controls():
     assert 'id="llamaCppSource"' in template
     assert 'id="llamaCppBinaryPath"' in template
     assert 'id="llamaCppInstalledVersion"' in template
+    assert 'id="llamaCppMtpSupport"' in template
     assert 'id="llamaCppLatestRelease"' in template
     assert 'id="llamaCppUpdateBtn"' in template
     assert "/admin/llama-cpp/status" in template
@@ -1628,6 +1657,8 @@ def test_settings_template_shows_llama_cpp_runtime_controls():
     assert "System-managed binary detected" in template
     assert "Unload llama.cpp models before updating" in template
     assert "updateBtn.disabled = !data.update_allowed" in template
+    assert "llama_mtp_auto_enable" in template
+    assert "llama_mtp_default_draft_n_max" in template
 
 
 @pytest.mark.asyncio
@@ -1674,6 +1705,53 @@ async def test_web_models_page_shows_vision_badge_for_mmproj_models():
     assert response.status_code == 200
     assert re.search(r"demo-vlm[\s\S]{0,1500}title=\"Vision enabled\"", response.text)
     auto_loader.get_models_status.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_web_models_page_shows_mtp_badge_for_detected_models():
+    """Installed MTP models should advertise speculative decoding in the models UI."""
+    model_manager = MagicMock()
+    model_manager.list_models = AsyncMock(
+        return_value=[
+            {
+                "name": "qwen-mtp",
+                "engine_type": "llama",
+                "quantization": "q4_k_xl",
+                "size_bytes": 1024,
+                "context_length": 131072,
+                "hf_repo_id": "unsloth/Qwen3.6-27B-MTP-GGUF",
+                "mmproj_path": None,
+                "is_vlm": False,
+                "mtp_capable": True,
+            }
+        ]
+    )
+    auto_loader = MagicMock()
+    auto_loader.get_loaded_models = AsyncMock(return_value=[])
+    auto_loader.get_models_status = AsyncMock(
+        return_value={
+            "qwen-mtp": {
+                "is_loaded": False,
+                "status": "not_loaded",
+                "server_type": "llama",
+                "effective_config": {
+                    "tool_calling": {"status": "unknown"},
+                    "vision": {"enabled": False},
+                    "mtp": {"capable": True, "enabled": True},
+                },
+            }
+        }
+    )
+
+    with (
+        patch("cyber_inference.api.v1.get_auto_loader", return_value=auto_loader),
+        patch("cyber_inference.services.model_manager.ModelManager", return_value=model_manager),
+    ):
+        async with make_test_client() as client:
+            response = await client.get("/models")
+
+    assert response.status_code == 200
+    assert re.search(r"qwen-mtp[\s\S]{0,1500}title=\"MTP speculative decoding enabled\"", response.text)
 
 
 @pytest.mark.asyncio

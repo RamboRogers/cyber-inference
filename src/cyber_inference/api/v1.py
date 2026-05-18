@@ -587,11 +587,24 @@ def _build_model_info(model: dict, status_info: dict) -> ModelInfo:
     tool_info = effective_config.get("tool_calling", {})
     if not isinstance(tool_info, dict):
         tool_info = {}
+    mtp_info = effective_config.get("mtp", {})
+    if not isinstance(mtp_info, dict):
+        mtp_info = {}
+    vision_info = effective_config.get("vision", {})
+    if not isinstance(vision_info, dict):
+        vision_info = {}
     tool_status = tool_info.get("status", "unsupported")
     context = _build_model_context(model, status_info)
 
     capabilities = ModelCapabilities(
-        vision=bool(model.get("mmproj_path") or model.get("is_vlm")),
+        vision=bool(
+            vision_info.get("enabled")
+            or (
+                (model.get("mmproj_path") or model.get("is_vlm"))
+                and not vision_info.get("suppressed_by_mtp")
+            )
+        ),
+        mtp=bool(mtp_info.get("enabled") or model.get("mtp_capable")),
         tool_calling=str(tool_status),
         embedding=model.get("model_type") == "embedding",
         transcription=model.get("model_type") == "transcription",

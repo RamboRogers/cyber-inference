@@ -44,6 +44,8 @@ GLOBAL_RUNTIME_REFRESH_KEYS = {
     "llama_gpu_layers",
     "llama_tool_template",
     "llama_tool_template_file",
+    "llama_mtp_auto_enable",
+    "llama_mtp_default_draft_n_max",
 }
 
 GLOBAL_RELOAD_KEYS = {
@@ -51,9 +53,12 @@ GLOBAL_RELOAD_KEYS = {
     "llama_gpu_layers",
     "llama_tool_template",
     "llama_tool_template_file",
+    "llama_mtp_auto_enable",
+    "llama_mtp_default_draft_n_max",
 }
 
 TOOL_TEMPLATE_MODES = {"inherit", "disabled", "explicit", "auto"}
+MTP_MODES = {"auto", "enabled", "disabled"}
 
 
 def _normalize_optional_string(value: object) -> str | None:
@@ -73,6 +78,18 @@ def _parse_optional_bool(value: object) -> bool | None:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "on"}
     return bool(value)
+
+
+def _parse_optional_int(value: object) -> int | None:
+    """Parse an optional integer value."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return int(value)
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
 
 
 def _normalize_family_hint(model_name: str, repo_id: str) -> str | None:
@@ -526,6 +543,94 @@ class AutoLoader:
         }
         return launch_config, tool_calling
 
+    def _resolve_mtp_config(
+        self,
+        model_info: dict[str, Any],
+        *,
+        strict: bool,
+        is_embedding: bool | None = None,
+        is_transcription: bool | None = None,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Resolve launch-time MTP speculative decoding policy for a model."""
+        settings = get_settings()
+        model_name = str(model_info.get("name") or "")
+        server_type = str(model_info.get("engine_type") or "llama")
+        if is_embedding is None or is_transcription is None:
+            is_embedding, is_transcription = self._classify_model_usage(
+                model_name,
+                model_info,
+            )
+
+        warnings: list[str] = []
+
+        def fail_or_warn(message: str) -> None:
+            if strict:
+                raise ValueError(message)
+            warnings.append(message)
+
+        mode = _normalize_optional_string(model_info.get("mtp_mode")) or "auto"
+        if mode not in MTP_MODES:
+            fail_or_warn(f"Invalid mtp_mode for {model_name}: {mode}")
+            mode = "auto"
+
+        raw_capable = model_info.get("mtp_capable")
+        if raw_capable is None:
+            capable = ModelManager._is_mtp_candidate(
+                str(model_info.get("hf_repo_id") or ""),
+                str(model_info.get("filename") or model_name),
+            )
+            detection_source = "repo_or_filename" if capable else None
+        else:
+            capable = bool(raw_capable)
+            detection_source = (
+                _normalize_optional_string(model_info.get("mtp_detection_source"))
+                or ("configured" if capable else None)
+            )
+
+        if mode == "enabled":
+            capable = True
+            detection_source = detection_source or "configured"
+
+        nextn_predict_layers = _parse_optional_int(model_info.get("mtp_nextn_predict_layers"))
+        draft_n_max = (
+            _parse_optional_int(model_info.get("mtp_spec_draft_n_max"))
+            or settings.llama_mtp_default_draft_n_max
+            or 6
+        )
+        if draft_n_max < 1 or draft_n_max > 64:
+            fail_or_warn("MTP spec draft tokens must be between 1 and 64.")
+            draft_n_max = 6
+
+        unsupported = server_type != "llama" or bool(is_embedding) or bool(is_transcription)
+        requested = mode == "enabled" or (mode == "auto" and settings.llama_mtp_auto_enable)
+        enabled = capable and requested and mode != "disabled" and not unsupported
+        if unsupported and mode == "enabled":
+            fail_or_warn("MTP is only supported for llama chat GGUF models.")
+
+        launch_config: dict[str, Any] = {
+            "mtp_enabled": enabled,
+        }
+        if enabled:
+            launch_config.update(
+                {
+                    "mtp_spec_type": "draft-mtp",
+                    "mtp_spec_draft_n_max": draft_n_max,
+                    "parallel": 1,
+                }
+            )
+
+        mtp = {
+            "capable": capable,
+            "enabled": enabled,
+            "mode": mode,
+            "source": detection_source or "none",
+            "nextn_predict_layers": nextn_predict_layers,
+            "spec_type": "draft-mtp" if enabled else None,
+            "spec_draft_n_max": draft_n_max if capable else None,
+            "warnings": warnings,
+        }
+        return launch_config, mtp
+
     def _detect_family_tool_support(self, model_info: dict[str, Any]) -> str | None:
         """Return the curated model family name when local metadata strongly implies tool support."""
         family_hint = _normalize_family_hint(
@@ -683,6 +788,7 @@ class AutoLoader:
             if key not in supported_fields and value is not None
         ]
         tool_launch_config, tool_calling = self._resolve_tooling_config(model_info, strict=False)
+        mtp_launch_config, mtp = self._resolve_mtp_config(model_info, strict=False)
         configured_context_size = model_info.get("default_context_size")
         native_context_size = model_info.get("context_length")
         if proc:
@@ -708,7 +814,9 @@ class AutoLoader:
             "context_source": context_source,
             "gpu_layers": proc.gpu_layers if proc else (settings.llama_gpu_layers if server_type == "llama" else None),
         }
-        vision_enabled = bool(model_info.get("mmproj_path") or model_info.get("is_vlm"))
+        vision_available = bool(model_info.get("mmproj_path") or model_info.get("is_vlm"))
+        vision_suppressed_by_mtp = vision_available and bool(mtp.get("enabled"))
+        vision_enabled = vision_available and not vision_suppressed_by_mtp
         vision_source = (
             "mmproj"
             if model_info.get("mmproj_path")
@@ -717,13 +825,17 @@ class AutoLoader:
             else "none"
         )
         launch_config.update(tool_launch_config)
+        launch_config.update(mtp_launch_config)
         return {
             "server_type": server_type,
             "launch_config": launch_config,
             "vision": {
+                "available": vision_available,
                 "enabled": vision_enabled,
                 "source": vision_source,
+                "suppressed_by_mtp": vision_suppressed_by_mtp,
             },
+            "mtp": mtp,
             "tool_calling": tool_calling,
             "request_defaults": effective_request_defaults,
             "unsupported_saved_defaults": unsupported_saved_defaults,
@@ -955,6 +1067,20 @@ class AutoLoader:
         launch_config, tool_calling = self._resolve_tooling_config(model_info, strict=True)
         effective_config["launch_config"].update(launch_config)
         effective_config["tool_calling"] = tool_calling
+        mtp_launch_config, mtp = self._resolve_mtp_config(
+            model_info,
+            strict=True,
+            is_embedding=is_embedding,
+            is_transcription=is_transcription,
+        )
+        effective_config["launch_config"].update(mtp_launch_config)
+        effective_config["mtp"] = mtp
+        if mtp.get("enabled"):
+            await pm.ensure_draft_mtp_support()
+            mmproj_path = None
+            if isinstance(effective_config.get("vision"), dict):
+                effective_config["vision"]["enabled"] = False
+                effective_config["vision"]["suppressed_by_mtp"] = True
         pre_load_result = await self._run_pre_model_load_command(model_name, load_trigger)
         effective_config["pre_model_load_command"] = pre_load_result
 

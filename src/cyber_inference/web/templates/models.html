@@ -83,6 +83,11 @@
                                     Vision
                                 </span>
                                 {% endif %}
+                                {% if model.supports_mtp %}
+                                <span class="px-2 py-1 text-xs font-mono rounded bg-cyber-yellow/10 text-cyber-yellow border border-cyber-yellow/30" title="MTP speculative decoding enabled">
+                                    MTP
+                                </span>
+                                {% endif %}
                                 {% if model.supports_tools %}
                                 <span class="px-2 py-1 text-xs font-mono rounded bg-cyber-yellow/10 text-cyber-yellow border border-cyber-yellow/30" title="Tool calling enabled">
                                     Tools
@@ -201,6 +206,44 @@
                     <div class="mt-2 flex gap-2">
                         <span class="text-[10px] px-2 py-0.5 rounded bg-cyber-blue/10 text-cyber-blue">4B</span>
                         <span class="text-[10px] px-2 py-0.5 rounded bg-cyber-pink/10 text-cyber-pink">Chat</span>
+                    </div>
+                </div>
+
+                <!-- Qwen3.6 27B MTP -->
+                <div class="bg-cyber-dark/30 rounded-lg p-4 border border-cyber-gray hover:border-cyber-neon/30 transition-all cursor-pointer group"
+                     onclick="downloadFromRepo('unsloth/Qwen3.6-27B-MTP-GGUF')">
+                    <div class="flex items-center space-x-3 mb-2">
+                        <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-cyber-yellow/20 to-cyber-blue/20 flex items-center justify-center group-hover:shadow-lg group-hover:shadow-cyber-yellow/20 transition-all">
+                            <span class="text-cyber-yellow font-bold text-lg">Q</span>
+                        </div>
+                        <div>
+                            <div class="font-mono text-white">Qwen3.6 27B MTP</div>
+                            <div class="text-xs text-gray-500">unsloth</div>
+                        </div>
+                    </div>
+                    <div class="text-xs text-gray-400">Qwen3.6 text model with MTP speculative decoding</div>
+                    <div class="mt-2 flex gap-2">
+                        <span class="text-[10px] px-2 py-0.5 rounded bg-cyber-yellow/10 text-cyber-yellow">MTP</span>
+                        <span class="text-[10px] px-2 py-0.5 rounded bg-cyber-blue/10 text-cyber-blue">27B</span>
+                    </div>
+                </div>
+
+                <!-- Qwen3.6 35B A3B MTP -->
+                <div class="bg-cyber-dark/30 rounded-lg p-4 border border-cyber-gray hover:border-cyber-neon/30 transition-all cursor-pointer group"
+                     onclick="downloadFromRepo('unsloth/Qwen3.6-35B-A3B-MTP-GGUF')">
+                    <div class="flex items-center space-x-3 mb-2">
+                        <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-cyber-blue/20 to-cyber-neon/20 flex items-center justify-center group-hover:shadow-lg group-hover:shadow-cyber-blue/20 transition-all">
+                            <span class="text-cyber-blue font-bold text-lg">Q</span>
+                        </div>
+                        <div>
+                            <div class="font-mono text-white">Qwen3.6 35B A3B MTP</div>
+                            <div class="text-xs text-gray-500">unsloth</div>
+                        </div>
+                    </div>
+                    <div class="text-xs text-gray-400">MoE Qwen3.6 GGUF with MTP acceleration</div>
+                    <div class="mt-2 flex gap-2">
+                        <span class="text-[10px] px-2 py-0.5 rounded bg-cyber-yellow/10 text-cyber-yellow">MTP</span>
+                        <span class="text-[10px] px-2 py-0.5 rounded bg-cyber-neon/10 text-cyber-neon">35B A3B</span>
                     </div>
                 </div>
 
@@ -440,6 +483,26 @@
                        placeholder="Global default">
             </div>
 
+            <div id="mtpSettingsSection" class="hidden rounded-lg border border-cyber-yellow/20 bg-cyber-dark/40 p-3">
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label class="block text-xs font-mono text-gray-400 mb-1">MTP Mode</label>
+                        <select id="settingsMtpMode"
+                                class="cyber-input w-full px-3 py-1.5 rounded-lg font-mono text-sm bg-cyber-dark">
+                            <option value="auto">Auto</option>
+                            <option value="enabled">Enabled</option>
+                            <option value="disabled">Disabled</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-mono text-gray-400 mb-1">Draft Tokens</label>
+                        <input type="number" id="settingsMtpDraftNMax" min="1" max="64" step="1"
+                               class="cyber-input w-full px-3 py-1.5 rounded-lg font-mono text-sm"
+                               placeholder="6">
+                    </div>
+                </div>
+            </div>
+
             <!-- 2-column grid for sampling params -->
             <div class="grid grid-cols-2 gap-3">
                 <div>
@@ -572,6 +635,14 @@
                         <span>Vision/Multimodal Model Detected</span>
                     </span>
                 </div>
+                <div id="mtpBadge" class="hidden">
+                    <span class="px-3 py-1 text-xs font-mono rounded bg-cyber-yellow/20 text-cyber-yellow border border-cyber-yellow/30 inline-flex items-center space-x-2">
+                        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                        </svg>
+                        <span>MTP Speculative Model Detected</span>
+                    </span>
+                </div>
 
                 <!-- Model File Selection -->
                 <div>
@@ -590,7 +661,7 @@
                 <div id="mmprojSection" class="hidden">
                     <label class="block text-sm font-mono text-gray-400 mb-2">
                         Select Vision Projector (mmproj)
-                        <span class="text-cyber-pink">*</span>
+                        <span id="mmprojRequiredMark" class="text-cyber-pink">*</span>
                     </label>
                     <select id="mmprojFileSelect"
                             name="hf_mmproj_filename"
@@ -598,7 +669,7 @@
                         <option value="">Auto-select matching mmproj</option>
                     </select>
                     <p class="text-xs text-gray-500 mt-1 font-mono">
-                        Required for vision/multimodal models to process images
+                        <span id="mmprojHelpText">Required for vision/multimodal models to process images</span>
                     </p>
                 </div>
 
@@ -898,6 +969,7 @@
         // Reset file selection UI
         document.getElementById('fileSelectionSection').classList.add('hidden');
         document.getElementById('multimodalBadge').classList.add('hidden');
+        document.getElementById('mtpBadge').classList.add('hidden');
         document.getElementById('mmprojSection').classList.add('hidden');
         document.getElementById('fileInfoSection').classList.add('hidden');
         document.getElementById('manualFilenameSection').classList.remove('hidden');
@@ -970,10 +1042,19 @@
     function populateFileSelections(data) {
         const modelSelect = document.getElementById('modelFileSelect');
         const mmprojSelect = document.getElementById('mmprojFileSelect');
+        const isMtp = Boolean(data.is_mtp_candidate);
 
         // Clear existing options
         modelSelect.innerHTML = '<option value="">Auto-select best quantization</option>';
-        mmprojSelect.innerHTML = '<option value="">Auto-select matching mmproj</option>';
+        mmprojSelect.innerHTML = isMtp
+            ? '<option value="">Do not download projector</option>'
+            : '<option value="">Auto-select matching mmproj</option>';
+        const mtpBadge = document.getElementById('mtpBadge');
+        if (isMtp) {
+            mtpBadge.classList.remove('hidden');
+        } else {
+            mtpBadge.classList.add('hidden');
+        }
 
         // Populate model files
         data.model_files.forEach(file => {
@@ -998,6 +1079,14 @@
         if (data.is_multimodal && data.mmproj_files.length > 0) {
             document.getElementById('multimodalBadge').classList.remove('hidden');
             document.getElementById('mmprojSection').classList.remove('hidden');
+            if (isMtp) {
+                document.getElementById('mmprojRequiredMark').classList.add('hidden');
+            } else {
+                document.getElementById('mmprojRequiredMark').classList.remove('hidden');
+            }
+            document.getElementById('mmprojHelpText').textContent = isMtp
+                ? 'Optional. Leave blank for MTP text mode; download a projector only if you plan to disable MTP for vision.'
+                : 'Required for vision/multimodal models to process images';
 
             // Populate mmproj files
             data.mmproj_files.forEach(file => {
@@ -1006,7 +1095,7 @@
                 const size = formatBytes(file.size_bytes);
                 const quant = file.quantization ? ` (${file.quantization.toUpperCase()})` : '';
                 option.textContent = `${file.filename}${quant} - ${size}`;
-                if (file.filename === data.suggested_mmproj) {
+                if (!isMtp && file.filename === data.suggested_mmproj) {
                     option.selected = true;
                 }
                 mmprojSelect.appendChild(option);
@@ -1014,6 +1103,8 @@
         } else {
             document.getElementById('multimodalBadge').classList.add('hidden');
             document.getElementById('mmprojSection').classList.add('hidden');
+            document.getElementById('mmprojRequiredMark').classList.remove('hidden');
+            document.getElementById('mmprojHelpText').textContent = 'Required for vision/multimodal models to process images';
         }
 
         // Update file info
@@ -1022,7 +1113,7 @@
 
     function onModelFileChange() {
         // Update suggested mmproj when model selection changes
-        if (repoData && repoData.is_multimodal) {
+        if (repoData && repoData.is_multimodal && !repoData.is_mtp_candidate) {
             const modelFilename = document.getElementById('modelFileSelect').value;
             if (modelFilename && repoData.mmproj_files.length > 0) {
                 // Call API to get suggested mmproj
@@ -1093,14 +1184,18 @@
         // Find mmproj file info
         if (repoData.is_multimodal) {
             const mmprojFile = repoData.mmproj_files.find(f => f.filename === mmprojFilename);
-            document.getElementById('mmprojInfoRow').classList.remove('hidden');
             if (mmprojFile) {
+                document.getElementById('mmprojInfoRow').classList.remove('hidden');
                 document.getElementById('mmprojSizeInfo').textContent = formatBytes(mmprojFile.size_bytes);
-            } else if (repoData.suggested_mmproj) {
+            } else if (!repoData.is_mtp_candidate && repoData.suggested_mmproj) {
+                document.getElementById('mmprojInfoRow').classList.remove('hidden');
                 const suggested = repoData.mmproj_files.find(f => f.filename === repoData.suggested_mmproj);
                 if (suggested) {
                     document.getElementById('mmprojSizeInfo').textContent = formatBytes(suggested.size_bytes) + ' (auto)';
                 }
+            } else {
+                document.getElementById('mmprojInfoRow').classList.add('hidden');
+                document.getElementById('mmprojSizeInfo').textContent = '-';
             }
         } else {
             document.getElementById('mmprojInfoRow').classList.add('hidden');
@@ -1416,6 +1511,17 @@
             parts.push('using load override ctx');
         }
 
+        const mtp = runtime.effective_config?.mtp;
+        if (mtp?.enabled) {
+            parts.push(`mtp ${mtp.spec_draft_n_max || 6} draft`);
+        } else if (mtp?.capable) {
+            parts.push('mtp available');
+        }
+        const vision = runtime.effective_config?.vision;
+        if (vision?.suppressed_by_mtp) {
+            parts.push('vision off while mtp is active');
+        }
+
         if (runtime.last_transition_reason) {
             parts.push(`last change: ${runtime.last_transition_reason.replace(/_/g, ' ')}`);
         }
@@ -1452,6 +1558,13 @@
                 document.getElementById('settingsTopK').value = data.default_top_k ?? '';
                 document.getElementById('settingsMaxTokens').value = data.default_max_tokens ?? '';
                 document.getElementById('settingsRepeatPenalty').value = data.default_repeat_penalty ?? '';
+                document.getElementById('settingsMtpMode').value = data.mtp_mode ?? 'auto';
+                document.getElementById('settingsMtpDraftNMax').value = data.mtp_spec_draft_n_max ?? '';
+                if (data.mtp_capable || data.mtp_mode) {
+                    document.getElementById('mtpSettingsSection').classList.remove('hidden');
+                } else {
+                    document.getElementById('mtpSettingsSection').classList.add('hidden');
+                }
                 renderSettingsRuntime(data.runtime);
             }
         } catch (e) {
@@ -1467,6 +1580,7 @@
         document.getElementById('settingsModal').classList.add('hidden');
         document.getElementById('settingsModal').classList.remove('flex');
         settingsModelName = null;
+        document.getElementById('mtpSettingsSection').classList.add('hidden');
         renderSettingsRuntime(null);
     }
 
@@ -1477,6 +1591,8 @@
         document.getElementById('settingsTopK').value = '';
         document.getElementById('settingsMaxTokens').value = '';
         document.getElementById('settingsRepeatPenalty').value = '';
+        document.getElementById('settingsMtpMode').value = 'auto';
+        document.getElementById('settingsMtpDraftNMax').value = '';
     }
 
     async function saveSettings() {
@@ -1501,6 +1617,10 @@
             default_max_tokens: parseNum('settingsMaxTokens'),
             default_repeat_penalty: parseNum('settingsRepeatPenalty'),
         };
+        if (!document.getElementById('mtpSettingsSection').classList.contains('hidden')) {
+            config.mtp_mode = document.getElementById('settingsMtpMode').value;
+            config.mtp_spec_draft_n_max = parseNum('settingsMtpDraftNMax');
+        }
 
         try {
             const response = await adminFetch(`/admin/models/${encodeURIComponent(settingsModelName)}/config`, {

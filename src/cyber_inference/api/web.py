@@ -41,6 +41,8 @@ _CONFIG_UI_LABELS = {
     "max_loaded_models": "Max Loaded Models",
     "max_memory_percent": "Max Memory Usage (%)",
     "llama_gpu_layers": "GPU Layers",
+    "llama_mtp_auto_enable": "Auto-enable MTP",
+    "llama_mtp_default_draft_n_max": "MTP Draft Tokens",
     "admin_password": "Admin Password",
 }
 
@@ -243,14 +245,20 @@ async def models_page(request: Request) -> Response:
             effective_config = status_info.get("effective_config", {})
             tool_info = effective_config.get("tool_calling", {})
             vision_info = effective_config.get("vision", {})
+            mtp_info = effective_config.get("mtp", {})
 
             model["is_loaded"] = bool(status_info.get("is_loaded", model["name"] in loaded))
             model["status"] = status_info.get("status", "not_loaded")
             model["server_type"] = status_info.get("server_type", model.get("engine_type", "llama"))
             model["supports_tools"] = tool_info.get("status") == "supported"
             model["tool_calling_status"] = tool_info.get("status", "unknown")
+            model["supports_mtp"] = bool(mtp_info.get("enabled") or model.get("mtp_capable"))
             model["supports_vision"] = bool(
-                vision_info.get("enabled") or model.get("mmproj_path") or model.get("is_vlm")
+                vision_info.get("enabled")
+                or (
+                    (model.get("mmproj_path") or model.get("is_vlm"))
+                    and not vision_info.get("suppressed_by_mtp")
+                )
             )
 
         context = _template_context(
@@ -365,6 +373,8 @@ async def settings_page(request: Request) -> Response:
         "max_loaded_models": settings.max_loaded_models,
         "max_memory_percent": settings.max_memory_percent,
         "llama_gpu_layers": settings.llama_gpu_layers,
+        "llama_mtp_auto_enable": settings.llama_mtp_auto_enable,
+        "llama_mtp_default_draft_n_max": settings.llama_mtp_default_draft_n_max,
     }
     saved_settings: dict[str, object] = dict(runtime_settings)
     for key, value in overrides.items():
@@ -423,6 +433,8 @@ async def settings_page(request: Request) -> Response:
             "max_loaded_models": saved_settings["max_loaded_models"],
             "max_memory_percent": saved_settings["max_memory_percent"],
             "llama_gpu_layers": saved_settings["llama_gpu_layers"],
+            "llama_mtp_auto_enable": saved_settings["llama_mtp_auto_enable"],
+            "llama_mtp_default_draft_n_max": saved_settings["llama_mtp_default_draft_n_max"],
         },
         pending_restart_items=pending_restart_items,
     )

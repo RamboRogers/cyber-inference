@@ -98,6 +98,19 @@ def _validate_global_config_value(key: str, value: object) -> None:
                 status_code=400,
                 detail="Admin protection must be enabled before pre-model load commands can run.",
             )
+    elif key == "llama_mtp_default_draft_n_max":
+        try:
+            draft_n_max = int(str(value))
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=400,
+                detail="llama_mtp_default_draft_n_max must be an integer",
+            )
+        if draft_n_max < 1 or draft_n_max > 64:
+            raise HTTPException(
+                status_code=400,
+                detail="llama_mtp_default_draft_n_max must be between 1 and 64",
+            )
 
 
 def _get_auto_loader() -> AutoLoader:
@@ -167,6 +180,7 @@ async def _build_llama_cpp_status(installer: LlamaInstaller) -> LlamaCppStatusRe
         latest_release_error=latest_release_error,
         update_available=update_available,
         running_llama_sessions=sorted(running_sessions),
+        supports_draft_mtp=bool(binary_status.get("supports_draft_mtp", False)),
     )
 
 
@@ -377,6 +391,11 @@ async def list_models(
             model_type=m["model_type"],
             engine_type=m["engine_type"],
             mmproj_path=m["mmproj_path"],
+            mtp_capable=m.get("mtp_capable"),
+            mtp_mode=m.get("mtp_mode"),
+            mtp_detection_source=m.get("mtp_detection_source"),
+            mtp_nextn_predict_layers=m.get("mtp_nextn_predict_layers"),
+            mtp_spec_draft_n_max=m.get("mtp_spec_draft_n_max"),
             is_split_gguf=m["is_split_gguf"],
             gguf_shard_count=m["gguf_shard_count"],
             gguf_shard_filenames=m["gguf_shard_filenames"],
@@ -450,6 +469,10 @@ async def list_repo_files(
             is_multimodal=result["is_multimodal"],
             suggested_model=result.get("suggested_model"),
             suggested_mmproj=result.get("suggested_mmproj"),
+            is_mtp_candidate=bool(result.get("is_mtp_candidate", False)),
+            mtp_default_enabled=bool(result.get("mtp_default_enabled", False)),
+            suggested_mtp_mode=result.get("suggested_mtp_mode"),
+            suggested_spec_draft_n_max=result.get("suggested_spec_draft_n_max"),
         )
     except Exception as e:
         logger.error(f"[error]Failed to list repo files: {e}[/error]")
@@ -536,6 +559,11 @@ async def download_model(
                 context_length=4096,
                 model_type=None,
                 mmproj_path=None,
+                mtp_capable=None,
+                mtp_mode=None,
+                mtp_detection_source=None,
+                mtp_nextn_predict_layers=None,
+                mtp_spec_draft_n_max=None,
                 is_split_gguf=path.is_split_gguf,
                 gguf_shard_count=len(path.shard_filenames or []) if path.is_split_gguf else None,
                 gguf_shard_filenames=path.shard_filenames,
@@ -561,6 +589,11 @@ async def download_model(
             context_length=model["context_length"],
             model_type=model.get("model_type"),
             mmproj_path=model.get("mmproj_path"),
+            mtp_capable=model.get("mtp_capable"),
+            mtp_mode=model.get("mtp_mode"),
+            mtp_detection_source=model.get("mtp_detection_source"),
+            mtp_nextn_predict_layers=model.get("mtp_nextn_predict_layers"),
+            mtp_spec_draft_n_max=model.get("mtp_spec_draft_n_max"),
             is_split_gguf=model.get("is_split_gguf"),
             gguf_shard_count=model.get("gguf_shard_count"),
             gguf_shard_filenames=model.get("gguf_shard_filenames"),
@@ -804,6 +837,11 @@ async def get_model_config(
             "tool_template_name": model.tool_template_name,
             "tool_template_path": model.tool_template_path,
             "tool_jinja_enabled": model.tool_jinja_enabled,
+            "mtp_capable": model.mtp_capable,
+            "mtp_mode": model.mtp_mode,
+            "mtp_detection_source": model.mtp_detection_source,
+            "mtp_nextn_predict_layers": model.mtp_nextn_predict_layers,
+            "mtp_spec_draft_n_max": model.mtp_spec_draft_n_max,
             "runtime": status_info,
         }
 
@@ -831,6 +869,8 @@ async def update_model_config(
         "tool_template_name": str,
         "tool_template_path": str,
         "tool_jinja_enabled": _parse_bool_config,
+        "mtp_mode": str,
+        "mtp_spec_draft_n_max": int,
     }
 
     async with get_db_session() as session:
@@ -851,6 +891,19 @@ async def update_model_config(
                     if normalized not in {"inherit", "disabled", "explicit", "auto"}:
                         raise HTTPException(status_code=400, detail="Invalid tool_template_mode")
                     setattr(model, field, normalized)
+                elif field == "mtp_mode":
+                    normalized = _normalize_optional_string(value)
+                    if normalized not in {"auto", "enabled", "disabled"}:
+                        raise HTTPException(status_code=400, detail="Invalid mtp_mode")
+                    setattr(model, field, normalized)
+                elif field == "mtp_spec_draft_n_max":
+                    draft_n_max = int(value)
+                    if draft_n_max < 1 or draft_n_max > 64:
+                        raise HTTPException(
+                            status_code=400,
+                            detail="mtp_spec_draft_n_max must be between 1 and 64",
+                        )
+                    setattr(model, field, draft_n_max)
                 else:
                     setattr(model, field, cast_type(value))
 
@@ -870,6 +923,11 @@ async def update_model_config(
             "tool_template_name": model.tool_template_name,
             "tool_template_path": model.tool_template_path,
             "tool_jinja_enabled": model.tool_jinja_enabled,
+            "mtp_capable": model.mtp_capable,
+            "mtp_mode": model.mtp_mode,
+            "mtp_detection_source": model.mtp_detection_source,
+            "mtp_nextn_predict_layers": model.mtp_nextn_predict_layers,
+            "mtp_spec_draft_n_max": model.mtp_spec_draft_n_max,
             "runtime": runtime,
             "reload_triggered": runtime.get("reload_triggered", False),
             "message": runtime.get("message"),
@@ -941,6 +999,8 @@ async def get_config(
         "llama_gpu_layers": settings.llama_gpu_layers,
         "llama_tool_template": settings.llama_tool_template,
         "llama_tool_template_file": settings.llama_tool_template_file,
+        "llama_mtp_auto_enable": settings.llama_mtp_auto_enable,
+        "llama_mtp_default_draft_n_max": settings.llama_mtp_default_draft_n_max,
         "admin_password_set": settings.admin_password is not None,
         "live_apply_keys": [
             "default_context_size",
@@ -956,12 +1016,16 @@ async def get_config(
             "llama_gpu_layers",
             "llama_tool_template",
             "llama_tool_template_file",
+            "llama_mtp_auto_enable",
+            "llama_mtp_default_draft_n_max",
         ],
         "reload_on_save_keys": [
             "default_context_size",
             "llama_gpu_layers",
             "llama_tool_template",
             "llama_tool_template_file",
+            "llama_mtp_auto_enable",
+            "llama_mtp_default_draft_n_max",
         ],
         "restart_only_keys": ["host", "port", "log_level"],
     }

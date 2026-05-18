@@ -58,6 +58,13 @@ class Model(Base):
     # Multimodal support - path to mmproj file for vision models
     mmproj_path: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
 
+    # llama.cpp MTP speculative decoding support
+    mtp_capable: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    mtp_mode: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    mtp_detection_source: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    mtp_nextn_predict_layers: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    mtp_spec_draft_n_max: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     # Split GGUF support
     is_split_gguf: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     gguf_shard_count: Mapped[int | None] = mapped_column(Integer, nullable=True)

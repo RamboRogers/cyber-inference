@@ -188,6 +188,7 @@ class ModelContext(BaseModel):
 class ModelCapabilities(BaseModel):
     """Simple capability metadata for a model."""
     vision: bool = False
+    mtp: bool = False
     tool_calling: str = "unsupported"
     embedding: bool = False
     transcription: bool = False
@@ -255,6 +256,11 @@ class ModelResponse(BaseModel):
     model_type: str | None
     engine_type: str | None = "llama"
     mmproj_path: str | None = None
+    mtp_capable: bool | None = None
+    mtp_mode: str | None = None
+    mtp_detection_source: str | None = None
+    mtp_nextn_predict_layers: int | None = None
+    mtp_spec_draft_n_max: int | None = None
     is_split_gguf: bool | None = None
     gguf_shard_count: int | None = None
     gguf_shard_filenames: list[str] | None = None
@@ -295,6 +301,10 @@ class RepoFilesResponse(BaseModel):
     is_multimodal: bool = Field(False, description="Whether repo contains vision/multimodal model files")
     suggested_model: str | None = Field(None, description="Auto-suggested model file to download")
     suggested_mmproj: str | None = Field(None, description="Auto-suggested mmproj file for selected model")
+    is_mtp_candidate: bool = Field(False, description="Whether repo appears to contain MTP-capable GGUF files")
+    mtp_default_enabled: bool = Field(False, description="Whether MTP should be enabled by default")
+    suggested_mtp_mode: str | None = Field(None, description="Suggested MTP mode for downloaded models")
+    suggested_spec_draft_n_max: int | None = Field(None, description="Suggested MTP draft token count")
 
 
 class ModelSessionResponse(BaseModel):
@@ -363,6 +373,7 @@ class LlamaCppStatusResponse(BaseModel):
     latest_release_error: str | None = None
     update_available: bool | None = None
     running_llama_sessions: list[str] = Field(default_factory=list)
+    supports_draft_mtp: bool = False
 
 
 class ConfigurationResponse(BaseModel):

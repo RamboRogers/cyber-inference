@@ -751,16 +751,55 @@ class LlamaInstaller:
             binary_path = managed_path
 
         installed_version = self._get_binary_version(binary_path) if binary_path else None
+        supports_draft_mtp = self.supports_draft_mtp(binary_path)
 
         return {
             "source": source,
             "binary_path": str(binary_path) if binary_path else None,
             "managed_binary_path": str(managed_path),
             "installed_version": installed_version,
+            "supports_draft_mtp": supports_draft_mtp,
             "is_system_managed": source == "system",
             "update_allowed": update_allowed,
             "update_blocked_reason": update_blocked_reason,
         }
+
+    def supports_draft_mtp(self, binary_path: Path | None = None) -> bool:
+        """Return whether a llama-server binary advertises draft-mtp support."""
+        candidate = binary_path or self._find_system_binary() or self.get_managed_binary_path()
+        if not candidate or not candidate.exists():
+            return False
+        try:
+            result = subprocess.run(
+                [str(candidate), "--help"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except Exception as e:
+            logger.debug(f"Could not probe llama-server MTP support: {e}")
+            return False
+        help_text = f"{result.stdout}\n{result.stderr}".lower()
+        return "draft-mtp" in help_text or "draft_mtp" in help_text
+
+    async def ensure_draft_mtp_support(self) -> None:
+        """
+        Ensure the active llama-server supports MTP, updating managed binaries if allowed.
+        """
+        status = await self.get_binary_status()
+        if bool(status.get("supports_draft_mtp")):
+            return
+
+        if not bool(status.get("update_allowed")):
+            reason = status.get("update_blocked_reason") or "llama-server cannot be updated automatically."
+            raise RuntimeError(f"Active llama-server does not support draft-mtp. {reason}")
+
+        await self.install(force=True)
+        refreshed = await self.get_binary_status()
+        if not bool(refreshed.get("supports_draft_mtp")):
+            raise RuntimeError(
+                "Installed llama-server still does not advertise draft-mtp support."
+            )
 
     def _find_system_binary(self) -> Path | None:
         """

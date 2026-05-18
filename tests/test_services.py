@@ -385,6 +385,66 @@ class TestModelManager:
         assert downloaded == repo_files
 
     @pytest.mark.asyncio
+    async def test_list_repo_files_detailed_marks_mtp_and_suppresses_mmproj_suggestion(
+        self,
+        temp_models_dir,
+    ):
+        """MTP repos should default to text MTP mode instead of vision projector selection."""
+        from cyber_inference.services.model_manager import ModelManager
+
+        manager = ModelManager(models_dir=temp_models_dir)
+
+        with patch.object(
+            manager._hf_api,
+            "list_repo_tree",
+            return_value=[
+                MagicMock(path="Qwen3.6-27B-Q4_K_M.gguf", size=10),
+                MagicMock(path="Qwen3.6-27B-UD-Q4_K_XL.gguf", size=20),
+                MagicMock(path="mmproj-BF16.gguf", size=2),
+            ],
+        ):
+            result = await manager.list_repo_files_detailed("unsloth/Qwen3.6-27B-MTP-GGUF")
+
+        assert result["is_mtp_candidate"] is True
+        assert result["mtp_default_enabled"] is True
+        assert result["suggested_model"] == "Qwen3.6-27B-UD-Q4_K_XL.gguf"
+        assert result["suggested_mmproj"] is None
+        assert result["suggested_spec_draft_n_max"] == get_settings().llama_mtp_default_draft_n_max
+
+    @pytest.mark.asyncio
+    async def test_download_mtp_model_skips_implicit_mmproj(self, temp_models_dir):
+        """Detected MTP downloads should not auto-download mmproj unless explicitly selected."""
+        from cyber_inference.services.model_manager import ModelManager
+
+        manager = ModelManager(models_dir=temp_models_dir)
+        repo_files = [
+            "Qwen3.6-27B-Q4_K_M.gguf",
+            "Qwen3.6-27B-UD-Q4_K_XL.gguf",
+            "mmproj-BF16.gguf",
+        ]
+
+        async def fake_download(**kwargs):
+            kwargs["local_path"].write_bytes(b"x" * kwargs["expected_size"])
+            return kwargs["local_path"]
+
+        with (
+            patch("cyber_inference.services.model_manager.list_repo_files", return_value=repo_files),
+            patch.object(
+                manager._hf_api,
+                "list_repo_tree",
+                return_value=[MagicMock(path=filename, size=10) for filename in repo_files],
+            ),
+            patch.object(manager, "_download_file_with_progress", AsyncMock(side_effect=fake_download)),
+            patch.object(manager, "_download_mmproj", AsyncMock(return_value=temp_models_dir / "mmproj.gguf")) as download_mmproj,
+            patch.object(manager, "_register_model", AsyncMock()),
+            patch.object(manager, "_notify_progress", AsyncMock()),
+        ):
+            result = await manager.download_model("unsloth/Qwen3.6-27B-MTP-GGUF")
+
+        assert result.filename == "Qwen3.6-27B-UD-Q4_K_XL.gguf"
+        download_mmproj.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_download_split_gguf_rejects_incomplete_non_primary_submission(
         self,
         temp_models_dir,
@@ -699,7 +759,16 @@ class TestModelManager:
                 for row in connection.execute("PRAGMA table_info('models')").fetchall()
             }
 
-        assert {"is_split_gguf", "gguf_shard_count", "gguf_shard_filenames"} <= columns
+        assert {
+            "is_split_gguf",
+            "gguf_shard_count",
+            "gguf_shard_filenames",
+            "mtp_capable",
+            "mtp_mode",
+            "mtp_detection_source",
+            "mtp_nextn_predict_layers",
+            "mtp_spec_draft_n_max",
+        } <= columns
 
 
 class TestProcessManager:
@@ -814,6 +883,37 @@ class TestProcessManager:
         assert "--mmproj" in cmd
         assert str(mmproj_path) in cmd
         assert "--jinja" in cmd
+
+    def test_build_llama_server_command_prioritizes_mtp_over_mmproj(self, temp_dirs):
+        """MTP launches should force draft-mtp mode and avoid incompatible mmproj flags."""
+        from cyber_inference.services.process_manager import ProcessManager
+
+        models_dir, bin_dir = temp_dirs
+        pm = ProcessManager(models_dir=models_dir, bin_dir=bin_dir)
+        mmproj_path = models_dir / "mmproj-demo.gguf"
+        mmproj_path.write_text("mmproj")
+
+        cmd = pm._build_llama_server_command(
+            Path("/tmp/llama-server"),
+            Path("/tmp/demo.gguf"),
+            9338,
+            8192,
+            -1,
+            8,
+            False,
+            mmproj_path,
+            {
+                "mtp_enabled": True,
+                "mtp_spec_type": "draft-mtp",
+                "mtp_spec_draft_n_max": 6,
+                "parallel": 1,
+            },
+        )
+
+        assert "--mmproj" not in cmd
+        assert cmd[cmd.index("--parallel") + 1] == "1"
+        assert cmd[cmd.index("--spec-type") + 1] == "draft-mtp"
+        assert cmd[cmd.index("--spec-draft-n-max") + 1] == "6"
 
     def test_build_llama_server_command_skips_tool_flags_for_embeddings(self, temp_dirs):
         """Embedding launches should keep embedding mode and skip chat tool flags."""
@@ -1391,6 +1491,50 @@ class TestAutoLoader:
         await loader.load_model("demo")
 
         assert process_manager.start_server.await_args.kwargs["context_size"] == 131072
+
+    @pytest.mark.asyncio
+    async def test_load_model_enables_mtp_and_suppresses_mmproj(self):
+        """Detected MTP models should probe binary support and launch without mmproj."""
+        from cyber_inference.services.auto_loader import AutoLoader
+
+        process_manager = MagicMock()
+        proc = MagicMock(status="running", port=9338, server_type="llama", effective_config={})
+        process_manager.ensure_draft_mtp_support = AsyncMock()
+        process_manager.start_server = AsyncMock(return_value=proc)
+        process_manager.get_server_props = AsyncMock(return_value={"chat_template": "{{ messages }}"})
+        model_manager = MagicMock()
+        model_manager.get_model = AsyncMock(
+            return_value={
+                "name": "Qwen3.6-27B-UD-Q4_K_XL",
+                "filename": "Qwen3.6-27B-UD-Q4_K_XL.gguf",
+                "engine_type": "llama",
+                "context_length": 131072,
+                "default_context_size": None,
+                "model_type": "chat",
+                "mmproj_path": "/tmp/mmproj-demo.gguf",
+                "hf_repo_id": "unsloth/Qwen3.6-27B-MTP-GGUF",
+                "mtp_capable": True,
+                "mtp_mode": "auto",
+                "mtp_spec_draft_n_max": 6,
+                "tool_template_mode": None,
+                "tool_template_name": None,
+                "tool_template_path": None,
+                "tool_jinja_enabled": None,
+            }
+        )
+        model_manager.get_model_path = AsyncMock(return_value=Path("/tmp/demo.gguf"))
+        model_manager.update_last_used = AsyncMock()
+
+        loader = AutoLoader(process_manager=process_manager, model_manager=model_manager)
+
+        await loader.load_model("Qwen3.6-27B-UD-Q4_K_XL")
+
+        process_manager.ensure_draft_mtp_support.assert_awaited_once()
+        assert process_manager.start_server.await_args.kwargs["mmproj_path"] is None
+        effective_config = process_manager.start_server.await_args.kwargs["effective_config"]
+        assert effective_config["mtp"]["enabled"] is True
+        assert effective_config["launch_config"]["mtp_spec_type"] == "draft-mtp"
+        assert effective_config["vision"]["suppressed_by_mtp"] is True
 
     @pytest.mark.asyncio
     async def test_load_model_caches_supported_tool_capability(self):

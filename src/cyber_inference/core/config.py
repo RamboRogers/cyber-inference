@@ -56,6 +56,8 @@ CONFIG_DB_CASTS: dict[str, ConfigCaster] = {
     "llama_gpu_layers": int,
     "llama_tool_template": _parse_optional_str,
     "llama_tool_template_file": _parse_optional_str,
+    "llama_mtp_auto_enable": _parse_bool,
+    "llama_mtp_default_draft_n_max": int,
     "admin_password": _parse_optional_str,
 }
 
@@ -127,6 +129,14 @@ class Settings(BaseSettings):
     llama_tool_template_file: str | None = Field(
         default=None,
         description="Global chat template file override",
+    )
+    llama_mtp_auto_enable: bool = Field(
+        default=True,
+        description="Automatically enable llama.cpp MTP speculative decoding for capable GGUFs",
+    )
+    llama_mtp_default_draft_n_max: int = Field(
+        default=6,
+        description="Default number of draft tokens for llama.cpp MTP speculative decoding",
     )
 
     # Security
