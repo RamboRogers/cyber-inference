@@ -188,3 +188,70 @@ jobs:
 
           docker buildx imagetools inspect "${IMAGE_RELEASE}"
           docker buildx imagetools inspect "${IMAGE_LATEST}"
+
+  deploy-thor:
+    name: Deploy latest on Thor
+    needs:
+      - latest
+    runs-on: [self-hosted, Linux, ARM64, NVIDIA, Thor]
+    concurrency:
+      group: cyber-inference-thor-deploy
+      cancel-in-progress: false
+    steps:
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Replace Thor service with latest image
+        env:
+          IMAGE: ${{ env.IMAGE_REPO }}:latest
+          RELEASE_TAG: ${{ env.RELEASE_TAG }}
+          DATA_DIR: /home/matt/Local/cyber-inference/data
+          MODELS_DIR: /home/matt/Local/cyber-inference/models
+        run: |
+          set -euo pipefail
+
+          test -d "${DATA_DIR}"
+          test -d "${MODELS_DIR}"
+
+          docker pull "${IMAGE}"
+          docker image inspect "${IMAGE}" \
+            --format 'Deploying image={{.RepoTags}} version={{index .Config.Labels "org.opencontainers.image.version"}} revision={{index .Config.Labels "org.opencontainers.image.revision"}}'
+
+          backup_name=""
+          if docker container inspect cyber-inference >/dev/null 2>&1; then
+            backup_name="cyber-inference-backup-${RELEASE_TAG}-$(date +%Y%m%d%H%M%S)"
+            docker inspect cyber-inference \
+              --format 'Current container image={{.Config.Image}} version={{index .Config.Labels "org.opencontainers.image.version"}} mounts={{range .Mounts}}{{.Source}}:{{.Destination}} {{end}}'
+            docker stop cyber-inference
+            docker rename cyber-inference "${backup_name}"
+          fi
+
+          docker run -d --name cyber-inference \
+            --runtime nvidia \
+            -p 8337:8337 \
+            -v "${DATA_DIR}:/app/data" \
+            -v "${MODELS_DIR}:/app/models" \
+            "${IMAGE}"
+
+          healthy=0
+          for _ in $(seq 1 90); do
+            if curl -fsS http://localhost:8337/health; then
+              healthy=1
+              break
+            fi
+            sleep 2
+          done
+
+          if [ "${healthy}" -ne 1 ]; then
+            echo "New container failed health checks; rolling back." >&2
+            docker logs --tail 200 cyber-inference >&2 || true
+            docker rm -f cyber-inference >/dev/null 2>&1 || true
+            if [ -n "${backup_name}" ]; then
+              docker rename "${backup_name}" cyber-inference
+              docker start cyber-inference
+            fi
+            exit 1
+          fi
+
+          docker inspect cyber-inference \
+            --format 'Running container image={{.Config.Image}} version={{index .Config.Labels "org.opencontainers.image.version"}} revision={{index .Config.Labels "org.opencontainers.image.revision"}} mounts={{range .Mounts}}{{.Source}}:{{.Destination}} {{end}}'
