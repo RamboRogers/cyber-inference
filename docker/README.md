@@ -1,16 +1,17 @@
 # Cyber-Inference Docker assets
 
 This directory contains the supported NVIDIA-only container lanes for Cyber-Inference.
-The operator-facing images are explicit target tags rather than a hidden multi-arch tag:
+The operator-facing default is a real multi-arch `latest` tag, with explicit platform tags kept
+available for operators who need to pin a lane:
 
 | Lane | Target platform | Image tag | Build host | Native runtime packaging |
 | --- | --- | --- | --- | --- |
+| Default multi-arch | Host-selected `linux/amd64` or `linux/arm64` | `ghcr.io/ramborogers/cyber-inference:latest` | Manifest assembled after both platform builds pass | Resolves to the matching platform image |
 | Linux AMD64 NVIDIA | `linux/amd64` | `ghcr.io/ramborogers/cyber-inference:linux-amd64` | GitHub-hosted Linux runner | No bundled native servers; `llama.cpp` and `whisper.cpp` stay on the app's runtime installer path |
 | Thor ARM64 NVIDIA | `linux/arm64` on Thor/DGX Spark hardware | `ghcr.io/ramborogers/cyber-inference:thor-arm64` | Self-hosted GitHub runner labeled `self-hosted`, `Linux`, `ARM64`, `NVIDIA`, `Thor` | Native CUDA `llama-server` in `/app/bin` plus isolated native CUDA `whisper-server` under `/app/bin/whisper/` with a wrapper at `/app/bin/whisper-server` |
 
 Unsupported Docker paths were removed from the repository. Keep Docker documentation and automation
-aligned to these two tags, host bind mounts for `/app/data` and `/app/models`, and NVIDIA runtime
-flags.
+aligned to these tags, host bind mounts for `/app/data` and `/app/models`, and NVIDIA runtime flags.
 
 ## Files
 

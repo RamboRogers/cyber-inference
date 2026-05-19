@@ -36,7 +36,7 @@ Cyber-Inference is a web GUI and API server for running local inference engines 
 - `CHANGELOG.md` is the repo release log.
 - Release notes are generated from commits since the previous release plus the core-functions summary in this README.
 - Versioning is patch-by-default. Use `release:minor` or `feat:` to force a minor bump, and `release:major`, `BREAKING CHANGE`, or `type!:` to force a major bump.
-- Container images publish from the GitHub release event and receive immutable versioned tags such as `v0.2.0-linux-amd64` and `v0.2.0-thor-arm64`, alongside the floating platform tags.
+- Container images publish from the GitHub release event and receive immutable versioned tags such as `v0.2.0-linux-amd64` and `v0.2.0-thor-arm64`, floating platform tags, and a multi-arch `latest` tag.
 
 ## Inference Engines
 
@@ -53,25 +53,25 @@ Cyber-Inference is a web GUI and API server for running local inference engines 
 You have a NVIDIA Thor/DGX Spark ARM64 host and want to run Cyber-Inference.
 > [!TIP] The latest llama.cpp is built natively on Thor and baked into the container image.
 ```bash
-docker pull ghcr.io/ramborogers/cyber-inference:v0.2.0-thor-arm64
+docker pull ghcr.io/ramborogers/cyber-inference:latest
 
 docker run -d --name cyber-inference \
   --runtime nvidia \
   -p 8337:8337 \
   -v "$PWD/data:/app/data" \
   -v "$PWD/models:/app/models" \
-  ghcr.io/ramborogers/cyber-inference:thor-arm64
+  ghcr.io/ramborogers/cyber-inference:latest
 ```
 Quick ⚡️ Update:
 ```bash
-docker pull ghcr.io/ramborogers/cyber-inference:v0.2.0-thor-arm64
+docker pull ghcr.io/ramborogers/cyber-inference:latest
 docker rm -f cyber-inference
 docker run -d --name cyber-inference \
   --runtime nvidia \
   -p 8337:8337 \
   -v "$PWD/data:/app/data" \
   -v "$PWD/models:/app/models" \
-  ghcr.io/ramborogers/cyber-inference:thor-arm64
+  ghcr.io/ramborogers/cyber-inference:latest
 
 ```
 
@@ -152,6 +152,7 @@ Cyber-Inference publishes NVIDIA-only container images for the two supported dep
 
 | Target | Image |
 | --- | --- |
+| Multi-arch default | `ghcr.io/ramborogers/cyber-inference:latest` |
 | Linux AMD64 NVIDIA hosts | `ghcr.io/ramborogers/cyber-inference:linux-amd64` |
 | Thor / DGX Spark ARM64 NVIDIA hosts | `ghcr.io/ramborogers/cyber-inference:thor-arm64` |
 
@@ -192,23 +193,23 @@ docker run -d --name cyber-inference \
 ```bash
 mkdir -p data models
 
-docker pull ghcr.io/ramborogers/cyber-inference:thor-arm64
+docker pull ghcr.io/ramborogers/cyber-inference:latest
 
 docker run -d --name cyber-inference \
   --runtime nvidia \
   -p 8337:8337 \
   -v "$PWD/data:/app/data" \
   -v "$PWD/models:/app/models" \
-  ghcr.io/ramborogers/cyber-inference:thor-arm64
+  ghcr.io/ramborogers/cyber-inference:latest
 ```
 
 ### Upgrade while preserving local state
 
-Use the same host `data` and `models` directories when replacing a container. Pick the target tag for
-your host (`linux-amd64` or `thor-arm64`) and restart with the same mounts:
+Use the same host `data` and `models` directories when replacing a container. Use `latest` for the
+normal multi-arch release tag, or pick a platform tag explicitly (`linux-amd64` or `thor-arm64`):
 
 ```bash
-TARGET_TAG=linux-amd64  # or thor-arm64
+TARGET_TAG=latest  # or linux-amd64 / thor-arm64
 
 docker stop cyber-inference
 docker rm cyber-inference
