@@ -4,9 +4,19 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Release tag to publish images for
-        required: true
+        description: Optional release tag to publish images for; defaults to a llama.cpp refresh tag
+        required: false
         type: string
+      force_rebuild:
+        description: Rebuild even if the published Thor image already has the latest llama.cpp tag
+        required: false
+        default: false
+        type: boolean
+  schedule:
+    # GitHub cron is UTC. These two windows cover 2:00 AM America/New_York
+    # across EST/EDT; the metadata job gates out the non-local-2AM run.
+    - cron: "0 6 * * 1"
+    - cron: "0 7 * * 1"
   release:
     types:
       - published
@@ -17,24 +27,123 @@ permissions:
 
 env:
   IMAGE_REPO: ghcr.io/ramborogers/cyber-inference
-  RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
 
 jobs:
+  llama-cpp-refresh:
+    name: Resolve llama.cpp refresh metadata
+    runs-on: ubuntu-latest
+    outputs:
+      should_publish: ${{ steps.resolve.outputs.should_publish }}
+      release_tag: ${{ steps.resolve.outputs.release_tag }}
+      llama_cpp_tag: ${{ steps.resolve.outputs.llama_cpp_tag }}
+      llama_cpp_commit: ${{ steps.resolve.outputs.llama_cpp_commit }}
+      llama_cpp_url: ${{ steps.resolve.outputs.llama_cpp_url }}
+      reason: ${{ steps.resolve.outputs.reason }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.release_tag || github.ref_name }}
+
+      - name: Log in to GHCR for image metadata
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Resolve publish decision
+        id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
+          FORCE_REBUILD: ${{ inputs.force_rebuild || 'false' }}
+        run: |
+          set -euo pipefail
+
+          latest_release="$(curl -fsSL https://api.github.com/repos/ggml-org/llama.cpp/releases/latest)"
+          LLAMA_CPP_TAG="$(jq -r '.tag_name' <<<"${latest_release}")"
+          LLAMA_CPP_COMMIT="$(jq -r '.target_commitish' <<<"${latest_release}")"
+          LLAMA_CPP_URL="$(jq -r '.html_url' <<<"${latest_release}")"
+
+          if [[ -z "${LLAMA_CPP_TAG}" || "${LLAMA_CPP_TAG}" == "null" ]]; then
+            echo "Unable to resolve latest llama.cpp release tag." >&2
+            exit 1
+          fi
+
+          app_version="$(
+            python3 - <<'PY'
+          import tomllib
+          from pathlib import Path
+
+          data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+          print(data["project"]["version"])
+          PY
+          )"
+
+          if [[ -n "${EVENT_RELEASE_TAG:-}" && "${EVENT_RELEASE_TAG}" != "null" ]]; then
+            release_tag="${EVENT_RELEASE_TAG}"
+          elif [[ -n "${INPUT_RELEASE_TAG:-}" && "${INPUT_RELEASE_TAG}" != "null" ]]; then
+            release_tag="${INPUT_RELEASE_TAG}"
+          else
+            release_tag="v${app_version}-llama-${LLAMA_CPP_TAG}"
+          fi
+
+          should_publish=true
+          reason="llama.cpp ${LLAMA_CPP_TAG} will be published as ${release_tag}"
+
+          if [[ "${EVENT_NAME}" == "schedule" ]]; then
+            local_hour="$(TZ=America/New_York date +%H)"
+            local_weekday="$(TZ=America/New_York date +%u)"
+            if [[ "${local_weekday}" != "1" || "${local_hour}" != "02" ]]; then
+              should_publish=false
+              reason="Skipping duplicate UTC schedule window; local time is weekday ${local_weekday} hour ${local_hour}."
+            fi
+          fi
+
+          current_llama_tag=""
+          if [[ "${should_publish}" == "true" && "${EVENT_NAME}" != "release" && -z "${INPUT_RELEASE_TAG:-}" && "${FORCE_REBUILD}" != "true" ]]; then
+            if labels="$(docker buildx imagetools inspect "${IMAGE_REPO}:thor-arm64" --format '{{json .Image.Config.Labels}}' 2>/dev/null)"; then
+              current_llama_tag="$(jq -r '."org.cyberinference.llama-cpp.tag" // empty' <<<"${labels}")"
+            fi
+
+            if [[ "$current_llama_tag" == "$LLAMA_CPP_TAG" ]]; then
+              should_publish=false
+              reason="Published Thor image already contains llama.cpp ${LLAMA_CPP_TAG}."
+            elif [[ -n "${current_llama_tag}" ]]; then
+              reason="Published Thor image has llama.cpp ${current_llama_tag}; latest is ${LLAMA_CPP_TAG}."
+            else
+              reason="Published Thor image does not expose a llama.cpp tag label; rebuilding with ${LLAMA_CPP_TAG}."
+            fi
+          fi
+
+          {
+            echo "should_publish=${should_publish}"
+            echo "release_tag=${release_tag}"
+            echo "llama_cpp_tag=${LLAMA_CPP_TAG}"
+            echo "llama_cpp_commit=${LLAMA_CPP_COMMIT}"
+            echo "llama_cpp_url=${LLAMA_CPP_URL}"
+            echo "reason=${reason}"
+          } >> "${GITHUB_OUTPUT}"
+
+          echo "${reason}"
+
   linux-amd64:
     name: Build and publish Linux AMD64 NVIDIA image
+    needs:
+      - llama-cpp-refresh
+    if: needs.llama-cpp-refresh.outputs.should_publish == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.release.tag_name || inputs.release_tag }}
+          ref: ${{ github.event.release.tag_name || inputs.release_tag || github.ref_name }}
 
       - name: Log in to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
       - name: Build Linux AMD64 image
         env:
-          IMAGE_RELEASE: ${{ env.IMAGE_REPO }}:${{ env.RELEASE_TAG }}-linux-amd64
+          RELEASE_TAG: ${{ needs.llama-cpp-refresh.outputs.release_tag }}
+          IMAGE_RELEASE: ${{ env.IMAGE_REPO }}:${{ needs.llama-cpp-refresh.outputs.release_tag }}-linux-amd64
           IMAGE_FLOATING: ${{ env.IMAGE_REPO }}:linux-amd64
         run: |
           docker build \
@@ -48,7 +157,7 @@ jobs:
 
       - name: Smoke test runtime llama.cpp install path
         env:
-          IMAGE_RELEASE: ${{ env.IMAGE_REPO }}:${{ env.RELEASE_TAG }}-linux-amd64
+          IMAGE_RELEASE: ${{ env.IMAGE_REPO }}:${{ needs.llama-cpp-refresh.outputs.release_tag }}-linux-amd64
         run: |
           docker run --rm --entrypoint /bin/bash "${IMAGE_RELEASE}" -lc '
             uv run cyber-inference install-llama &&
@@ -57,7 +166,7 @@ jobs:
 
       - name: Push Linux AMD64 image
         env:
-          IMAGE_RELEASE: ${{ env.IMAGE_REPO }}:${{ env.RELEASE_TAG }}-linux-amd64
+          IMAGE_RELEASE: ${{ env.IMAGE_REPO }}:${{ needs.llama-cpp-refresh.outputs.release_tag }}-linux-amd64
           IMAGE_FLOATING: ${{ env.IMAGE_REPO }}:linux-amd64
         run: |
           docker push "${IMAGE_RELEASE}"
@@ -65,12 +174,15 @@ jobs:
 
   thor-arm64:
     name: Build and publish Thor ARM64 NVIDIA image
+    needs:
+      - llama-cpp-refresh
+    if: needs.llama-cpp-refresh.outputs.should_publish == 'true'
     runs-on: [self-hosted, Linux, ARM64, NVIDIA, Thor]
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.release.tag_name || inputs.release_tag }}
+          ref: ${{ github.event.release.tag_name || inputs.release_tag || github.ref_name }}
 
       - name: Install llama.cpp build prerequisites
         run: |
@@ -88,15 +200,29 @@ jobs:
             pkg-config
 
       - name: Build llama.cpp natively on Thor
+        env:
+          LLAMA_CPP_TAG: ${{ needs.llama-cpp-refresh.outputs.llama_cpp_tag }}
         run: |
           rm -rf "${RUNNER_TEMP}/llama.cpp"
-          git clone --depth 1 https://github.com/ggml-org/llama.cpp "${RUNNER_TEMP}/llama.cpp"
+          git clone --depth 1 --branch "${LLAMA_CPP_TAG}" https://github.com/ggml-org/llama.cpp "${RUNNER_TEMP}/llama.cpp"
           cd "${RUNNER_TEMP}/llama.cpp"
+          LLAMA_CPP_COMMIT=$(git rev-parse HEAD)
+          echo "LLAMA_CPP_COMMIT=${LLAMA_CPP_COMMIT}" >> "${GITHUB_ENV}"
           cmake -B build -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release -G Ninja
           cmake --build build --config Release -j$(nproc)
 
       - name: Stage llama.cpp runtime bundle
-        run: docker/scripts/stage-llama-runtime.sh "${RUNNER_TEMP}/llama.cpp/build" docker/build/llama-bin
+        env:
+          LLAMA_CPP_TAG: ${{ needs.llama-cpp-refresh.outputs.llama_cpp_tag }}
+          LLAMA_CPP_URL: ${{ needs.llama-cpp-refresh.outputs.llama_cpp_url }}
+        run: |
+          docker/scripts/stage-llama-runtime.sh "${RUNNER_TEMP}/llama.cpp/build" docker/build/llama-bin
+          mkdir -p docker/build/llama-bin/llama
+          printf 'repo=https://github.com/ggml-org/llama.cpp\ntag=%s\ncommit=%s\nrelease=%s\n' \
+            "${LLAMA_CPP_TAG}" \
+            "${LLAMA_CPP_COMMIT}" \
+            "${LLAMA_CPP_URL}" \
+            > docker/build/llama-bin/llama/BUILD_INFO
 
       - name: Build whisper.cpp natively on Thor
         run: |
@@ -120,7 +246,10 @@ jobs:
 
       - name: Build Thor ARM64 image
         env:
-          IMAGE_RELEASE: ${{ env.IMAGE_REPO }}:${{ env.RELEASE_TAG }}-thor-arm64
+          RELEASE_TAG: ${{ needs.llama-cpp-refresh.outputs.release_tag }}
+          LLAMA_CPP_TAG: ${{ needs.llama-cpp-refresh.outputs.llama_cpp_tag }}
+          LLAMA_CPP_URL: ${{ needs.llama-cpp-refresh.outputs.llama_cpp_url }}
+          IMAGE_RELEASE: ${{ env.IMAGE_REPO }}:${{ needs.llama-cpp-refresh.outputs.release_tag }}-thor-arm64
           IMAGE_FLOATING: ${{ env.IMAGE_REPO }}:thor-arm64
           IMAGE_LATEST_LOCAL: ${{ env.IMAGE_REPO }}:latest
         run: |
@@ -129,6 +258,9 @@ jobs:
             -f docker/Dockerfile.thor-arm64 \
             --label "org.opencontainers.image.version=${RELEASE_TAG}" \
             --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --label "org.cyberinference.llama-cpp.tag=${LLAMA_CPP_TAG}" \
+            --label "org.cyberinference.llama-cpp.revision=${LLAMA_CPP_COMMIT}" \
+            --label "org.cyberinference.llama-cpp.source=${LLAMA_CPP_URL}" \
             --label "org.cyberinference.whisper-cpp.revision=${WHISPER_CPP_COMMIT}" \
             -t "${IMAGE_RELEASE}" \
             -t "${IMAGE_FLOATING}" \
@@ -137,11 +269,12 @@ jobs:
 
       - name: Smoke test Thor image with NVIDIA runtime
         env:
-          IMAGE_RELEASE: ${{ env.IMAGE_REPO }}:${{ env.RELEASE_TAG }}-thor-arm64
+          IMAGE_RELEASE: ${{ env.IMAGE_REPO }}:${{ needs.llama-cpp-refresh.outputs.release_tag }}-thor-arm64
         run: |
           docker run --rm --runtime nvidia --entrypoint /bin/bash "${IMAGE_RELEASE}" -lc '
             set -euo pipefail
             test -x /app/bin/llama-server
+            test -f /app/bin/llama/BUILD_INFO
             test -x /app/bin/whisper-server
             test -x /app/bin/whisper/whisper-server
             test -f /app/bin/whisper/BUILD_INFO
@@ -157,7 +290,7 @@ jobs:
 
       - name: Push Thor ARM64 image
         env:
-          IMAGE_RELEASE: ${{ env.IMAGE_REPO }}:${{ env.RELEASE_TAG }}-thor-arm64
+          IMAGE_RELEASE: ${{ env.IMAGE_REPO }}:${{ needs.llama-cpp-refresh.outputs.release_tag }}-thor-arm64
           IMAGE_FLOATING: ${{ env.IMAGE_REPO }}:thor-arm64
         run: |
           docker push "${IMAGE_RELEASE}"
@@ -166,8 +299,10 @@ jobs:
   latest:
     name: Publish latest multi-arch image
     needs:
+      - llama-cpp-refresh
       - linux-amd64
       - thor-arm64
+    if: needs.llama-cpp-refresh.outputs.should_publish == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Log in to GHCR
@@ -175,9 +310,9 @@ jobs:
 
       - name: Publish latest and version manifests
         env:
-          IMAGE_LINUX: ${{ env.IMAGE_REPO }}:${{ env.RELEASE_TAG }}-linux-amd64
-          IMAGE_THOR: ${{ env.IMAGE_REPO }}:${{ env.RELEASE_TAG }}-thor-arm64
-          IMAGE_RELEASE: ${{ env.IMAGE_REPO }}:${{ env.RELEASE_TAG }}
+          IMAGE_LINUX: ${{ env.IMAGE_REPO }}:${{ needs.llama-cpp-refresh.outputs.release_tag }}-linux-amd64
+          IMAGE_THOR: ${{ env.IMAGE_REPO }}:${{ needs.llama-cpp-refresh.outputs.release_tag }}-thor-arm64
+          IMAGE_RELEASE: ${{ env.IMAGE_REPO }}:${{ needs.llama-cpp-refresh.outputs.release_tag }}
           IMAGE_LATEST: ${{ env.IMAGE_REPO }}:latest
         run: |
           docker buildx imagetools create \
@@ -192,7 +327,9 @@ jobs:
   deploy-thor:
     name: Deploy latest on Thor
     needs:
+      - llama-cpp-refresh
       - latest
+    if: needs.llama-cpp-refresh.outputs.should_publish == 'true'
     runs-on: [self-hosted, Linux, ARM64, NVIDIA, Thor]
     concurrency:
       group: cyber-inference-thor-deploy
@@ -204,7 +341,7 @@ jobs:
       - name: Replace Thor service with latest image
         env:
           IMAGE: ${{ env.IMAGE_REPO }}:latest
-          RELEASE_TAG: ${{ env.RELEASE_TAG }}
+          RELEASE_TAG: ${{ needs.llama-cpp-refresh.outputs.release_tag }}
           DATA_DIR: /home/matt/Local/cyber-inference/data
           MODELS_DIR: /home/matt/Local/cyber-inference/models
         run: |

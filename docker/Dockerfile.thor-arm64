@@ -46,6 +46,7 @@ COPY docker/build/whisper-bin/ /app/bin/
 
 RUN set -eux; \
     test -x /app/bin/llama-server; \
+    test -f /app/bin/llama/BUILD_INFO; \
     test -x /app/bin/whisper-server; \
     test -x /app/bin/whisper/whisper-server; \
     test -f /app/bin/whisper/BUILD_INFO; \

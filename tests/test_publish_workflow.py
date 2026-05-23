@@ -1,0 +1,35 @@
+from pathlib import Path
+
+WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "publish-containers.yml"
+
+
+def test_publish_workflow_has_weekly_llama_cpp_refresh_window():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert "schedule:" in workflow
+    assert 'cron: "0 6 * * 1"' in workflow
+    assert 'cron: "0 7 * * 1"' in workflow
+    assert "America/New_York" in workflow
+    assert 'local_hour="$(TZ=America/New_York date +%H)"' in workflow
+    assert 'local_weekday="$(TZ=America/New_York date +%u)"' in workflow
+    assert "python3 - <<'PY'" in workflow
+
+
+def test_publish_workflow_skips_scheduled_rebuild_without_new_llama_cpp():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert "llama-cpp-refresh:" in workflow
+    assert 'org.cyberinference.llama-cpp.tag' in workflow
+    assert 'if [[ "$current_llama_tag" == "$LLAMA_CPP_TAG" ]]' in workflow
+    assert "should_publish=false" in workflow
+    assert "needs.llama-cpp-refresh.outputs.should_publish == 'true'" in workflow
+
+
+def test_publish_workflow_pins_and_labels_thor_llama_cpp_build():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert 'git clone --depth 1 --branch "${LLAMA_CPP_TAG}"' in workflow
+    assert "LLAMA_CPP_COMMIT=$(git rev-parse HEAD)" in workflow
+    assert "docker/build/llama-bin/llama/BUILD_INFO" in workflow
+    assert 'org.cyberinference.llama-cpp.tag=${LLAMA_CPP_TAG}' in workflow
+    assert 'org.cyberinference.llama-cpp.revision=${LLAMA_CPP_COMMIT}' in workflow
