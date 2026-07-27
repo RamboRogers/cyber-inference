@@ -149,6 +149,7 @@ jobs:
           docker build \
             --platform linux/amd64 \
             -f docker/Dockerfile.linux-amd64 \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
             --label "org.opencontainers.image.version=${RELEASE_TAG}" \
             --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
             -t "${IMAGE_RELEASE}" \
@@ -256,6 +257,7 @@ jobs:
           docker build \
             --platform linux/arm64 \
             -f docker/Dockerfile.thor-arm64 \
+            --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
             --label "org.opencontainers.image.version=${RELEASE_TAG}" \
             --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
             --label "org.cyberinference.llama-cpp.tag=${LLAMA_CPP_TAG}" \

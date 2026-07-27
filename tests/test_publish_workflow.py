@@ -58,3 +58,12 @@ def test_publish_workflow_never_deploys_to_production_thor():
     assert "Deploy latest on Thor" not in workflow
     assert "Replace Thor service with latest image" not in workflow
     assert "docker stop cyber-inference" not in workflow
+
+
+def test_publish_workflow_links_all_images_to_public_repository():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    source_label = (
+        '--label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}"'
+    )
+    assert workflow.count(source_label) == 2
