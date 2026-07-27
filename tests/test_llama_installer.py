@@ -1,5 +1,6 @@
 """Tests for llama.cpp installer fallback behavior."""
 
+import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -7,6 +8,7 @@ import pytest
 
 from cyber_inference.services.llama_installer import (
     ARM64_CUDA_INSTALL_GUIDANCE,
+    GITHUB_API_URL,
     MTP_REQUIRED_HELP_TOKENS,
     THOR_BUNDLED_UPDATE_GUIDANCE,
     LlamaInstaller,
@@ -312,6 +314,38 @@ async def test_get_latest_release_info_serializes_selected_asset(tmp_path: Path)
     assert info["html_url"] == "https://github.com/ggerganov/llama.cpp/releases/tag/b1001"
     assert info["published_at"] == "2026-04-11T00:00:00Z"
     assert info["compatible_asset"] == "llama-b1001-macos-arm64.zip"
+
+
+@pytest.mark.asyncio
+async def test_get_latest_release_uses_available_github_token(tmp_path: Path) -> None:
+    installer = LlamaInstaller(bin_dir=tmp_path)
+    release = {"tag_name": "b1001", "assets": []}
+
+    response = MagicMock()
+    response.raise_for_status.return_value = None
+    response.json.return_value = release
+
+    client = AsyncMock()
+    client.__aenter__.return_value = client
+    client.__aexit__.return_value = None
+    client.get.return_value = response
+
+    with (
+        patch.dict(os.environ, {"GITHUB_TOKEN": "workflow-token"}, clear=False),
+        patch("cyber_inference.services.llama_installer.httpx.AsyncClient", return_value=client),
+    ):
+        result = await installer.get_latest_release()
+
+    assert result == release
+    client.get.assert_awaited_once_with(
+        GITHUB_API_URL,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "Authorization": "Bearer workflow-token",
+        },
+        timeout=30,
+    )
 
 
 @pytest.mark.asyncio

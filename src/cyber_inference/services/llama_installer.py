@@ -193,10 +193,18 @@ class LlamaInstaller:
         """
         logger.info("[info]Fetching latest llama.cpp release...[/info]")
 
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
+        github_token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+        if github_token:
+            headers["Authorization"] = f"Bearer {github_token}"
+
         async with httpx.AsyncClient(follow_redirects=True) as client:
             response = await client.get(
                 GITHUB_API_URL,
-                headers={"Accept": "application/vnd.github.v3+json"},
+                headers=headers,
                 timeout=30,
             )
             response.raise_for_status()

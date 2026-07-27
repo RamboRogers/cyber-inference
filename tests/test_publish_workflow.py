@@ -67,3 +67,11 @@ def test_publish_workflow_links_all_images_to_public_repository():
         '--label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}"'
     )
     assert workflow.count(source_label) == 2
+
+
+def test_publish_workflow_authenticates_github_api_requests():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert workflow.count("GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}") >= 2
+    assert '-H "Authorization: Bearer ${GITHUB_TOKEN}"' in workflow
+    assert "docker run --rm -e GITHUB_TOKEN" in workflow

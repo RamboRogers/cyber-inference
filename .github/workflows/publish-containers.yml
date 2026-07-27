@@ -55,10 +55,16 @@ jobs:
           EVENT_RELEASE_TAG: ${{ github.event.release.tag_name }}
           INPUT_RELEASE_TAG: ${{ inputs.release_tag }}
           FORCE_REBUILD: ${{ inputs.force_rebuild || 'false' }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
 
-          latest_release="$(curl -fsSL https://api.github.com/repos/ggml-org/llama.cpp/releases/latest)"
+          latest_release="$(
+            curl -fsSL \
+              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              https://api.github.com/repos/ggml-org/llama.cpp/releases/latest
+          )"
           LLAMA_CPP_TAG="$(jq -r '.tag_name' <<<"${latest_release}")"
           LLAMA_CPP_COMMIT="$(jq -r '.target_commitish' <<<"${latest_release}")"
           LLAMA_CPP_URL="$(jq -r '.html_url' <<<"${latest_release}")"
@@ -158,9 +164,10 @@ jobs:
 
       - name: Smoke test runtime llama.cpp install path
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           IMAGE_RELEASE: ${{ env.IMAGE_REPO }}:${{ needs.llama-cpp-refresh.outputs.release_tag }}-linux-amd64
         run: |
-          docker run --rm --entrypoint /bin/bash "${IMAGE_RELEASE}" -lc '
+          docker run --rm -e GITHUB_TOKEN --entrypoint /bin/bash "${IMAGE_RELEASE}" -lc '
             uv run cyber-inference install-llama &&
             /app/bin/llama-server --version
           '
