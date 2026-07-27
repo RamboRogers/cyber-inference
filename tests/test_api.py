@@ -1481,6 +1481,7 @@ async def test_download_model_endpoint_passes_download_id_to_manager():
             "name": "demo",
             "filename": "demo.gguf",
             "path": "/tmp/demo.gguf",
+            "hf_repo_id": "demo/repo",
             "size_bytes": 1,
             "context_length": 4096,
             "model_type": "chat",
@@ -1494,7 +1495,7 @@ async def test_download_model_endpoint_passes_download_id_to_manager():
             response = await client.post(
                 "/admin/models/download",
                 json={
-                    "hf_repo_id": "demo/repo",
+                    "hf_repo_id": "https://huggingface.co/demo/repo/",
                     "hf_filename": "demo.gguf",
                     "download_id": "download-123",
                 },
@@ -1502,6 +1503,48 @@ async def test_download_model_endpoint_passes_download_id_to_manager():
 
     assert response.status_code == 200
     assert model_manager.download_model.await_args.kwargs["download_id"] == "download-123"
+    assert model_manager.download_model.await_args.kwargs["repo_id"] == "demo/repo"
+    assert response.json()["hf_repo_id"] == "demo/repo"
+
+
+@pytest.mark.asyncio
+async def test_download_transformers_endpoint_normalizes_full_repo_url():
+    """Transformers API downloads should pass and return the canonical HuggingFace repo ID."""
+    model_manager = MagicMock()
+    model_manager.download_transformers_model = AsyncMock(return_value=Path("/tmp/Fable-GGUF"))
+    model_manager._sanitize_repo_name.return_value = "Fable-GGUF"
+    model_manager.get_model = AsyncMock(
+        return_value={
+            "id": 1,
+            "name": "Fable-GGUF",
+            "filename": "Fable-GGUF",
+            "path": "/tmp/Fable-GGUF",
+            "hf_repo_id": "DavidAU/Fable-GGUF",
+            "size_bytes": 1,
+            "context_length": 4096,
+            "model_type": "chat",
+            "is_downloaded": True,
+            "is_enabled": True,
+        }
+    )
+
+    with patch("cyber_inference.api.admin.ModelManager", return_value=model_manager):
+        async with make_test_client() as client:
+            response = await client.post(
+                "/admin/models/download-transformers",
+                json={
+                    "hf_repo_id": "https://huggingface.co/DavidAU/Fable-GGUF/?download=true",
+                    "download_id": "download-transformers-123",
+                },
+            )
+
+    assert response.status_code == 200
+    assert model_manager.download_transformers_model.await_args.kwargs == {
+        "repo_id": "DavidAU/Fable-GGUF",
+        "force": False,
+        "download_id": "download-transformers-123",
+    }
+    assert response.json()["hf_repo_id"] == "DavidAU/Fable-GGUF"
 
 
 @pytest.mark.asyncio
@@ -1603,10 +1646,15 @@ async def test_repo_files_endpoint_returns_split_metadata():
 
     with patch("cyber_inference.api.admin.ModelManager", return_value=model_manager):
         async with make_test_client() as client:
-            response = await client.get("/admin/models/repo-files?repo_id=demo/repo")
+            response = await client.get(
+                "/admin/models/repo-files",
+                params={"repo_id": "https://huggingface.co/demo/repo/?download=true"},
+            )
 
     assert response.status_code == 200
+    model_manager.list_repo_files_detailed.assert_awaited_once_with("demo/repo")
     payload = response.json()
+    assert payload["repo_id"] == "demo/repo"
     assert len(payload["model_files"]) == 1
     model_file = payload["model_files"][0]
     assert model_file["is_split"] is True

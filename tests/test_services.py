@@ -181,6 +181,156 @@ class TestModelManager:
         assert manager.models_dir == temp_models_dir
         assert manager.models_dir.exists()
 
+    @pytest.mark.parametrize(
+        ("reference", "filename", "expected"),
+        [
+            ("DavidAU/Fable-GGUF", None, ("DavidAU/Fable-GGUF", None)),
+            (
+                "https://huggingface.co/DavidAU/Fable-GGUF",
+                None,
+                ("DavidAU/Fable-GGUF", None),
+            ),
+            (
+                "https://www.huggingface.co/DavidAU/Fable-GGUF/?download=true#files",
+                None,
+                ("DavidAU/Fable-GGUF", None),
+            ),
+            (
+                "https://huggingface.co/DavidAU/Fable-GGUF",
+                "Fable-Q4_K_M.gguf",
+                ("DavidAU/Fable-GGUF", "Fable-Q4_K_M.gguf"),
+            ),
+            (
+                "https://huggingface.co/DavidAU/Fable-GGUF/resolve/main/Fable-Q4_K_M.gguf"
+                "?download=true",
+                None,
+                ("DavidAU/Fable-GGUF", "Fable-Q4_K_M.gguf"),
+            ),
+            (
+                "DavidAU/Fable-GGUF/blob/main/quants/Fable-Q4_K_M.gguf",
+                None,
+                ("DavidAU/Fable-GGUF", "quants/Fable-Q4_K_M.gguf"),
+            ),
+        ],
+    )
+    def test_normalize_huggingface_reference(
+        self,
+        reference,
+        filename,
+        expected,
+    ):
+        """Repo IDs and HuggingFace URLs should resolve to one canonical identity."""
+        from cyber_inference.services.model_manager import normalize_huggingface_reference
+
+        assert normalize_huggingface_reference(reference, filename) == expected
+
+    @pytest.mark.parametrize(
+        "reference",
+        [
+            "https://example.com/DavidAU/Fable-GGUF",
+            "https://huggingface.co/DavidAU",
+            "https://huggingface.co/DavidAU/Fable-GGUF/discussions",
+        ],
+    )
+    def test_normalize_huggingface_reference_rejects_malformed_urls(self, reference):
+        """Invalid or non-HuggingFace URLs should fail before Hub requests."""
+        from cyber_inference.services.model_manager import normalize_huggingface_reference
+
+        for filename in (None, "Fable-Q4_K_M.gguf"):
+            with pytest.raises(ValueError, match="HuggingFace"):
+                normalize_huggingface_reference(reference, filename)
+
+    @pytest.mark.asyncio
+    async def test_repo_discovery_uses_canonical_id_for_full_url(self, temp_models_dir):
+        """Repository discovery should strip the HuggingFace URL before calling the Hub."""
+        from cyber_inference.services.model_manager import ModelManager
+
+        manager = ModelManager(models_dir=temp_models_dir)
+        with patch.object(manager._hf_api, "list_repo_tree", return_value=[]) as list_tree:
+            result = await manager.list_repo_files_detailed(
+                "https://huggingface.co/DavidAU/Fable-GGUF/?download=true"
+            )
+
+        list_tree.assert_called_once_with("DavidAU/Fable-GGUF", recursive=True)
+        assert result["repo_id"] == "DavidAU/Fable-GGUF"
+
+    @pytest.mark.asyncio
+    async def test_gguf_download_uses_canonical_id_with_explicit_filename(
+        self,
+        temp_models_dir,
+    ):
+        """A selected filename must not prevent full repo URL normalization."""
+        from cyber_inference.services.model_manager import ModelManager
+
+        manager = ModelManager(models_dir=temp_models_dir)
+        filename = "Fable-Q4_K_M.gguf"
+        file_info = {
+            "filename": filename,
+            "size_bytes": 4,
+            "quantization": "q4_k_m",
+            "artifact_type": "model",
+        }
+
+        async def fake_download(**kwargs):
+            kwargs["local_path"].write_bytes(b"gguf")
+            return kwargs["local_path"]
+
+        with (
+            patch(
+                "cyber_inference.services.model_manager.list_repo_files",
+                return_value=[filename],
+            ) as list_files,
+            patch.object(
+                manager,
+                "list_repo_files",
+                AsyncMock(return_value=[file_info]),
+            ),
+            patch.object(
+                manager,
+                "_download_file_with_progress",
+                AsyncMock(side_effect=fake_download),
+            ),
+            patch.object(manager, "_download_mmproj", AsyncMock(return_value=None)),
+            patch.object(manager, "_register_model", AsyncMock()) as register_model,
+            patch.object(manager, "_notify_progress", AsyncMock()),
+        ):
+            result = await manager.download_model(
+                "https://huggingface.co/DavidAU/Fable-GGUF",
+                filename=filename,
+            )
+
+        list_files.assert_called_once_with("DavidAU/Fable-GGUF", token=manager._hf_token)
+        assert register_model.await_args.args[:2] == ("DavidAU/Fable-GGUF", filename)
+        assert result.filename == filename
+
+    @pytest.mark.asyncio
+    async def test_transformers_download_uses_canonical_id(
+        self,
+        temp_models_dir,
+    ):
+        """Transformers snapshots and persistence should receive the canonical repo ID."""
+        from cyber_inference.services.model_manager import ModelManager
+
+        manager = ModelManager(models_dir=temp_models_dir)
+        settings = MagicMock(transformers_models_dir=temp_models_dir / "transformers")
+
+        with (
+            patch("cyber_inference.services.model_manager.get_settings", return_value=settings),
+            patch(
+                "cyber_inference.services.model_manager.snapshot_download",
+                return_value=str(temp_models_dir / "transformers" / "Fable-GGUF"),
+            ) as snapshot,
+            patch.object(manager, "_register_model", AsyncMock()) as register_model,
+            patch.object(manager, "_notify_progress", AsyncMock()),
+        ):
+            path = await manager.download_transformers_model(
+                "https://huggingface.co/DavidAU/Fable-GGUF/"
+            )
+
+        assert snapshot.call_args.kwargs["repo_id"] == "DavidAU/Fable-GGUF"
+        assert register_model.await_args.kwargs["repo_id"] == "DavidAU/Fable-GGUF"
+        assert path.name == "Fable-GGUF"
+
     def test_parse_split_gguf_filename_preserves_canonical_quant_name(self):
         """Split GGUF names should strip only the terminal shard suffix."""
         from cyber_inference.services.model_manager import ModelManager

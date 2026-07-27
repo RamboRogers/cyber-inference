@@ -39,7 +39,7 @@ from cyber_inference.models.schemas import (
 )
 from cyber_inference.services.auto_loader import AutoLoader
 from cyber_inference.services.llama_installer import LlamaInstaller
-from cyber_inference.services.model_manager import ModelManager
+from cyber_inference.services.model_manager import ModelManager, normalize_huggingface_reference
 
 logger = get_logger(__name__)
 
@@ -446,11 +446,11 @@ async def list_repo_files(
     Returns model files and mmproj files separately, with suggestions
     for which files to download.
     """
-    logger.info(f"[info]GET /admin/models/repo-files?repo_id={repo_id}[/info]")
-
     mm = ModelManager()
 
     try:
+        repo_id, _direct_filename = normalize_huggingface_reference(repo_id)
+        logger.info(f"[info]GET /admin/models/repo-files?repo_id={repo_id}[/info]")
         result = await mm.list_repo_files_detailed(repo_id)
 
         return RepoFilesResponse(
@@ -566,19 +566,23 @@ async def download_model(
             detail="hf_repo_id is required for model download",
         )
 
-    logger.info(f"[highlight]POST /admin/models/download: {request.hf_repo_id}[/highlight]")
-    logger.info(f"  Filename: {request.hf_filename or 'auto-select'}")
-    if request.hf_mmproj_filename:
-        logger.info(f"  mmproj Filename: {request.hf_mmproj_filename}")
-    if request.hf_mtp_filename:
-        logger.info(f"  MTP draft filename: {request.hf_mtp_filename}")
-
     mm = ModelManager()
 
     try:
+        repo_id, filename = normalize_huggingface_reference(
+            request.hf_repo_id,
+            request.hf_filename,
+        )
+        logger.info(f"[highlight]POST /admin/models/download: {repo_id}[/highlight]")
+        logger.info(f"  Filename: {filename or 'auto-select'}")
+        if request.hf_mmproj_filename:
+            logger.info(f"  mmproj Filename: {request.hf_mmproj_filename}")
+        if request.hf_mtp_filename:
+            logger.info(f"  MTP draft filename: {request.hf_mtp_filename}")
+
         path = await mm.download_model(
-            repo_id=request.hf_repo_id,
-            filename=request.hf_filename,
+            repo_id=repo_id,
+            filename=filename,
             mmproj_filename=request.hf_mmproj_filename,
             mtp_filename=request.hf_mtp_filename,
             force=request.force,
@@ -597,7 +601,7 @@ async def download_model(
                 name=model_name,
                 filename=path.filename,
                 file_path=str(path.path),
-                hf_repo_id=request.hf_repo_id,
+                hf_repo_id=repo_id,
                 size_bytes=path.size_bytes,
                 quantization=None,
                 context_length=4096,
@@ -690,18 +694,24 @@ async def download_transformers_model(
             detail="hf_repo_id is required for model download",
         )
 
-    logger.info(f"[highlight]POST /admin/models/download-transformers: {request.hf_repo_id}[/highlight]")
-
     mm = ModelManager()
 
     try:
+        repo_id, direct_filename = normalize_huggingface_reference(request.hf_repo_id)
+        if direct_filename:
+            raise ValueError(
+                "Transformers downloads require a HuggingFace repository URL, "
+                "not a direct model file URL"
+            )
+        logger.info(f"[highlight]POST /admin/models/download-transformers: {repo_id}[/highlight]")
+
         path = await mm.download_transformers_model(
-            repo_id=request.hf_repo_id,
+            repo_id=repo_id,
             force=False,
             download_id=request.download_id,
         )
 
-        model_name = mm._sanitize_repo_name(request.hf_repo_id)
+        model_name = mm._sanitize_repo_name(repo_id)
         model = await mm.get_model(model_name)
 
         if not model:
@@ -710,7 +720,7 @@ async def download_transformers_model(
                 name=model_name,
                 filename=model_name,
                 file_path=str(path),
-                hf_repo_id=request.hf_repo_id,
+                hf_repo_id=repo_id,
                 size_bytes=0,
                 quantization=None,
                 context_length=4096,

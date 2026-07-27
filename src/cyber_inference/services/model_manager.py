@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
+from urllib.parse import urlparse
 
 import httpx
 from huggingface_hub import HfApi, hf_hub_url, list_repo_files, snapshot_download
@@ -32,6 +33,57 @@ logger = get_logger(__name__)
 
 GGUF_STRING_TYPE = 8
 GGUF_ARRAY_TYPE = 9
+HUGGINGFACE_HOSTS = {"huggingface.co", "www.huggingface.co"}
+
+
+def normalize_huggingface_reference(
+    repo_id: str,
+    filename: str | None = None,
+) -> tuple[str, str | None]:
+    """Normalize a HuggingFace repo ID or model URL into canonical download inputs."""
+    cleaned = repo_id.strip()
+    normalized_filename = filename.strip() if filename else None
+    if not cleaned:
+        raise ValueError("HuggingFace repository ID or URL is required")
+
+    parsed = urlparse(cleaned)
+    if parsed.scheme or parsed.netloc:
+        hostname = (parsed.hostname or "").lower()
+        if parsed.scheme not in {"http", "https"} or hostname not in HUGGINGFACE_HOSTS:
+            raise ValueError(
+                "Expected a HuggingFace repository ID or "
+                "https://huggingface.co/<owner>/<repository> URL"
+            )
+        parts = [part for part in parsed.path.split("/") if part]
+    else:
+        without_fragment = cleaned.split("#", 1)[0]
+        without_query = without_fragment.split("?", 1)[0]
+        parts = [part for part in without_query.split("/") if part]
+
+    if len(parts) < 2:
+        raise ValueError(
+            "HuggingFace repository reference must include both an owner and repository"
+        )
+
+    normalized_repo_id = "/".join(parts[:2])
+    remainder = parts[2:]
+    if not remainder:
+        return normalized_repo_id, normalized_filename
+
+    if remainder[0] in {"blob", "resolve", "tree"}:
+        if len(remainder) < 3:
+            if remainder[0] == "tree" and len(remainder) == 2:
+                return normalized_repo_id, normalized_filename
+            raise ValueError("Direct HuggingFace model URL must include a filename")
+        remainder = remainder[2:]
+
+    direct_filename = "/".join(remainder)
+    if direct_filename.lower().endswith((".gguf", ".bin")):
+        return normalized_repo_id, normalized_filename or direct_filename
+
+    raise ValueError(
+        "HuggingFace URL must point to a repository or a direct .gguf/.bin model file"
+    )
 
 
 @dataclass(frozen=True)
@@ -723,36 +775,7 @@ class ModelManager:
         repo_id: str,
         filename: str | None,
     ) -> tuple[str, str | None]:
-        if filename:
-            return repo_id, filename
-
-        cleaned = repo_id.strip()
-        if cleaned.startswith("https://huggingface.co/"):
-            cleaned = cleaned[len("https://huggingface.co/"):]
-        cleaned = cleaned.lstrip("/").split("?", 1)[0]
-
-        if not cleaned.endswith(".gguf"):
-            return repo_id, filename
-
-        parts = cleaned.split("/")
-        if len(parts) < 3:
-            return repo_id, filename
-
-        for marker in ("blob", "resolve", "tree"):
-            if marker in parts:
-                idx = parts.index(marker)
-                if idx + 1 < len(parts):
-                    parts = parts[:idx] + parts[idx + 2:]
-                else:
-                    parts = parts[:idx]
-                break
-
-        if len(parts) < 3 or not parts[-1].endswith(".gguf"):
-            return repo_id, filename
-
-        new_repo_id = "/".join(parts[:2])
-        new_filename = "/".join(parts[2:])
-        return new_repo_id, new_filename
+        return normalize_huggingface_reference(repo_id, filename)
 
     @staticmethod
     def _new_download_id() -> str:
@@ -1271,6 +1294,7 @@ class ModelManager:
         Returns:
             List of file information dicts
         """
+        repo_id, _ = self._split_repo_and_filename(repo_id, None)
         logger.info(f"[info]Listing files in repo: {repo_id}[/info]")
 
         try:
@@ -1329,6 +1353,7 @@ class ModelManager:
         Returns:
             Dict with model_files, mmproj_files, is_multimodal, and suggestions
         """
+        repo_id, _ = self._split_repo_and_filename(repo_id, None)
         logger.info(f"[info]Listing detailed files in repo: {repo_id}[/info]")
 
         try:
@@ -1504,7 +1529,6 @@ class ModelManager:
         Returns:
             Download result with canonical model identity
         """
-        repo_id = repo_id.strip()
         download_id = download_id or self._new_download_id()
         filename = filename.strip() if filename else None
         mmproj_filename = mmproj_filename.strip() if mmproj_filename else None
@@ -2761,7 +2785,12 @@ class ModelManager:
         Returns:
             Path to the downloaded model directory
         """
-        repo_id = repo_id.strip()
+        repo_id, direct_filename = self._split_repo_and_filename(repo_id, None)
+        if direct_filename:
+            raise ValueError(
+                "Transformers downloads require a HuggingFace repository URL, "
+                "not a direct model file URL"
+            )
         download_id = download_id or self._new_download_id()
         model_name = self._sanitize_repo_name(repo_id)
 

@@ -608,13 +608,13 @@
             <!-- Step 1: Enter Repo ID -->
             <div>
                 <label class="block text-sm font-mono text-gray-400 mb-2" id="repoIdLabel">
-                    HuggingFace Repo ID or Direct .gguf Path
+                    HuggingFace Repo ID, URL, or Direct .gguf Path
                 </label>
                 <div class="flex space-x-2">
                     <input type="text"
                            id="repoId"
                            name="hf_repo_id"
-                           placeholder="e.g., ggml-org/gpt-oss-20b-GGUF"
+                           placeholder="e.g., https://huggingface.co/ggml-org/gpt-oss-20b-GGUF"
                            class="cyber-input flex-1 px-4 py-3 rounded-lg font-mono"
                            required>
                     <button type="button"
@@ -625,7 +625,7 @@
                     </button>
                 </div>
                 <p class="text-xs text-gray-500 mt-1 font-mono" id="repoIdHint">
-                    Enter a repo ID to see available files, or paste a direct .gguf URL
+                    Paste a HuggingFace repo URL or enter owner/repo; direct .gguf URLs also work
                 </p>
             </div>
 
@@ -782,6 +782,62 @@
     // Current engine selection
     let selectedEngine = 'gguf';
 
+    function normalizeHuggingFaceRepoInput(value) {
+        const trimmed = value.trim();
+        if (!/^https?:\/\//i.test(trimmed)) {
+            return trimmed;
+        }
+
+        try {
+            const url = new URL(trimmed);
+            const hostname = url.hostname.toLowerCase();
+            if (hostname !== 'huggingface.co' && hostname !== 'www.huggingface.co') {
+                return trimmed;
+            }
+
+            const parts = url.pathname.split('/').filter(Boolean);
+            if (parts.length === 2 ||
+                (parts.length === 4 && parts[2] === 'tree')) {
+                return parts.slice(0, 2).join('/');
+            }
+        } catch (error) {
+            return trimmed;
+        }
+
+        return trimmed;
+    }
+
+    function normalizeRepoInput() {
+        const input = document.getElementById('repoId');
+        const normalized = normalizeHuggingFaceRepoInput(input.value);
+        input.value = normalized;
+        return normalized;
+    }
+
+    function isDirectModelReference(value) {
+        try {
+            const url = new URL(value);
+            return /\.(gguf|bin)$/i.test(url.pathname);
+        } catch (error) {
+            return /\.(gguf|bin)$/i.test(value.split(/[?#]/, 1)[0]);
+        }
+    }
+
+    const repoIdInput = document.getElementById('repoId');
+    repoIdInput.addEventListener('paste', function(event) {
+        const pasted = event.clipboardData && event.clipboardData.getData('text');
+        if (!pasted) {
+            return;
+        }
+
+        const normalized = normalizeHuggingFaceRepoInput(pasted);
+        if (normalized !== pasted.trim()) {
+            event.preventDefault();
+            repoIdInput.value = normalized;
+        }
+    });
+    repoIdInput.addEventListener('blur', normalizeRepoInput);
+
     function selectEngine(engine) {
         selectedEngine = engine;
         const ggufDot = document.getElementById('engineGgufDot');
@@ -806,9 +862,9 @@
             transformersDot.className = 'w-4 h-4 rounded-full border-2 border-amber-400 flex items-center justify-center';
             transformersLabel.className = transformersLabel.className.replace('border-cyber-gray', 'border-amber-500/50');
 
-            repoIdLabel.textContent = 'HuggingFace Repo ID';
-            repoId.placeholder = 'e.g., nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8';
-            repoIdHint.textContent = 'Enter a HuggingFace model repo ID for transformers (lightweight, ideal for edge/SoC)';
+            repoIdLabel.textContent = 'HuggingFace Repo ID or URL';
+            repoId.placeholder = 'e.g., https://huggingface.co/nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8';
+            repoIdHint.textContent = 'Paste a HuggingFace repo URL or enter owner/repo for transformers';
             fetchBtn.classList.add('hidden');
             document.getElementById('fileSelectionSection').classList.add('hidden');
             document.getElementById('manualFilenameSection').classList.add('hidden');
@@ -817,9 +873,9 @@
             ggufDot.className = 'w-4 h-4 rounded-full border-2 border-cyber-neon flex items-center justify-center';
             ggufLabel.className = ggufLabel.className.replace('border-cyber-gray', 'border-cyber-neon/50');
 
-            repoIdLabel.textContent = 'HuggingFace Repo ID or Direct .gguf Path';
-            repoId.placeholder = 'e.g., ggml-org/gpt-oss-20b-GGUF';
-            repoIdHint.textContent = 'Enter a repo ID to see available files, or paste a direct .gguf URL';
+            repoIdLabel.textContent = 'HuggingFace Repo ID, URL, or Direct .gguf Path';
+            repoId.placeholder = 'e.g., https://huggingface.co/ggml-org/gpt-oss-20b-GGUF';
+            repoIdHint.textContent = 'Paste a HuggingFace repo URL or enter owner/repo; direct .gguf URLs also work';
             fetchBtn.classList.remove('hidden');
             document.getElementById('manualFilenameSection').classList.remove('hidden');
         }
@@ -1021,14 +1077,14 @@
     }
 
     async function fetchRepoFiles() {
-        const repoId = document.getElementById('repoId').value.trim();
+        const repoId = normalizeRepoInput();
         if (!repoId) {
             alert('Please enter a HuggingFace repo ID');
             return;
         }
 
         // Check if it's a direct file URL (GGUF or whisper bin)
-        if (repoId.endsWith('.gguf') || repoId.endsWith('.bin')) {
+        if (isDirectModelReference(repoId)) {
             // Direct file URL, skip file selection
             document.getElementById('fileSelectionSection').classList.add('hidden');
             document.getElementById('manualFilenameSection').classList.remove('hidden');
@@ -1295,7 +1351,7 @@
             return;
         }
 
-        const repoId = document.getElementById('repoId').value;
+        const repoId = normalizeRepoInput();
         const downloadId = newDownloadId();
         currentDownloadKey = { repoId, downloadId, sawEvent: false, completed: false };
         lastDownloadFeedSignature = null;

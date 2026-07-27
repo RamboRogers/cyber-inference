@@ -27,6 +27,8 @@ def test_mtp_download_controls_use_backend_contract() -> None:
     assert "MTP {% if model.mtp_draft_path %}separate{% else %}embedded{% endif %}" in template
     assert "ggml-org/Qwen3.6-27B-GGUF" in template
     assert "ggml-org/Qwen3.6-35B-A3B-GGUF" in template
+    assert "HuggingFace Repo ID, URL, or Direct .gguf Path" in template
+    assert "Paste a HuggingFace repo URL or enter owner/repo" in template
 
 
 def test_split_mtp_repo_selects_head_and_keeps_projector_opt_in() -> None:
@@ -91,6 +93,23 @@ globalThis.adminFetch = async (endpoint, options) => {{
   return {{ ok: true }};
 }};
 {script}
+const fullRepoUrl = 'https://huggingface.co/DavidAU/' +
+  'Qwen3.6-27B-Fable-Fusion-711-Uncensored-Heretic-NM-DAU-NEO-MAX-MTP-GGUF';
+let pastePrevented = false;
+document.getElementById('repoId').listeners.paste({{
+  clipboardData: {{ getData: () => fullRepoUrl }},
+  preventDefault: () => {{ pastePrevented = true; }},
+}});
+const canonicalRepoId =
+  'DavidAU/Qwen3.6-27B-Fable-Fusion-711-Uncensored-Heretic-NM-DAU-NEO-MAX-MTP-GGUF';
+if (!pastePrevented || document.getElementById('repoId').value !== canonicalRepoId) {{
+  throw new Error('full HuggingFace repo URL was not normalized on paste');
+}}
+if (!isDirectModelReference(
+  'https://huggingface.co/DavidAU/Fable-GGUF/resolve/main/Fable-Q4_K_M.gguf?download=true'
+)) {{
+  throw new Error('direct GGUF URLs with query strings must remain supported');
+}}
 repoData = {{
   is_mtp_candidate: true,
   is_multimodal: true,
@@ -128,7 +147,6 @@ if (document.getElementById('mtpDraftSection').className.includes('hidden')) {{
 if (!document.getElementById('mtpSizeInfo').textContent.includes('GB')) {{
   throw new Error('MTP file size should be shown');
 }}
-document.getElementById('repoId').value = 'ggml-org/Qwen3.6-27B-GGUF';
 await document.getElementById('downloadForm').listeners.submit({{
   preventDefault: () => {{}},
 }});
@@ -137,6 +155,9 @@ if (capturedRequest.endpoint !== '/admin/models/download') {{
 }}
 if (capturedRequest.body.hf_mtp_filename !== repoData.suggested_mtp) {{
   throw new Error('MTP filename was not sent');
+}}
+if (capturedRequest.body.hf_repo_id !== canonicalRepoId) {{
+  throw new Error('download request did not use the canonical repo ID');
 }}
 if ('hf_mmproj_filename' in capturedRequest.body) {{
   throw new Error('projector should not be sent unless explicitly selected');
