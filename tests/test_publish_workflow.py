@@ -49,3 +49,12 @@ def test_publish_workflow_smoke_tests_complete_thor_mtp_contract():
     ):
         assert capability in workflow
     assert "llama-server is missing required MTP capability" in workflow
+
+
+def test_publish_workflow_never_deploys_to_production_thor():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert "deploy-thor:" not in workflow
+    assert "Deploy latest on Thor" not in workflow
+    assert "Replace Thor service with latest image" not in workflow
+    assert "docker stop cyber-inference" not in workflow
