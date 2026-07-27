@@ -279,6 +279,19 @@ jobs:
             test -x /app/bin/whisper/whisper-server
             test -f /app/bin/whisper/BUILD_INFO
             /app/bin/llama-server --version
+            llama_help=$(/app/bin/llama-server --help 2>&1)
+            for capability in \
+              draft-mtp \
+              --spec-draft-model \
+              --spec-draft-n-max \
+              --parallel \
+              --flash-attn \
+              --chat-template-kwargs; do
+              grep -Fq -- "$capability" <<<"$llama_help" || {
+                echo "llama-server is missing required MTP capability: $capability" >&2
+                exit 1
+              }
+            done
             command -v whisper-server
             whisper-server --version || whisper-server --help >/dev/null
             if find /app/bin -maxdepth 1 -type f -name "libwhisper*.so*" | grep -q .; then

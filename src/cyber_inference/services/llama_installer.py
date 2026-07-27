@@ -33,6 +33,26 @@ LLAMA_CPP_REPO = "ggerganov/llama.cpp"
 GITHUB_API_URL = f"https://api.github.com/repos/{LLAMA_CPP_REPO}/releases/latest"
 HOMEBREW_FORMULA_API_URL = "https://formulae.brew.sh/api/formula/llama.cpp.json"
 HOMEBREW_ARM64_LINUX_BOTTLE_KEY = "arm64_linux"
+MTP_REQUIRED_HELP_TOKENS = (
+    "draft-mtp",
+    "--spec-draft-model",
+    "--spec-draft-n-max",
+    "--parallel",
+    "--flash-attn",
+    "--chat-template-kwargs",
+)
+ARM64_CUDA_INSTALL_GUIDANCE = (
+    "No compatible Linux ARM64 CUDA llama.cpp release asset is available. Refusing "
+    "to install a CPU fallback because it would disable GPU inference. Build llama.cpp "
+    "with CUDA support locally or use "
+    "ghcr.io/ramborogers/cyber-inference:thor-arm64."
+)
+THOR_BUNDLED_UPDATE_GUIDANCE = (
+    "The bundled CUDA llama-server on Linux ARM64 is supplied by the Thor image and "
+    "cannot be replaced with a CPU release asset. Pull "
+    "ghcr.io/ramborogers/cyber-inference:thor-arm64 or rebuild that image to update "
+    "llama.cpp."
+)
 
 
 class LlamaInstaller:
@@ -279,6 +299,15 @@ class LlamaInstaller:
             name = asset.get("name", "")
             if isinstance(name, str) and re.match(asset_pattern, name, re.IGNORECASE):
                 return asset
+
+        # Thor and other Linux ARM64 CUDA systems must retain their CUDA-native
+        # binary. Upstream CPU assets and Homebrew bottles are architecture
+        # compatible but would silently disable GPU inference.
+        if self._is_linux_arm64() and backend == "cuda":
+            logger.warning(
+                "[warning]No Linux ARM64 CUDA release asset found; refusing CPU fallback.[/warning]"
+            )
+            return None
 
         # Secondary for Linux CUDA: allow same-arch CPU build.
         if self._platform == "linux" and backend == "cuda":
@@ -570,6 +599,9 @@ class LlamaInstaller:
 
             return llama_server_path
 
+        if force and self._is_bundled_binary(llama_server_path):
+            raise RuntimeError(THOR_BUNDLED_UPDATE_GUIDANCE)
+
         # Detect GPU backend
         backend = await self.detect_gpu_backend()
         logger.info(f"Selected backend: {backend}")
@@ -589,6 +621,8 @@ class LlamaInstaller:
             download_url = matching_asset["browser_download_url"]
             archive_name = matching_asset["name"]
             expected_size = matching_asset.get("size")
+        elif self._is_linux_arm64() and backend == "cuda":
+            raise RuntimeError(ARM64_CUDA_INSTALL_GUIDANCE)
         elif self._is_linux_arm64():
             # Linux ARM64 fallback: use Homebrew bottle metadata when GitHub has no compatible binary.
             bottle = await self._get_homebrew_arm64_linux_bottle()
@@ -707,6 +741,10 @@ class LlamaInstaller:
         binary_name = "llama-server.exe" if self._platform == "windows" else "llama-server"
         return self.bin_dir / binary_name
 
+    def get_bundled_build_info_path(self) -> Path:
+        """Return the build metadata marker used by the Thor image."""
+        return self.bin_dir / "llama" / "BUILD_INFO"
+
     @staticmethod
     def _paths_same(left: Path, right: Path) -> bool:
         """
@@ -722,6 +760,14 @@ class LlamaInstaller:
         except OSError:
             return left.absolute() == right.absolute()
 
+    def _is_bundled_binary(self, binary_path: Path) -> bool:
+        """Return whether a binary is the native bundle shipped in the Thor image."""
+        return (
+            self._is_linux_arm64()
+            and self._paths_same(binary_path, self.get_managed_binary_path())
+            and self.get_bundled_build_info_path().is_file()
+        )
+
     async def get_binary_status(self) -> dict[str, Any]:
         """
         Report active llama-server provenance and managed-update eligibility.
@@ -736,7 +782,7 @@ class LlamaInstaller:
 
         if system_path is not None:
             if self._paths_same(system_path, managed_path):
-                source = "managed"
+                source = "bundled" if self._is_bundled_binary(managed_path) else "managed"
                 binary_path = managed_path
             else:
                 source = "system"
@@ -747,8 +793,12 @@ class LlamaInstaller:
                     "package manager; Cyber-Inference will not overwrite system binaries."
                 )
         elif managed_path.exists():
-            source = "managed"
+            source = "bundled" if self._is_bundled_binary(managed_path) else "managed"
             binary_path = managed_path
+
+        if source == "bundled":
+            update_allowed = False
+            update_blocked_reason = THOR_BUNDLED_UPDATE_GUIDANCE
 
         installed_version = self._get_binary_version(binary_path) if binary_path else None
         supports_draft_mtp = self.supports_draft_mtp(binary_path)
@@ -765,7 +815,7 @@ class LlamaInstaller:
         }
 
     def supports_draft_mtp(self, binary_path: Path | None = None) -> bool:
-        """Return whether a llama-server binary advertises draft-mtp support."""
+        """Return whether llama-server advertises the complete MTP launch contract."""
         candidate = binary_path or self._find_system_binary() or self.get_managed_binary_path()
         if not candidate or not candidate.exists():
             return False
@@ -780,7 +830,7 @@ class LlamaInstaller:
             logger.debug(f"Could not probe llama-server MTP support: {e}")
             return False
         help_text = f"{result.stdout}\n{result.stderr}".lower()
-        return "draft-mtp" in help_text or "draft_mtp" in help_text
+        return all(token in help_text for token in MTP_REQUIRED_HELP_TOKENS)
 
     async def ensure_draft_mtp_support(self) -> None:
         """
@@ -798,7 +848,8 @@ class LlamaInstaller:
         refreshed = await self.get_binary_status()
         if not bool(refreshed.get("supports_draft_mtp")):
             raise RuntimeError(
-                "Installed llama-server still does not advertise draft-mtp support."
+                "Installed llama-server does not advertise the complete MTP launch contract "
+                f"({', '.join(MTP_REQUIRED_HELP_TOKENS)})."
             )
 
     def _find_system_binary(self) -> Path | None:

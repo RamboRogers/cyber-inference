@@ -108,6 +108,13 @@ class TestSettings:
         assert settings.max_loaded_models == 1
         assert settings.llama_mtp_default_draft_n_max == 2
 
+    def test_settings_reject_invalid_context_limits(self):
+        """Environment/config defaults must respect the runtime context ceiling."""
+        with pytest.raises(ValueError, match="default_context_size"):
+            Settings(default_context_size=65536, max_context_size=32768)
+        with pytest.raises(ValueError, match="greater than or equal to 1024"):
+            Settings(default_context_size=512)
+
     def test_settings_from_env(self, monkeypatch):
         """Test settings from environment variables."""
         monkeypatch.setenv("CYBER_INFERENCE_PORT", "9999")
@@ -751,6 +758,14 @@ class TestModelManager:
 
         await init_database(db_path)
         await close_database()
+        with sqlite3.connect(db_path) as connection:
+            connection.execute("ALTER TABLE models DROP COLUMN mtp_draft_path")
+            columns_before = {
+                row[1]
+                for row in connection.execute("PRAGMA table_info('models')").fetchall()
+            }
+        assert "mtp_draft_path" not in columns_before
+
         await init_database(db_path)
         await close_database()
 
@@ -765,6 +780,7 @@ class TestModelManager:
             "gguf_shard_count",
             "gguf_shard_filenames",
             "mtp_capable",
+            "mtp_draft_path",
             "mtp_mode",
             "mtp_detection_source",
             "mtp_nextn_predict_layers",
@@ -928,8 +944,8 @@ class TestProcessManager:
         assert str(mmproj_path) in cmd
         assert "--jinja" in cmd
 
-    def test_build_llama_server_command_prioritizes_mtp_over_mmproj(self, temp_dirs):
-        """MTP launches should force draft-mtp mode and avoid incompatible mmproj flags."""
+    def test_build_llama_server_command_allows_explicit_mmproj_with_mtp(self, temp_dirs):
+        """An explicitly selected projector should remain available with MTP."""
         from cyber_inference.services.process_manager import ProcessManager
 
         models_dir, bin_dir = temp_dirs
@@ -956,7 +972,7 @@ class TestProcessManager:
             },
         )
 
-        assert "--mmproj" not in cmd
+        assert cmd[cmd.index("--mmproj") + 1] == str(mmproj_path)
         assert cmd[cmd.index("--parallel") + 1] == "1"
         assert cmd[cmd.index("--spec-type") + 1] == "draft-mtp"
         assert cmd[cmd.index("--spec-draft-n-max") + 1] == "2"
@@ -1506,8 +1522,8 @@ class TestAutoLoader:
         process.terminate.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_load_model_prefers_native_context_when_no_override(self):
-        """A model's detected native context should beat the low global default."""
+    async def test_load_model_caps_native_context_when_no_override(self):
+        """A model's detected native context should respect the global maximum."""
         from cyber_inference.services.auto_loader import AutoLoader
 
         process_manager = MagicMock()
@@ -1538,11 +1554,13 @@ class TestAutoLoader:
 
         await loader.load_model("demo")
 
-        assert process_manager.start_server.await_args.kwargs["context_size"] == 131072
+        assert process_manager.start_server.await_args.kwargs["context_size"] == 32768
+        effective_config = process_manager.start_server.await_args.kwargs["effective_config"]
+        assert effective_config["launch_config"]["context_source"] == "model_native_capped"
 
     @pytest.mark.asyncio
-    async def test_load_model_enables_mtp_and_suppresses_mmproj(self):
-        """Detected MTP models should probe binary support and launch without mmproj."""
+    async def test_load_model_enables_mtp_with_explicit_mmproj(self):
+        """Detected MTP models should preserve an explicitly selected projector."""
         from cyber_inference.services.auto_loader import AutoLoader
 
         process_manager = MagicMock()
@@ -1578,14 +1596,17 @@ class TestAutoLoader:
         await loader.load_model("Qwen3.6-27B-UD-Q4_K_XL")
 
         process_manager.ensure_draft_mtp_support.assert_awaited_once()
-        assert process_manager.start_server.await_args.kwargs["mmproj_path"] is None
+        assert process_manager.start_server.await_args.kwargs["mmproj_path"] == Path(
+            "/tmp/mmproj-demo.gguf"
+        )
         effective_config = process_manager.start_server.await_args.kwargs["effective_config"]
         assert effective_config["mtp"]["enabled"] is True
         assert effective_config["launch_config"]["mtp_spec_type"] == "draft-mtp"
         assert effective_config["launch_config"]["mtp_spec_draft_n_max"] == 2
         assert effective_config["launch_config"]["flash_attn"] == "on"
         assert effective_config["launch_config"]["chat_template_kwargs"] == {"preserve_thinking": True}
-        assert effective_config["vision"]["suppressed_by_mtp"] is True
+        assert effective_config["vision"]["enabled"] is True
+        assert effective_config["vision"]["suppressed_by_mtp"] is False
 
     @pytest.mark.asyncio
     async def test_load_model_caches_supported_tool_capability(self):

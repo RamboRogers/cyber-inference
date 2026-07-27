@@ -33,3 +33,19 @@ def test_publish_workflow_pins_and_labels_thor_llama_cpp_build():
     assert "docker/build/llama-bin/llama/BUILD_INFO" in workflow
     assert 'org.cyberinference.llama-cpp.tag=${LLAMA_CPP_TAG}' in workflow
     assert 'org.cyberinference.llama-cpp.revision=${LLAMA_CPP_COMMIT}' in workflow
+
+
+def test_publish_workflow_smoke_tests_complete_thor_mtp_contract():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert "llama_help=$(/app/bin/llama-server --help 2>&1)" in workflow
+    for capability in (
+        "draft-mtp",
+        "--spec-draft-model",
+        "--spec-draft-n-max",
+        "--parallel",
+        "--flash-attn",
+        "--chat-template-kwargs",
+    ):
+        assert capability in workflow
+    assert "llama-server is missing required MTP capability" in workflow

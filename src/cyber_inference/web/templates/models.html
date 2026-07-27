@@ -84,8 +84,9 @@
                                 </span>
                                 {% endif %}
                                 {% if model.supports_mtp %}
-                                <span class="px-2 py-1 text-xs font-mono rounded bg-cyber-yellow/10 text-cyber-yellow border border-cyber-yellow/30" title="MTP speculative decoding enabled">
-                                    MTP
+                                <span class="px-2 py-1 text-xs font-mono rounded bg-cyber-yellow/10 text-cyber-yellow border border-cyber-yellow/30"
+                                      title="MTP speculative decoding enabled">
+                                    MTP {% if model.mtp_draft_path %}separate{% else %}embedded{% endif %}
                                 </span>
                                 {% endif %}
                                 {% if model.supports_tools %}
@@ -100,6 +101,11 @@
                     {% if model.hf_repo_id %}
                     <div class="text-xs font-mono text-gray-500 mb-4 truncate" title="{{ model.hf_repo_id }}">
                         HF: {{ model.hf_repo_id }}
+                    </div>
+                    {% endif %}
+                    {% if model.mtp_draft_path %}
+                    <div class="text-xs font-mono text-cyber-yellow/70 mb-4 truncate" title="{{ model.mtp_draft_path }}">
+                        MTP draft: {{ model.mtp_draft_path }}
                     </div>
                     {% endif %}
 
@@ -211,17 +217,17 @@
 
                 <!-- Qwen3.6 27B MTP -->
                 <div class="bg-cyber-dark/30 rounded-lg p-4 border border-cyber-gray hover:border-cyber-neon/30 transition-all cursor-pointer group"
-                     onclick="downloadFromRepo('unsloth/Qwen3.6-27B-MTP-GGUF')">
+                     onclick="downloadFromRepo('ggml-org/Qwen3.6-27B-GGUF')">
                     <div class="flex items-center space-x-3 mb-2">
                         <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-cyber-yellow/20 to-cyber-blue/20 flex items-center justify-center group-hover:shadow-lg group-hover:shadow-cyber-yellow/20 transition-all">
                             <span class="text-cyber-yellow font-bold text-lg">Q</span>
                         </div>
                         <div>
                             <div class="font-mono text-white">Qwen3.6 27B MTP</div>
-                            <div class="text-xs text-gray-500">unsloth</div>
+                            <div class="text-xs text-gray-500">ggml-org</div>
                         </div>
                     </div>
-                    <div class="text-xs text-gray-400">Qwen3.6 text model with MTP speculative decoding</div>
+                    <div class="text-xs text-gray-400">Official dense model with a paired MTP draft head</div>
                     <div class="mt-2 flex gap-2">
                         <span class="text-[10px] px-2 py-0.5 rounded bg-cyber-yellow/10 text-cyber-yellow">MTP</span>
                         <span class="text-[10px] px-2 py-0.5 rounded bg-cyber-blue/10 text-cyber-blue">27B</span>
@@ -230,17 +236,17 @@
 
                 <!-- Qwen3.6 35B A3B MTP -->
                 <div class="bg-cyber-dark/30 rounded-lg p-4 border border-cyber-gray hover:border-cyber-neon/30 transition-all cursor-pointer group"
-                     onclick="downloadFromRepo('unsloth/Qwen3.6-35B-A3B-MTP-GGUF')">
+                     onclick="downloadFromRepo('ggml-org/Qwen3.6-35B-A3B-GGUF')">
                     <div class="flex items-center space-x-3 mb-2">
                         <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-cyber-blue/20 to-cyber-neon/20 flex items-center justify-center group-hover:shadow-lg group-hover:shadow-cyber-blue/20 transition-all">
                             <span class="text-cyber-blue font-bold text-lg">Q</span>
                         </div>
                         <div>
                             <div class="font-mono text-white">Qwen3.6 35B A3B MTP</div>
-                            <div class="text-xs text-gray-500">unsloth</div>
+                            <div class="text-xs text-gray-500">ggml-org</div>
                         </div>
                     </div>
-                    <div class="text-xs text-gray-400">MoE Qwen3.6 GGUF with MTP acceleration</div>
+                    <div class="text-xs text-gray-400">Official MoE model with a paired MTP draft head</div>
                     <div class="mt-2 flex gap-2">
                         <span class="text-[10px] px-2 py-0.5 rounded bg-cyber-yellow/10 text-cyber-yellow">MTP</span>
                         <span class="text-[10px] px-2 py-0.5 rounded bg-cyber-neon/10 text-cyber-neon">35B A3B</span>
@@ -498,7 +504,7 @@
                         <label class="block text-xs font-mono text-gray-400 mb-1">Draft Tokens</label>
                         <input type="number" id="settingsMtpDraftNMax" min="1" max="64" step="1"
                                class="cyber-input w-full px-3 py-1.5 rounded-lg font-mono text-sm"
-                               placeholder="6">
+                               placeholder="2">
                     </div>
                 </div>
             </div>
@@ -657,6 +663,23 @@
                     </select>
                 </div>
 
+                <!-- Separate MTP draft-head selection -->
+                <div id="mtpDraftSection" class="hidden">
+                    <label class="block text-sm font-mono text-gray-400 mb-2">
+                        Select MTP Draft Head
+                        <span class="text-cyber-yellow">*</span>
+                    </label>
+                    <select id="mtpFileSelect"
+                            name="hf_mtp_filename"
+                            class="cyber-input w-full px-4 py-3 rounded-lg font-mono bg-cyber-dark"
+                            onchange="updateFileInfo()">
+                        <option value="">Auto-select recommended MTP head</option>
+                    </select>
+                    <p class="text-xs text-gray-500 mt-1 font-mono" id="mtpHelpText">
+                        Required for split-head MTP repositories. Embedded MTP models do not need a separate file.
+                    </p>
+                </div>
+
                 <!-- mmproj File Selection (for multimodal models) -->
                 <div id="mmprojSection" class="hidden">
                     <label class="block text-sm font-mono text-gray-400 mb-2">
@@ -665,11 +688,12 @@
                     </label>
                     <select id="mmprojFileSelect"
                             name="hf_mmproj_filename"
-                            class="cyber-input w-full px-4 py-3 rounded-lg font-mono bg-cyber-dark">
-                        <option value="">Auto-select matching mmproj</option>
+                            class="cyber-input w-full px-4 py-3 rounded-lg font-mono bg-cyber-dark"
+                            onchange="updateFileInfo()">
+                        <option value="">Do not download projector (text-only)</option>
                     </select>
                     <p class="text-xs text-gray-500 mt-1 font-mono">
-                        <span id="mmprojHelpText">Required for vision/multimodal models to process images</span>
+                        <span id="mmprojHelpText">Optional. Select a projector to enable combined text and vision support.</span>
                     </p>
                 </div>
 
@@ -691,6 +715,10 @@
                         <div id="mmprojInfoRow" class="hidden flex justify-between">
                             <span class="text-gray-400">mmproj Size:</span>
                             <span id="mmprojSizeInfo" class="text-white">-</span>
+                        </div>
+                        <div id="mtpInfoRow" class="hidden flex justify-between">
+                            <span class="text-gray-400">MTP Draft:</span>
+                            <span id="mtpSizeInfo" class="text-cyber-yellow">-</span>
                         </div>
                     </div>
                 </div>
@@ -890,6 +918,7 @@
                 || (phase === 'preparing' ? 'Preparing download...'
                 : phase === 'resolving_repository' ? 'Resolving repository contents...'
                 : phase === 'downloading_model' ? 'Downloading model...'
+                : phase === 'downloading_mtp' ? 'Downloading MTP draft head...'
                 : phase === 'downloading_mmproj' ? 'Downloading mmproj...'
                 : phase === 'downloading_repository' ? 'Downloading repository files...'
                 : phase === 'registering' ? 'Finalizing download...'
@@ -970,6 +999,7 @@
         document.getElementById('fileSelectionSection').classList.add('hidden');
         document.getElementById('multimodalBadge').classList.add('hidden');
         document.getElementById('mtpBadge').classList.add('hidden');
+        document.getElementById('mtpDraftSection').classList.add('hidden');
         document.getElementById('mmprojSection').classList.add('hidden');
         document.getElementById('fileInfoSection').classList.add('hidden');
         document.getElementById('manualFilenameSection').classList.remove('hidden');
@@ -1042,12 +1072,17 @@
     function populateFileSelections(data) {
         const modelSelect = document.getElementById('modelFileSelect');
         const mmprojSelect = document.getElementById('mmprojFileSelect');
-        const isMtp = Boolean(data.is_mtp_candidate);
+        const mtpSelect = document.getElementById('mtpFileSelect');
+        const modelFiles = data.model_files || [];
+        const mmprojFiles = data.mmproj_files || [];
+        const mtpFiles = data.mtp_files || [];
+        const isMtp = Boolean(data.is_mtp_candidate || mtpFiles.length);
 
         // Clear existing options
         modelSelect.innerHTML = '<option value="">Auto-select best quantization</option>';
+        mtpSelect.innerHTML = '<option value="">Auto-select recommended MTP head</option>';
         mmprojSelect.innerHTML = isMtp
-            ? '<option value="">Do not download projector</option>'
+            ? '<option value="">Do not download projector (text-only)</option>'
             : '<option value="">Auto-select matching mmproj</option>';
         const mtpBadge = document.getElementById('mtpBadge');
         if (isMtp) {
@@ -1057,7 +1092,7 @@
         }
 
         // Populate model files
-        data.model_files.forEach(file => {
+        modelFiles.forEach(file => {
             const option = document.createElement('option');
             option.value = file.filename;
             const size = formatBytes(file.size_bytes);
@@ -1075,21 +1110,46 @@
             modelSelect.appendChild(option);
         });
 
+        // Separate MTP heads are required for split-head repositories. Embedded
+        // MTP models remain compatible with API responses that omit mtp_files.
+        if (mtpFiles.length > 0) {
+            document.getElementById('mtpDraftSection').classList.remove('hidden');
+            document.getElementById('mtpHelpText').textContent =
+                'Required for split-head MTP. The recommended head is selected automatically.';
+            mtpFiles.forEach(file => {
+                const option = document.createElement('option');
+                option.value = file.filename;
+                const size = formatBytes(file.size_bytes);
+                const quant = file.quantization ? ` (${file.quantization.toUpperCase()})` : '';
+                option.textContent = `${file.filename}${quant} - ${size}`;
+                if (file.filename === data.suggested_mtp) {
+                    option.selected = true;
+                }
+                mtpSelect.appendChild(option);
+            });
+        } else {
+            document.getElementById('mtpDraftSection').classList.add('hidden');
+            document.getElementById('mtpHelpText').textContent = isMtp
+                ? 'This model contains an embedded MTP head; no separate draft file is required.'
+                : 'Required for split-head MTP repositories. Embedded MTP models do not need a separate file.';
+        }
+
         // Handle multimodal models
-        if (data.is_multimodal && data.mmproj_files.length > 0) {
+        if (data.is_multimodal && mmprojFiles.length > 0) {
             document.getElementById('multimodalBadge').classList.remove('hidden');
             document.getElementById('mmprojSection').classList.remove('hidden');
             if (isMtp) {
                 document.getElementById('mmprojRequiredMark').classList.add('hidden');
+                document.getElementById('mmprojHelpText').textContent =
+                    'Optional. Leave blank for text-only MTP; explicitly select a projector for combined MTP and vision.';
             } else {
                 document.getElementById('mmprojRequiredMark').classList.remove('hidden');
+                document.getElementById('mmprojHelpText').textContent =
+                    'Required for vision models; the matching projector is selected automatically.';
             }
-            document.getElementById('mmprojHelpText').textContent = isMtp
-                ? 'Optional. Leave blank for MTP text mode; download a projector only if you plan to disable MTP for vision.'
-                : 'Required for vision/multimodal models to process images';
 
             // Populate mmproj files
-            data.mmproj_files.forEach(file => {
+            mmprojFiles.forEach(file => {
                 const option = document.createElement('option');
                 option.value = file.filename;
                 const size = formatBytes(file.size_bytes);
@@ -1104,7 +1164,8 @@
             document.getElementById('multimodalBadge').classList.add('hidden');
             document.getElementById('mmprojSection').classList.add('hidden');
             document.getElementById('mmprojRequiredMark').classList.remove('hidden');
-            document.getElementById('mmprojHelpText').textContent = 'Required for vision/multimodal models to process images';
+            document.getElementById('mmprojHelpText').textContent =
+                'Optional. Select a projector to enable combined text and vision support.';
         }
 
         // Update file info
@@ -1112,10 +1173,11 @@
     }
 
     function onModelFileChange() {
-        // Update suggested mmproj when model selection changes
-        if (repoData && repoData.is_multimodal && !repoData.is_mtp_candidate) {
+        // Update suggested mmproj when a non-MTP model selection changes.
+        if (repoData && repoData.is_multimodal && !repoData.is_mtp_candidate
+                && !(repoData.mtp_files || []).length) {
             const modelFilename = document.getElementById('modelFileSelect').value;
-            if (modelFilename && repoData.mmproj_files.length > 0) {
+            if (modelFilename && (repoData.mmproj_files || []).length > 0) {
                 // Call API to get suggested mmproj
                 updateSuggestedMmproj(modelFilename);
             }
@@ -1124,9 +1186,9 @@
     }
 
     async function updateSuggestedMmproj(modelFilename) {
-        if (!repoData || !repoData.mmproj_files.length) return;
+        if (!repoData || !(repoData.mmproj_files || []).length) return;
 
-        const mmprojFiles = repoData.mmproj_files.map(f => f.filename).join(',');
+        const mmprojFiles = (repoData.mmproj_files || []).map(f => f.filename).join(',');
         try {
             const response = await adminFetch(
                 `/admin/models/suggest-mmproj?model_filename=${encodeURIComponent(modelFilename)}&mmproj_files=${encodeURIComponent(mmprojFiles)}`
@@ -1148,8 +1210,11 @@
 
         const modelFilename = document.getElementById('modelFileSelect').value;
         const mmprojFilename = document.getElementById('mmprojFileSelect').value;
+        const mtpFilename = document.getElementById('mtpFileSelect').value;
+        const mtpFiles = repoData.mtp_files || [];
 
-        if (!modelFilename && !mmprojFilename) {
+        if (!modelFilename && !mmprojFilename && !mtpFilename
+                && !repoData.suggested_model && !repoData.suggested_mtp) {
             document.getElementById('fileInfoSection').classList.add('hidden');
             return;
         }
@@ -1157,7 +1222,7 @@
         document.getElementById('fileInfoSection').classList.remove('hidden');
 
         // Find model file info
-        const modelFile = repoData.model_files.find(f => f.filename === modelFilename);
+        const modelFile = (repoData.model_files || []).find(f => f.filename === modelFilename);
         if (modelFile) {
             document.getElementById('modelSizeInfo').textContent = formatBytes(modelFile.size_bytes);
             document.getElementById('quantInfo').textContent = modelFile.quantization ?
@@ -1171,7 +1236,9 @@
                 document.getElementById('shardInfo').textContent = '-';
             }
         } else if (repoData.suggested_model) {
-            const suggested = repoData.model_files.find(f => f.filename === repoData.suggested_model);
+            const suggested = (repoData.model_files || []).find(
+                f => f.filename === repoData.suggested_model
+            );
             if (suggested) {
                 document.getElementById('modelSizeInfo').textContent = formatBytes(suggested.size_bytes) + ' (auto)';
                 document.getElementById('quantInfo').textContent = suggested.quantization ?
@@ -1183,15 +1250,21 @@
 
         // Find mmproj file info
         if (repoData.is_multimodal) {
-            const mmprojFile = repoData.mmproj_files.find(f => f.filename === mmprojFilename);
+            const mmprojFile = (repoData.mmproj_files || []).find(
+                f => f.filename === mmprojFilename
+            );
             if (mmprojFile) {
                 document.getElementById('mmprojInfoRow').classList.remove('hidden');
                 document.getElementById('mmprojSizeInfo').textContent = formatBytes(mmprojFile.size_bytes);
-            } else if (!repoData.is_mtp_candidate && repoData.suggested_mmproj) {
-                document.getElementById('mmprojInfoRow').classList.remove('hidden');
-                const suggested = repoData.mmproj_files.find(f => f.filename === repoData.suggested_mmproj);
+            } else if (!repoData.is_mtp_candidate && !(repoData.mtp_files || []).length
+                    && repoData.suggested_mmproj) {
+                const suggested = (repoData.mmproj_files || []).find(
+                    f => f.filename === repoData.suggested_mmproj
+                );
                 if (suggested) {
-                    document.getElementById('mmprojSizeInfo').textContent = formatBytes(suggested.size_bytes) + ' (auto)';
+                    document.getElementById('mmprojInfoRow').classList.remove('hidden');
+                    document.getElementById('mmprojSizeInfo').textContent =
+                        `${formatBytes(suggested.size_bytes)} (auto)`;
                 }
             } else {
                 document.getElementById('mmprojInfoRow').classList.add('hidden');
@@ -1199,6 +1272,18 @@
             }
         } else {
             document.getElementById('mmprojInfoRow').classList.add('hidden');
+        }
+
+        const mtpFile = mtpFiles.find(f => f.filename === mtpFilename);
+        const suggestedMtp = mtpFiles.find(f => f.filename === repoData.suggested_mtp);
+        if (mtpFile || suggestedMtp) {
+            const displayedMtp = mtpFile || suggestedMtp;
+            document.getElementById('mtpInfoRow').classList.remove('hidden');
+            document.getElementById('mtpSizeInfo').textContent =
+                `${formatBytes(displayedMtp.size_bytes)}${mtpFile ? '' : ' (auto)'}`;
+        } else {
+            document.getElementById('mtpInfoRow').classList.add('hidden');
+            document.getElementById('mtpSizeInfo').textContent = '-';
         }
     }
 
@@ -1255,6 +1340,9 @@
                 if (repoData && repoData.is_multimodal) {
                     mmprojFilename = document.getElementById('mmprojFileSelect').value || null;
                 }
+                const mtpFilename = repoData
+                    ? document.getElementById('mtpFileSelect').value || null
+                    : null;
 
                 endpoint = '/admin/models/download';
                 requestBody = {
@@ -1267,6 +1355,9 @@
 
                 if (mmprojFilename) {
                     requestBody.hf_mmproj_filename = mmprojFilename;
+                }
+                if (mtpFilename) {
+                    requestBody.hf_mtp_filename = mtpFilename;
                 }
             }
 
@@ -1505,6 +1596,8 @@
         const contextSource = runtime.effective_config?.launch_config?.context_source;
         if (contextSource === 'model_native_max') {
             parts.push('using native max ctx');
+        } else if (contextSource === 'model_native_capped') {
+            parts.push('native ctx capped by global max');
         } else if (contextSource === 'configured_default') {
             parts.push('using configured ctx');
         } else if (contextSource === 'load_override') {
@@ -1512,14 +1605,20 @@
         }
 
         const mtp = runtime.effective_config?.mtp;
+        const mtpDraftPath = mtp?.draft_model_path || mtp?.draft_path || mtp?.mtp_draft_path;
+        const mtpSource = mtpDraftPath || mtp?.source === 'separate'
+            ? `separate${mtpDraftPath ? `: ${mtpDraftPath.split(/[\\\\/]/).pop()}` : ''}`
+            : 'embedded';
         if (mtp?.enabled) {
-            parts.push(`mtp ${mtp.spec_draft_n_max || 6} draft`);
+            parts.push(`mtp ${mtp.spec_draft_n_max ?? 2} draft (${mtpSource})`);
         } else if (mtp?.capable) {
-            parts.push('mtp available');
+            parts.push(`mtp available (${mtpSource})`);
         }
         const vision = runtime.effective_config?.vision;
         if (vision?.suppressed_by_mtp) {
             parts.push('vision off while mtp is active');
+        } else if (mtp?.enabled && vision?.enabled) {
+            parts.push('vision + mtp active');
         }
 
         if (runtime.last_transition_reason) {

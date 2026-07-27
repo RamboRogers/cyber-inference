@@ -15,7 +15,11 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
-from cyber_inference.core.config import LEGACY_MTP_DRAFT_N_MAX, get_settings
+from cyber_inference.core.config import (
+    LEGACY_MTP_DRAFT_N_MAX,
+    MIN_CONTEXT_SIZE,
+    get_settings,
+)
 from cyber_inference.core.logging import get_logger
 from cyber_inference.services.model_manager import ModelManager
 from cyber_inference.services.process_manager import LlamaProcess, ProcessManager
@@ -50,6 +54,7 @@ GLOBAL_RUNTIME_REFRESH_KEYS = {
 
 GLOBAL_RELOAD_KEYS = {
     "default_context_size",
+    "max_context_size",
     "llama_gpu_layers",
     "llama_tool_template",
     "llama_tool_template_file",
@@ -560,6 +565,7 @@ class AutoLoader:
         strict: bool,
         is_embedding: bool | None = None,
         is_transcription: bool | None = None,
+        model_path: Path | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Resolve launch-time MTP speculative decoding policy for a model."""
         settings = get_settings()
@@ -583,6 +589,11 @@ class AutoLoader:
             fail_or_warn(f"Invalid mtp_mode for {model_name}: {mode}")
             mode = "auto"
 
+        def draft_problem(message: str) -> None:
+            if strict and mode != "disabled":
+                raise ValueError(message)
+            warnings.append(message)
+
         raw_capable = model_info.get("mtp_capable")
         if raw_capable is None:
             capable = ModelManager._is_mtp_candidate(
@@ -596,6 +607,55 @@ class AutoLoader:
                 _normalize_optional_string(model_info.get("mtp_detection_source"))
                 or ("configured" if capable else None)
             )
+
+        raw_draft_path = _normalize_optional_string(model_info.get("mtp_draft_path"))
+        draft_path: Path | None = None
+        draft_valid = False
+        if raw_draft_path:
+            draft_path = Path(raw_draft_path).expanduser()
+            if not draft_path.is_absolute():
+                draft_path = settings.models_dir / draft_path
+            draft_path = draft_path.resolve(strict=False)
+
+            raw_target_path = model_path or (
+                Path(str(model_info.get("file_path") or model_info.get("path")))
+                if model_info.get("file_path") or model_info.get("path")
+                else None
+            )
+            target_path = (
+                raw_target_path.expanduser().resolve(strict=False)
+                if raw_target_path is not None
+                else None
+            )
+            if target_path is not None and draft_path == target_path:
+                draft_problem(
+                    "The MTP draft model must be a separate GGUF file, "
+                    "not the target model."
+                )
+            elif not draft_path.is_file():
+                draft_problem(
+                    f"MTP draft model not found: {draft_path}. "
+                    "Download or select the matching mtp-*.gguf file before loading."
+                )
+            elif (
+                target_path is not None
+                and not ModelManager._mtp_draft_matches_target(target_path, draft_path)
+            ):
+                draft_problem(
+                    f"MTP draft model {draft_path.name} does not match target model "
+                    f"{target_path.name}."
+                )
+            else:
+                metadata = ModelManager._read_gguf_metadata_summary_cached(draft_path)
+                if not metadata or metadata.get("mtp_capable") is not True:
+                    draft_problem(
+                        f"MTP draft model is not a valid MTP GGUF: {draft_path}. "
+                        "Select a head whose metadata contains nextn_predict_layers."
+                    )
+                else:
+                    draft_valid = True
+                    capable = True
+                    detection_source = "separate"
 
         if mode == "enabled":
             capable = True
@@ -616,7 +676,14 @@ class AutoLoader:
 
         unsupported = server_type != "llama" or bool(is_embedding) or bool(is_transcription)
         requested = mode == "enabled" or (mode == "auto" and settings.llama_mtp_auto_enable)
-        enabled = capable and requested and mode != "disabled" and not unsupported
+        draft_invalid = bool(raw_draft_path) and not draft_valid
+        enabled = (
+            capable
+            and requested
+            and mode != "disabled"
+            and not unsupported
+            and not draft_invalid
+        )
         if unsupported and mode == "enabled":
             fail_or_warn("MTP is only supported for llama chat GGUF models.")
 
@@ -632,6 +699,8 @@ class AutoLoader:
                     "flash_attn": "on",
                 }
             )
+            if draft_path is not None:
+                launch_config["mtp_draft_path"] = str(draft_path)
             if _is_qwen36_identity(model_info):
                 launch_config["chat_template_kwargs"] = {"preserve_thinking": True}
 
@@ -639,13 +708,83 @@ class AutoLoader:
             "capable": capable,
             "enabled": enabled,
             "mode": mode,
-            "source": detection_source or "none",
+            "source": (
+                "separate"
+                if draft_valid
+                else "embedded"
+                if capable and not raw_draft_path
+                else detection_source or "none"
+            ),
+            "detection_source": detection_source or "none",
+            "draft_model_path": str(draft_path) if draft_path else None,
             "nextn_predict_layers": nextn_predict_layers,
             "spec_type": "draft-mtp" if enabled else None,
             "spec_draft_n_max": draft_n_max if capable else None,
             "warnings": warnings,
         }
         return launch_config, mtp
+
+    @staticmethod
+    def _resolve_context_config(
+        model_info: dict[str, Any],
+        *,
+        context_size_override: int | None = None,
+        strict: bool,
+    ) -> tuple[int, str]:
+        """Resolve a context size while enforcing the configured runtime ceiling."""
+        settings = get_settings()
+        maximum = int(settings.max_context_size)
+        if maximum < MIN_CONTEXT_SIZE:
+            raise ValueError(
+                f"max_context_size must be at least {MIN_CONTEXT_SIZE}."
+            )
+
+        def parse_explicit(value: object, label: str) -> int:
+            try:
+                parsed = int(str(value))
+            except (TypeError, ValueError):
+                raise ValueError(f"{label} must be a positive integer.")
+            if parsed < MIN_CONTEXT_SIZE:
+                raise ValueError(f"{label} must be at least {MIN_CONTEXT_SIZE}.")
+            if parsed > maximum:
+                raise ValueError(
+                    f"{label} {parsed} exceeds the configured maximum of {maximum}."
+                )
+            return parsed
+
+        if context_size_override is not None:
+            return parse_explicit(context_size_override, "Context size"), "load_override"
+
+        configured = model_info.get("default_context_size")
+        if configured is not None:
+            if strict:
+                return (
+                    parse_explicit(configured, "Configured context size"),
+                    "configured_default",
+                )
+            try:
+                configured_value = int(str(configured))
+            except (TypeError, ValueError):
+                configured_value = 0
+            if configured_value > maximum:
+                return configured_value, "configured_default_invalid"
+            if configured_value >= MIN_CONTEXT_SIZE:
+                return configured_value, "configured_default"
+
+        native = _parse_optional_int(model_info.get("context_length"))
+        if native is not None and native > 0:
+            if native > maximum:
+                return maximum, "model_native_capped"
+            return native, "model_native_max"
+
+        default_context = int(settings.default_context_size)
+        if default_context < MIN_CONTEXT_SIZE:
+            raise ValueError(
+                f"default_context_size must be at least {MIN_CONTEXT_SIZE}."
+            )
+        if default_context > maximum:
+            return maximum, "global_default_capped"
+        return default_context, "global_default"
 
     def _detect_family_tool_support(self, model_info: dict[str, Any]) -> str | None:
         """Return the curated model family name when local metadata strongly implies tool support."""
@@ -814,15 +953,11 @@ class AutoLoader:
                 context_source = str(launch_config.get("context_source", "running"))
             else:
                 context_source = "running"
-        elif configured_context_size:
-            launch_context_size = configured_context_size
-            context_source = "configured_default"
-        elif native_context_size:
-            launch_context_size = native_context_size
-            context_source = "model_native_max"
         else:
-            launch_context_size = settings.default_context_size
-            context_source = "global_default"
+            launch_context_size, context_source = self._resolve_context_config(
+                model_info,
+                strict=False,
+            )
         launch_config = {
             "context_size": launch_context_size,
             "configured_context_size": configured_context_size,
@@ -831,8 +966,8 @@ class AutoLoader:
             "gpu_layers": proc.gpu_layers if proc else (settings.llama_gpu_layers if server_type == "llama" else None),
         }
         vision_available = bool(model_info.get("mmproj_path") or model_info.get("is_vlm"))
-        vision_suppressed_by_mtp = vision_available and bool(mtp.get("enabled"))
-        vision_enabled = vision_available and not vision_suppressed_by_mtp
+        vision_suppressed_by_mtp = False
+        vision_enabled = vision_available
         vision_source = (
             "mmproj"
             if model_info.get("mmproj_path")
@@ -1054,30 +1189,16 @@ class AutoLoader:
 
         logger.info(f"  Engine type: {engine_type}")
 
-        # Determine context size: per-model override > model native > global default
-        context_size: int | None
-        if context_size_override is not None:
-            context_size = context_size_override
-        else:
-            configured_context = model_info.get("default_context_size")
-            native_context = model_info.get("context_length")
-            context_size = (
-                int(configured_context)
-                if configured_context is not None
-                else int(native_context)
-                if native_context is not None
-                else None  # let start_server() fall back to global default
-            )
-        if context_size:
-            logger.info(f"  Context size: {context_size}")
+        context_size, context_source = self._resolve_context_config(
+            model_info,
+            context_size_override=context_size_override,
+            strict=True,
+        )
+        logger.info(f"  Context size: {context_size}")
 
         effective_config = self._build_effective_runtime_config(model_info, proc=None)
-        effective_config["launch_config"]["context_size"] = context_size or effective_config["launch_config"]["context_size"]
-        effective_config["launch_config"]["context_source"] = (
-            "load_override"
-            if context_size_override is not None
-            else effective_config["launch_config"]["context_source"]
-        )
+        effective_config["launch_config"]["context_size"] = context_size
+        effective_config["launch_config"]["context_source"] = context_source
         if gpu_layers_override is not None:
             effective_config["launch_config"]["gpu_layers"] = gpu_layers_override
         launch_config, tool_calling = self._resolve_tooling_config(model_info, strict=True)
@@ -1088,15 +1209,14 @@ class AutoLoader:
             strict=True,
             is_embedding=is_embedding,
             is_transcription=is_transcription,
+            model_path=model_path,
         )
         effective_config["launch_config"].update(mtp_launch_config)
         effective_config["mtp"] = mtp
         if mtp.get("enabled"):
             await pm.ensure_draft_mtp_support()
-            mmproj_path = None
             if isinstance(effective_config.get("vision"), dict):
-                effective_config["vision"]["enabled"] = False
-                effective_config["vision"]["suppressed_by_mtp"] = True
+                effective_config["vision"]["suppressed_by_mtp"] = False
         pre_load_result = await self._run_pre_model_load_command(model_name, load_trigger)
         effective_config["pre_model_load_command"] = pre_load_result
 

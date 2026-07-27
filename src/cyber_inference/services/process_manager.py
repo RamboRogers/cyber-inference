@@ -21,7 +21,7 @@ from typing import cast
 import httpx
 import psutil
 
-from cyber_inference.core.config import get_settings
+from cyber_inference.core.config import MIN_CONTEXT_SIZE, get_settings
 from cyber_inference.core.logging import get_logger
 from cyber_inference.services.llama_installer import LlamaInstaller
 from cyber_inference.services.whisper_installer import WhisperInstaller
@@ -36,6 +36,7 @@ class LlamaProcess:
     model_path: Path
     port: int
     mmproj_path: Path | None = None
+    mtp_draft_path: Path | None = None
     pid: int | None = None
     process: asyncio.subprocess.Process | None = None
     status: str = "starting"  # starting, running, stopping, stopped, error
@@ -259,14 +260,20 @@ class ProcessManager:
 
         settings = get_settings()
 
-        # Allocate port
-        port = self._find_available_port()
-        logger.info(f"  Allocated port: {port}")
-
-        # Build command
-        llama_server = self._installer.get_binary_path()
-
-        ctx_size = context_size or settings.default_context_size
+        ctx_size = context_size if context_size is not None else settings.default_context_size
+        if ctx_size < MIN_CONTEXT_SIZE:
+            raise ValueError(f"Context size must be at least {MIN_CONTEXT_SIZE}.")
+        configured_max_context = getattr(settings, "max_context_size", 32768)
+        max_context_size = (
+            configured_max_context
+            if isinstance(configured_max_context, int) and not isinstance(configured_max_context, bool)
+            else 32768
+        )
+        if ctx_size > max_context_size:
+            raise ValueError(
+                f"Context size {ctx_size} exceeds the configured maximum "
+                f"of {max_context_size}."
+            )
         n_gpu_layers = gpu_layers if gpu_layers is not None else settings.llama_gpu_layers
         n_threads = threads or settings.llama_threads
 
@@ -279,14 +286,32 @@ class ProcessManager:
             }
         mtp_enabled = bool(launch_config.get("mtp_enabled"))
 
-        # Use provided mmproj_path or try to find one
-        if mtp_enabled:
-            mmproj_path = None
-        elif mmproj_path is None:
+        mtp_draft_path = self._validate_mtp_draft_model(
+            model_path,
+            launch_config,
+        )
+        if mtp_draft_path is not None:
+            launch_config["mtp_draft_path"] = str(mtp_draft_path)
+            if effective_config and isinstance(effective_config.get("launch_config"), dict):
+                effective_launch_config = cast(
+                    dict[str, object],
+                    effective_config["launch_config"],
+                )
+                effective_launch_config["mtp_draft_path"] = str(mtp_draft_path)
+
+        # MTP remains text-first unless a projector was explicitly supplied.
+        if mmproj_path is None and not mtp_enabled:
             mmproj_path = self._find_mmproj(model_path)
-        elif not mmproj_path.exists():
+        elif mmproj_path is not None and not mmproj_path.exists():
             logger.warning(f"[warning]Specified mmproj not found: {mmproj_path}[/warning]")
-            mmproj_path = self._find_mmproj(model_path)
+            mmproj_path = None if mtp_enabled else self._find_mmproj(model_path)
+
+        # Allocate only after launch inputs have been validated.
+        port = self._find_available_port()
+        logger.info(f"  Allocated port: {port}")
+
+        # Build command
+        llama_server = self._installer.get_binary_path()
 
         cmd = self._build_llama_server_command(
             llama_server,
@@ -307,6 +332,7 @@ class ProcessManager:
             model_name=model_name,
             model_path=model_path,
             mmproj_path=mmproj_path,
+            mtp_draft_path=mtp_draft_path,
             port=port,
             context_size=ctx_size,
             gpu_layers=n_gpu_layers,
@@ -381,7 +407,7 @@ class ProcessManager:
         template_path = launch_config.get("tool_template_path")
         chat_template_kwargs = launch_config.get("chat_template_kwargs")
 
-        if mmproj_path and mmproj_path.exists() and not mtp_enabled:
+        if mmproj_path and mmproj_path.exists():
             cmd.extend(["--mmproj", str(mmproj_path)])
 
         if not embedding:
@@ -417,8 +443,55 @@ class ProcessManager:
             if flash_attn := launch_config.get("flash_attn"):
                 cmd.extend(["--flash-attn", str(flash_attn)])
             cmd.extend(["--spec-type", spec_type])
+            if mtp_draft_path := launch_config.get("mtp_draft_path"):
+                cmd.extend(["--spec-draft-model", str(mtp_draft_path)])
             cmd.extend(["--spec-draft-n-max", str(draft_n_max)])
         return cmd
+
+    def _validate_mtp_draft_model(
+        self,
+        model_path: Path,
+        launch_config: dict[str, object],
+    ) -> Path | None:
+        """Validate and normalize an optional separate MTP draft GGUF."""
+        if not launch_config.get("mtp_enabled"):
+            return None
+
+        raw_draft_path = launch_config.get("mtp_draft_path")
+        if not raw_draft_path:
+            return None
+
+        draft_path = Path(str(raw_draft_path)).expanduser()
+        if not draft_path.is_absolute():
+            draft_path = self.models_dir / draft_path
+        draft_path = draft_path.resolve(strict=False)
+        target_path = model_path.expanduser().resolve(strict=False)
+
+        # Import lazily to keep process lifecycle initialization independent.
+        from cyber_inference.services.model_manager import ModelManager
+
+        if draft_path == target_path:
+            raise ValueError(
+                "The MTP draft model must be a separate GGUF file, not the target model."
+            )
+        if not draft_path.is_file():
+            raise ValueError(
+                f"MTP draft model not found: {draft_path}. "
+                "Download or select the matching mtp-*.gguf file before loading."
+            )
+        if not ModelManager._mtp_draft_matches_target(target_path, draft_path):
+            raise ValueError(
+                f"MTP draft model {draft_path.name} does not match target model "
+                f"{target_path.name}."
+            )
+
+        metadata = ModelManager._read_gguf_metadata_summary_cached(draft_path)
+        if not metadata or metadata.get("mtp_capable") is not True:
+            raise ValueError(
+                f"MTP draft model is not a valid MTP GGUF: {draft_path}. "
+                "Select a head whose metadata contains nextn_predict_layers."
+            )
+        return draft_path
 
     @staticmethod
     def _parse_positive_int(value: object, *, default: int) -> int:

@@ -59,6 +59,7 @@ class Model(Base):
     mmproj_path: Mapped[Optional[str]] = mapped_column(String(1024), nullable=True)
 
     # llama.cpp MTP speculative decoding support
+    mtp_draft_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     mtp_capable: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     mtp_mode: Mapped[str | None] = mapped_column(String(32), nullable=True)
     mtp_detection_source: Mapped[str | None] = mapped_column(String(64), nullable=True)

@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title id="title">Cyber-Inference terminal</title>
+  <rect width="64" height="64" rx="12" fill="#0a0a0f"/>
+  <rect x="9.5" y="9.5" width="45" height="35" rx="5.5" fill="#11111a"
+        stroke="#00ff9f" stroke-width="3"/>
+  <path d="M11 36.5h42M25 52h14M28.5 44.5 26 52M35.5 44.5 38 52"
+        fill="none" stroke="#00ff9f" stroke-width="3" stroke-linecap="round"
+        stroke-linejoin="round"/>
+  <path d="m18 19 7 6-7 6M30 31h14"
+        fill="none" stroke="#00ff9f" stroke-width="3.5" stroke-linecap="round"
+        stroke-linejoin="round"/>
+</svg>

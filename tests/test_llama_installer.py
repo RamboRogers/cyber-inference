@@ -5,7 +5,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from cyber_inference.services.llama_installer import LlamaInstaller
+from cyber_inference.services.llama_installer import (
+    ARM64_CUDA_INSTALL_GUIDANCE,
+    MTP_REQUIRED_HELP_TOKENS,
+    THOR_BUNDLED_UPDATE_GUIDANCE,
+    LlamaInstaller,
+)
 
 
 def _version_result() -> MagicMock:
@@ -75,17 +80,55 @@ def test_get_managed_binary_path_ignores_system_path(tmp_path: Path) -> None:
     assert installer.get_managed_binary_path() == tmp_path / "llama-server"
 
 
-def test_supports_draft_mtp_reads_llama_help(tmp_path: Path) -> None:
-    """The support probe should key off llama-server help text."""
+def test_supports_draft_mtp_requires_complete_llama_help_contract(tmp_path: Path) -> None:
+    """The support probe should require every flag used by MTP launches."""
     installer = LlamaInstaller(bin_dir=tmp_path)
     binary = installer.get_managed_binary_path()
     binary.write_text("#!/bin/sh\n")
+    help_text = "\n".join(MTP_REQUIRED_HELP_TOKENS)
 
     with patch(
         "cyber_inference.services.llama_installer.subprocess.run",
-        return_value=MagicMock(stdout="--spec-type draft-mtp\n", stderr=""),
+        return_value=MagicMock(stdout=help_text, stderr=""),
     ):
         assert installer.supports_draft_mtp(binary) is True
+
+
+@pytest.mark.parametrize("missing_token", MTP_REQUIRED_HELP_TOKENS)
+def test_supports_draft_mtp_rejects_partial_help_contract(
+    tmp_path: Path,
+    missing_token: str,
+) -> None:
+    """A binary missing any required MTP option must not be treated as compatible."""
+    installer = LlamaInstaller(bin_dir=tmp_path)
+    binary = installer.get_managed_binary_path()
+    binary.write_text("#!/bin/sh\n")
+    help_text = "\n".join(
+        token for token in MTP_REQUIRED_HELP_TOKENS if token != missing_token
+    )
+
+    with patch(
+        "cyber_inference.services.llama_installer.subprocess.run",
+        return_value=MagicMock(stdout=help_text, stderr=""),
+    ):
+        assert installer.supports_draft_mtp(binary) is False
+
+
+def test_select_github_asset_refuses_linux_arm64_cuda_cpu_fallback(tmp_path: Path) -> None:
+    """Thor must not silently replace its CUDA binary with an ARM64 CPU asset."""
+    installer = LlamaInstaller(bin_dir=tmp_path)
+    installer._platform = "linux"
+    installer._arch = "aarch64"
+    release = {
+        "assets": [
+            {
+                "name": "llama-b9999-bin-ubuntu-arm64.tar.gz",
+                "browser_download_url": "https://example/ubuntu-arm64",
+            }
+        ]
+    }
+
+    assert installer._select_github_asset(release, backend="cuda") is None
 
 
 @pytest.mark.asyncio
@@ -151,6 +194,83 @@ async def test_binary_status_reports_managed_or_missing_without_path(tmp_path: P
     assert managed["source"] == "managed"
     assert managed["binary_path"] == str(managed_binary)
     assert managed["installed_version"] == "version: 1000 (abc123)"
+
+
+@pytest.mark.asyncio
+async def test_binary_status_blocks_bundled_thor_updates(tmp_path: Path) -> None:
+    """Native Thor image bundles should be visible but never overwritten in place."""
+    installer = LlamaInstaller(bin_dir=tmp_path)
+    installer._platform = "linux"
+    installer._arch = "aarch64"
+    managed_binary = installer.get_managed_binary_path()
+    managed_binary.write_text("#!/bin/sh\n")
+    build_info = installer.get_bundled_build_info_path()
+    build_info.parent.mkdir(parents=True)
+    build_info.write_text("tag=b9999\n")
+
+    with (
+        patch("cyber_inference.services.llama_installer.shutil.which", return_value=None),
+        patch("cyber_inference.services.llama_installer.subprocess.run", return_value=_version_result()),
+    ):
+        status = await installer.get_binary_status()
+
+    assert status["source"] == "bundled"
+    assert status["update_allowed"] is False
+    assert status["is_system_managed"] is False
+    assert status["update_blocked_reason"] == THOR_BUNDLED_UPDATE_GUIDANCE
+
+
+@pytest.mark.asyncio
+async def test_force_install_refuses_to_overwrite_bundled_thor_binary(tmp_path: Path) -> None:
+    """Forced installs must stop before probing or downloading on a Thor image."""
+    installer = LlamaInstaller(bin_dir=tmp_path)
+    installer._platform = "linux"
+    installer._arch = "arm64"
+    installer.get_managed_binary_path().write_text("#!/bin/sh\n")
+    build_info = installer.get_bundled_build_info_path()
+    build_info.parent.mkdir(parents=True)
+    build_info.write_text("tag=b9999\n")
+
+    with (
+        patch.object(installer, "detect_gpu_backend", AsyncMock()) as detect_mock,
+        pytest.raises(RuntimeError, match="thor-arm64"),
+    ):
+        await installer.install(force=True)
+
+    detect_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_install_refuses_linux_arm64_cuda_cpu_fallback(tmp_path: Path) -> None:
+    """An unbundled ARM64 CUDA host must build CUDA llama.cpp instead of installing CPU."""
+    installer = LlamaInstaller(bin_dir=tmp_path)
+    installer._platform = "linux"
+    installer._arch = "arm64"
+
+    with (
+        patch.object(installer, "detect_gpu_backend", AsyncMock(return_value="cuda")),
+        patch.object(
+            installer,
+            "get_latest_release",
+            AsyncMock(
+                return_value={
+                    "tag_name": "b9999",
+                    "assets": [
+                        {
+                            "name": "llama-b9999-bin-ubuntu-arm64.tar.gz",
+                            "browser_download_url": "https://example/ubuntu-arm64",
+                        }
+                    ],
+                }
+            ),
+        ),
+        patch.object(installer, "_get_homebrew_arm64_linux_bottle", AsyncMock()) as bottle_mock,
+        pytest.raises(RuntimeError, match="thor-arm64") as exc_info,
+    ):
+        await installer.install(force=True)
+
+    bottle_mock.assert_not_awaited()
+    assert str(exc_info.value) == ARM64_CUDA_INSTALL_GUIDANCE
 
 
 def test_update_available_only_when_versions_are_comparable(tmp_path: Path) -> None:

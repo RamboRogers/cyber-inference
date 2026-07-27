@@ -454,8 +454,22 @@ class ModelManager:
         repo_id: str | None,
         filename: str | None,
         metadata_summary: dict[str, Any] | None,
+        mtp_draft_path: Path | None = None,
+        mtp_draft_metadata_summary: dict[str, Any] | None = None,
     ) -> dict[str, object | None]:
         metadata_summary = metadata_summary or {}
+        mtp_draft_metadata_summary = mtp_draft_metadata_summary or {}
+        if mtp_draft_path is not None:
+            nextn_layers = mtp_draft_metadata_summary.get("mtp_nextn_predict_layers")
+            return {
+                "mtp_capable": True,
+                "mtp_detection_source": "separate",
+                "mtp_nextn_predict_layers": (
+                    int(nextn_layers)
+                    if isinstance(nextn_layers, int) and nextn_layers > 0
+                    else None
+                ),
+            }
         metadata_capable = metadata_summary.get("mtp_capable") is True
         nextn_layers = metadata_summary.get("mtp_nextn_predict_layers")
         mtp_nextn_predict_layers = (
@@ -464,10 +478,7 @@ class ModelManager:
         if metadata_capable:
             return {
                 "mtp_capable": True,
-                "mtp_detection_source": (
-                    metadata_summary.get("mtp_detection_source")
-                    or "metadata_nextn_predict_layers"
-                ),
+                "mtp_detection_source": "embedded",
                 "mtp_nextn_predict_layers": mtp_nextn_predict_layers,
             }
         if cls._is_mtp_candidate(repo_id, filename):
@@ -542,9 +553,32 @@ class ModelManager:
         return name.endswith(".gguf") and "mmproj" in name
 
     @staticmethod
+    def _is_mtp_draft_file(filename: str) -> bool:
+        """Return whether a GGUF is a separate MTP draft-model artifact."""
+        name = Path(filename).name.lower()
+        return name.endswith(".gguf") and bool(re.match(r"^mtp(?:[-_.]|$)", name))
+
+    @staticmethod
+    def _is_dflash_draft_file(filename: str) -> bool:
+        """Return whether a GGUF is a separate DFlash draft-model artifact."""
+        name = Path(filename).name.lower()
+        return name.endswith(".gguf") and bool(re.match(r"^dflash(?:[-_.]|$)", name))
+
+    @classmethod
+    def _artifact_type(cls, filename: str) -> str:
+        """Classify repository/local GGUF artifacts by runtime role."""
+        if cls._is_mmproj_file(filename):
+            return "mmproj"
+        if cls._is_mtp_draft_file(filename):
+            return "mtp"
+        if cls._is_dflash_draft_file(filename):
+            return "dflash"
+        return "model"
+
+    @staticmethod
     def _parse_gguf_shard_filename(filename: str) -> GgufShardInfo | None:
         """Parse terminal split-GGUF suffixes like Model-00001-of-00003.gguf."""
-        if ModelManager._is_mmproj_file(filename):
+        if ModelManager._artifact_type(filename) != "model":
             return None
 
         match = re.match(
@@ -770,6 +804,81 @@ class ModelManager:
                 return match.group(1).lower()
         return None
 
+    @classmethod
+    def _normalized_artifact_model_name(cls, filename: str) -> str:
+        """Normalize an artifact filename to the target model identity it belongs to."""
+        artifact_type = cls._artifact_type(filename)
+        basename = Path(filename).name
+        if artifact_type in {"mtp", "dflash"}:
+            basename = re.sub(
+                rf"^{artifact_type}(?:[-_.]+)",
+                "",
+                basename,
+                flags=re.IGNORECASE,
+            )
+        shard = cls._parse_gguf_shard_filename(basename)
+        if shard is not None:
+            basename = f"{shard.prefix}.gguf"
+        base = cls._extract_model_base_name(basename)
+        return re.sub(r"[^a-z0-9]+", "", base.lower())
+
+    @classmethod
+    def _select_mtp_file(cls, files: list[str], model_filename: str) -> str | None:
+        """Select the separate MTP draft model that best matches a target GGUF."""
+        mtp_files = sorted(f for f in files if cls._is_mtp_draft_file(f))
+        if not mtp_files:
+            return None
+
+        model_identity = cls._normalized_artifact_model_name(model_filename)
+        matching = [
+            candidate
+            for candidate in mtp_files
+            if cls._normalized_artifact_model_name(candidate) == model_identity
+        ]
+        if not matching:
+            return None
+
+        model_quant = cls._extract_quant_suffix(model_filename)
+        if model_quant:
+            for candidate in matching:
+                if cls._extract_quant_suffix(candidate) == model_quant:
+                    return candidate
+
+        for preferred_quant in ("q4_0", "q8_0", "bf16", "f16"):
+            for candidate in matching:
+                if cls._extract_quant_suffix(candidate) == preferred_quant:
+                    return candidate
+
+        return sorted(matching, key=lambda value: (len(Path(value).name), value.lower()))[0]
+
+    def get_suggested_mtp(self, model_filename: str, mtp_files: list[str]) -> str | None:
+        """Return the best matching separate MTP draft model."""
+        return self._select_mtp_file(mtp_files, model_filename)
+
+    @classmethod
+    def _mtp_draft_matches_target(cls, model_path: Path, draft_path: Path) -> bool:
+        """Return whether a separate MTP head belongs to the target model family."""
+        return cls._normalized_artifact_model_name(
+            model_path.name
+        ) == cls._normalized_artifact_model_name(draft_path.name)
+
+    def _find_local_mtp_draft(self, model_path: Path) -> Path | None:
+        """Find a validated sibling MTP draft model for a local target GGUF."""
+        candidates = [
+            path
+            for path in model_path.parent.glob("*.gguf")
+            if self._is_mtp_draft_file(path.name)
+        ]
+        selected = self._select_mtp_file(
+            [path.name for path in candidates],
+            model_path.name,
+        )
+        if not selected:
+            return None
+        draft_path = model_path.parent / selected
+        metadata = self._read_gguf_metadata_summary_cached(draft_path) or {}
+        return draft_path if metadata.get("mtp_capable") is True else None
+
     @staticmethod
     def _select_mmproj_file(files: list[str], model_filename: str) -> str | None:
         """
@@ -942,6 +1051,80 @@ class ModelManager:
             logger.warning(f"[warning]mmproj download failed: {e}[/warning]")
             return None
 
+    def _validate_mtp_draft_path(self, model_path: Path, draft_path: Path) -> dict[str, Any]:
+        """Validate that a separate draft file is a distinct MTP-capable GGUF."""
+        if draft_path.resolve(strict=False) == model_path.resolve(strict=False):
+            raise ValueError("MTP draft model must be different from the target model")
+        if not draft_path.exists() or not draft_path.is_file():
+            raise ValueError(f"MTP draft model file is missing: {draft_path}")
+        if not self._mtp_draft_matches_target(model_path, draft_path):
+            raise ValueError(
+                f"MTP draft model {draft_path.name} does not match target model "
+                f"{model_path.name}"
+            )
+        metadata = self._read_gguf_metadata_summary_cached(draft_path) or {}
+        if metadata.get("mtp_capable") is not True:
+            raise ValueError(
+                "Selected MTP draft file does not contain nextn_predict_layers metadata: "
+                f"{draft_path.name}"
+            )
+        return metadata
+
+    async def _download_mtp_draft(
+        self,
+        repo_id: str,
+        model_path: Path,
+        mtp_filename: str,
+        repo_files: list[str],
+        force: bool = False,
+        download_id: str | None = None,
+    ) -> tuple[Path, dict[str, Any]]:
+        """Download and validate a required separate MTP draft model."""
+        if not self._is_mtp_draft_file(mtp_filename):
+            raise ValueError(f"Selected file is not an MTP draft GGUF: {mtp_filename}")
+        if mtp_filename not in repo_files:
+            raise ValueError(f"MTP draft file not found in repo: {mtp_filename}")
+
+        local_path = self.models_dir / mtp_filename
+        if self._is_complete_local_file(local_path, None) and not force:
+            logger.info(f"  MTP draft model already present: {local_path}")
+            return local_path, self._validate_mtp_draft_path(model_path, local_path)
+
+        expected_size: int | None = None
+        try:
+            repo_tree = await asyncio.to_thread(
+                self._hf_api.list_repo_tree,
+                repo_id,
+                recursive=True,
+            )
+            for item in repo_tree:
+                if getattr(item, "path", None) == mtp_filename:
+                    size = getattr(item, "size", None)
+                    expected_size = int(size) if isinstance(size, int) else None
+                    break
+        except Exception:
+            pass
+
+        logger.info(f"  Downloading MTP draft model: {mtp_filename}")
+        try:
+            downloaded_path = await self._download_file_with_progress(
+                repo_id=repo_id,
+                filename=mtp_filename,
+                local_path=local_path,
+                expected_size=expected_size,
+                status_label="Downloading MTP draft model",
+                download_id=download_id,
+                phase="downloading_mtp",
+            )
+            metadata = self._validate_mtp_draft_path(model_path, Path(downloaded_path))
+            logger.info(f"[success]MTP draft model download complete: {local_path}[/success]")
+            return Path(downloaded_path), metadata
+        except Exception:
+            partial_path = local_path.with_suffix(f"{local_path.suffix}.part")
+            if partial_path.exists():
+                partial_path.unlink()
+            raise
+
     async def _download_file_with_progress(
         self,
         repo_id: str,
@@ -1111,7 +1294,10 @@ class ModelManager:
 
             model_files = []
             for filename in filenames_to_check:
-                is_gguf = filename.endswith(".gguf") and not self._is_mmproj_file(filename)
+                is_gguf = (
+                    filename.endswith(".gguf")
+                    and self._artifact_type(filename) == "model"
+                )
                 is_whisper_bin = filename.startswith("ggml-") and filename.endswith(".bin")
 
                 if is_gguf or is_whisper_bin:
@@ -1122,6 +1308,7 @@ class ModelManager:
                         "filename": filename,
                         "size_bytes": size,
                         "quantization": quantization,
+                        "artifact_type": "model",
                     })
 
             model_files = self._group_gguf_model_files(model_files)
@@ -1161,6 +1348,7 @@ class ModelManager:
 
             model_files = []
             mmproj_files = []
+            mtp_files = []
 
             for filename, size in file_sizes.items():
                 # Support both GGUF files and whisper.cpp bin files
@@ -1171,33 +1359,38 @@ class ModelManager:
                     continue
 
                 quantization = self._extract_quant_suffix(filename)
+                artifact_type = self._artifact_type(filename) if is_gguf else "model"
 
                 file_info = {
                     "filename": filename,
                     "size_bytes": size,
                     "quantization": quantization,
-                    "is_mmproj": self._is_mmproj_file(filename) if is_gguf else False,
+                    "artifact_type": artifact_type,
+                    "is_mmproj": artifact_type == "mmproj",
                 }
 
-                if is_gguf and self._is_mmproj_file(filename):
+                if artifact_type == "mmproj":
                     mmproj_files.append(file_info)
-                else:
+                elif artifact_type == "mtp":
+                    mtp_files.append(file_info)
+                elif artifact_type == "model":
                     model_files.append(file_info)
 
             model_files = self._group_gguf_model_files(model_files)
 
             is_multimodal = len(mmproj_files) > 0
-            is_mtp_candidate = self._is_mtp_candidate(
+            embedded_mtp_candidate = self._is_mtp_candidate(
                 repo_id,
                 " ".join(str(f["filename"]) for f in model_files),
             )
+            is_mtp_candidate = bool(mtp_files) or embedded_mtp_candidate
 
             # Auto-suggest best model file (prefer Q4_K_M, then others)
             suggested_model: str | None = None
             if model_files:
                 preferred_quants = (
                     ["q4_k_xl", "q4_k_m", "q4_k_s", "q5_k_m", "q5_k_s", "q4_0", "q8_0"]
-                    if is_mtp_candidate
+                    if embedded_mtp_candidate
                     else ["q4_k_m", "q4_k_s", "q5_k_m", "q5_k_s", "q4_0", "q8_0"]
                 )
                 complete_files = [f for f in model_files if f.get("is_complete", True)]
@@ -1222,14 +1415,24 @@ class ModelManager:
                     [str(f["filename"]) for f in mmproj_files],
                     suggested_model
                 )
+            suggested_mtp = (
+                self._select_mtp_file(
+                    [str(f["filename"]) for f in mtp_files],
+                    suggested_model,
+                )
+                if suggested_model
+                else None
+            )
 
             result = {
                 "repo_id": repo_id,
                 "model_files": model_files,
                 "mmproj_files": mmproj_files,
+                "mtp_files": mtp_files,
                 "is_multimodal": is_multimodal,
                 "suggested_model": suggested_model,
                 "suggested_mmproj": suggested_mmproj,
+                "suggested_mtp": suggested_mtp,
                 "is_mtp_candidate": is_mtp_candidate,
                 "mtp_default_enabled": is_mtp_candidate,
                 "suggested_mtp_mode": "auto" if is_mtp_candidate else None,
@@ -1240,7 +1443,11 @@ class ModelManager:
                 ),
             }
 
-            logger.info(f"[success]Found {len(model_files)} model files, {len(mmproj_files)} mmproj files[/success]")
+            logger.info(
+                "[success]Found "
+                f"{len(model_files)} model files, {len(mmproj_files)} mmproj files, "
+                f"and {len(mtp_files)} MTP draft files[/success]"
+            )
             return result
 
         except Exception as e:
@@ -1280,6 +1487,7 @@ class ModelManager:
         repo_id: str,
         filename: str | None = None,
         mmproj_filename: str | None = None,
+        mtp_filename: str | None = None,
         force: bool = False,
         download_id: str | None = None,
     ) -> ModelDownloadResult:
@@ -1290,6 +1498,7 @@ class ModelManager:
             repo_id: HuggingFace repository ID
             filename: Specific file to download (auto-detect if None)
             mmproj_filename: Specific mmproj file to download for vision models (auto-detect if None)
+            mtp_filename: Specific separate MTP draft model (auto-detect if available)
             force: Force redownload even if exists
 
         Returns:
@@ -1299,6 +1508,7 @@ class ModelManager:
         download_id = download_id or self._new_download_id()
         filename = filename.strip() if filename else None
         mmproj_filename = mmproj_filename.strip() if mmproj_filename else None
+        mtp_filename = mtp_filename.strip() if mtp_filename else None
         parsed = self._split_repo_and_filename(repo_id, filename)
         repo_id, filename = parsed
 
@@ -1350,8 +1560,21 @@ class ModelManager:
         is_split = bool(selected_file.get("is_split"))
         primary_filename = str(selected_file.get("primary_filename") or selected_file["filename"])
         filename = primary_filename
-        is_mtp_candidate = self._is_mtp_candidate(repo_id, filename)
-        should_download_mmproj = not is_mtp_candidate or mmproj_filename is not None
+        selected_mtp_filename = mtp_filename or self._select_mtp_file(repo_files, filename)
+        if mtp_filename:
+            if not self._is_mtp_draft_file(mtp_filename):
+                raise ValueError(f"Selected file is not an MTP draft GGUF: {mtp_filename}")
+            if self._normalized_artifact_model_name(mtp_filename) != (
+                self._normalized_artifact_model_name(filename)
+            ):
+                raise ValueError(
+                    f"MTP draft file {mtp_filename} does not match target model {filename}"
+                )
+        is_mtp_candidate = (
+            selected_mtp_filename is not None
+            or self._is_mtp_candidate(repo_id, filename)
+        )
+        should_download_mmproj = mmproj_filename is not None or not is_mtp_candidate
         expected_size = int(selected_file["size_bytes"]) if selected_file else None
         shard_filenames = list(selected_file.get("shard_filenames") or [filename])
         shard_sizes = {
@@ -1412,6 +1635,16 @@ class ModelManager:
                 )
 
             local_path = self.models_dir / primary_filename
+            mtp_draft_path = None
+            if selected_mtp_filename:
+                mtp_draft_path, _ = await self._download_mtp_draft(
+                    repo_id=repo_id,
+                    model_path=local_path,
+                    mtp_filename=selected_mtp_filename,
+                    repo_files=repo_files,
+                    force=force,
+                    download_id=download_id,
+                )
             mmproj_path = (
                 await self._download_mmproj(
                     repo_id, local_path,
@@ -1441,6 +1674,7 @@ class ModelManager:
                 filename,
                 local_path,
                 mmproj_path=mmproj_path,
+                mtp_draft_path=mtp_draft_path,
                 model_name_override=model_name,
                 size_bytes_override=expected_size,
                 is_split_gguf=True,
@@ -1471,6 +1705,17 @@ class ModelManager:
         if self._is_complete_local_file(local_path, expected_size) and not force:
             logger.info(f"[success]Model already exists: {local_path}[/success]")
 
+            mtp_draft_path = None
+            if selected_mtp_filename:
+                mtp_draft_path, _ = await self._download_mtp_draft(
+                    repo_id=repo_id,
+                    model_path=local_path,
+                    mtp_filename=selected_mtp_filename,
+                    repo_files=repo_files,
+                    force=force,
+                    download_id=download_id,
+                )
+
             # Download mmproj and get path
             mmproj_path = (
                 await self._download_mmproj(
@@ -1485,7 +1730,13 @@ class ModelManager:
             )
 
             # Ensure it's registered in DB with mmproj_path
-            await self._register_model(repo_id, filename, local_path, mmproj_path=mmproj_path)
+            await self._register_model(
+                repo_id,
+                filename,
+                local_path,
+                mmproj_path=mmproj_path,
+                mtp_draft_path=mtp_draft_path,
+            )
 
             # Notify complete
             await self._notify_progress(
@@ -1525,6 +1776,17 @@ class ModelManager:
 
             logger.info(f"[success]Download complete: {local_path}[/success]")
 
+            mtp_draft_path = None
+            if selected_mtp_filename:
+                mtp_draft_path, _ = await self._download_mtp_draft(
+                    repo_id=repo_id,
+                    model_path=local_path,
+                    mtp_filename=selected_mtp_filename,
+                    repo_files=repo_files,
+                    force=force,
+                    download_id=download_id,
+                )
+
             # Download mmproj and get path
             mmproj_path = (
                 await self._download_mmproj(
@@ -1550,7 +1812,13 @@ class ModelManager:
                 download_id=download_id,
                 phase="registering",
             )
-            await self._register_model(repo_id, filename, local_path, mmproj_path=mmproj_path)
+            await self._register_model(
+                repo_id,
+                filename,
+                local_path,
+                mmproj_path=mmproj_path,
+                mtp_draft_path=mtp_draft_path,
+            )
 
             # Notify complete
             await self._notify_progress(
@@ -1686,6 +1954,7 @@ class ModelManager:
         filename: str,
         file_path: Path,
         mmproj_path: Path | None = None,
+        mtp_draft_path: Path | None = None,
         engine_type: str | None = None,
         model_name_override: str | None = None,
         size_bytes_override: int | None = None,
@@ -1699,6 +1968,7 @@ class ModelManager:
             filename: Model filename
             file_path: Local file path
             mmproj_path: Optional mmproj file path for vision models
+            mtp_draft_path: Optional separate MTP draft-model path
             engine_type: Engine type ('llama', 'whisper', 'transformers')
             model_name_override: Override the auto-generated model name
         """
@@ -1736,13 +2006,26 @@ class ModelManager:
             context_length = int(context_value) if isinstance(context_value, int) else None
         elif file_path.is_dir():
             context_length = self._read_transformers_context_length(file_path)
-        mtp_metadata = self._resolve_mtp_metadata(repo_id, filename, metadata_summary)
+        mtp_draft_metadata: dict[str, Any] = {}
+        if mtp_draft_path is not None:
+            mtp_draft_metadata = self._validate_mtp_draft_path(
+                file_path,
+                mtp_draft_path,
+            )
+        mtp_metadata = self._resolve_mtp_metadata(
+            repo_id,
+            filename,
+            metadata_summary,
+            mtp_draft_path=mtp_draft_path,
+            mtp_draft_metadata_summary=mtp_draft_metadata,
+        )
         mtp_capable = bool(mtp_metadata["mtp_capable"])
         mtp_detection_source = cast(str | None, mtp_metadata["mtp_detection_source"])
         mtp_nextn_predict_layers = cast(int | None, mtp_metadata["mtp_nextn_predict_layers"])
 
         # Convert mmproj_path to string if provided
         mmproj_path_str = self._path_for_storage(mmproj_path)
+        mtp_draft_path_str = self._path_for_storage(mtp_draft_path)
 
         # Determine engine_type if not provided
         if not engine_type:
@@ -1781,6 +2064,7 @@ class ModelManager:
                 existing.mtp_capable = mtp_capable
                 existing.mtp_detection_source = mtp_detection_source
                 existing.mtp_nextn_predict_layers = mtp_nextn_predict_layers
+                existing.mtp_draft_path = mtp_draft_path_str
                 if mtp_capable:
                     if not existing.mtp_mode:
                         existing.mtp_mode = "auto"
@@ -1863,6 +2147,7 @@ class ModelManager:
                 model_type=model_type,
                 engine_type=engine_type,
                 mmproj_path=mmproj_path_str,
+                mtp_draft_path=mtp_draft_path_str,
                 mtp_capable=mtp_capable,
                 mtp_mode="auto" if mtp_capable else None,
                 mtp_detection_source=mtp_detection_source,
@@ -1956,11 +2241,53 @@ class ModelManager:
                     if isinstance(context_length, int) and context_length != model.context_length:
                         model.context_length = context_length
                         updated = True
-                    mtp_metadata = self._resolve_mtp_metadata(
-                        model.hf_repo_id,
-                        model.filename,
-                        metadata_summary,
-                    )
+                    mtp_draft_path = self._resolve_stored_path(model.mtp_draft_path)
+                    mtp_draft_metadata: dict[str, Any] = {}
+                    if include_file_metadata and mtp_draft_path is not None:
+                        try:
+                            mtp_draft_metadata = self._validate_mtp_draft_path(
+                                file_path,
+                                mtp_draft_path,
+                            )
+                        except ValueError as exc:
+                            logger.warning(
+                                f"[warning]Clearing invalid MTP draft association for "
+                                f"{model.name}: {exc}[/warning]"
+                            )
+                            model.mtp_draft_path = None
+                            mtp_draft_path = None
+                            updated = True
+                    if (
+                        mtp_draft_path is None
+                        and file_path.suffix == ".gguf"
+                        and file_path.exists()
+                    ):
+                        mtp_draft_path = self._find_local_mtp_draft(file_path)
+                        if mtp_draft_path is not None:
+                            model.mtp_draft_path = self._path_for_storage(mtp_draft_path)
+                            mtp_draft_metadata = (
+                                self._read_gguf_metadata_summary_cached(mtp_draft_path)
+                                or {}
+                            )
+                            updated = True
+                    if not include_file_metadata and model.mtp_capable:
+                        mtp_metadata: dict[str, object | None] = {
+                            "mtp_capable": True,
+                            "mtp_detection_source": (
+                                "separate"
+                                if mtp_draft_path is not None
+                                else model.mtp_detection_source
+                            ),
+                            "mtp_nextn_predict_layers": model.mtp_nextn_predict_layers,
+                        }
+                    else:
+                        mtp_metadata = self._resolve_mtp_metadata(
+                            model.hf_repo_id,
+                            model.filename,
+                            metadata_summary,
+                            mtp_draft_path=mtp_draft_path,
+                            mtp_draft_metadata_summary=mtp_draft_metadata,
+                        )
                     mtp_capable = bool(mtp_metadata["mtp_capable"])
                     mtp_detection_source = cast(str | None, mtp_metadata["mtp_detection_source"])
                     mtp_nextn_predict_layers = cast(
@@ -1996,6 +2323,7 @@ class ModelManager:
 
                 resolved_file_path = self._resolve_stored_path(model.file_path)
                 resolved_mmproj_path = self._resolve_stored_path(model.mmproj_path)
+                resolved_mtp_draft_path = self._resolve_stored_path(model.mtp_draft_path)
 
                 models.append({
                     "id": model.id,
@@ -2010,6 +2338,11 @@ class ModelManager:
                     "engine_type": engine_type,
                     "mmproj_path": (
                         str(resolved_mmproj_path) if resolved_mmproj_path else model.mmproj_path
+                    ),
+                    "mtp_draft_path": (
+                        str(resolved_mtp_draft_path)
+                        if resolved_mtp_draft_path
+                        else model.mtp_draft_path
                     ),
                     "mtp_capable": model.mtp_capable,
                     "mtp_mode": model.mtp_mode,
@@ -2053,7 +2386,10 @@ class ModelManager:
 
         # Scan for both GGUF and whisper.cpp bin files
         for file_path in list(self.models_dir.glob("*.gguf")) + list(self.models_dir.glob("ggml-*.bin")):
-            if file_path.suffix == ".gguf" and self._is_mmproj_file(file_path.name):
+            if (
+                file_path.suffix == ".gguf"
+                and self._artifact_type(file_path.name) != "model"
+            ):
                 continue
             split_metadata = (
                 self._local_split_gguf_metadata(file_path)
@@ -2078,7 +2414,23 @@ class ModelManager:
                     self._read_gguf_metadata_summary_cached(file_path) if include_file_metadata else {}
                 ) or {}
                 context_length = metadata_summary.get("context_length")
-                mtp_metadata = self._resolve_mtp_metadata(None, file_path.name, metadata_summary)
+                mtp_draft_path = (
+                    self._find_local_mtp_draft(file_path)
+                    if file_path.suffix == ".gguf"
+                    else None
+                )
+                mtp_draft_metadata = (
+                    self._read_gguf_metadata_summary_cached(mtp_draft_path) or {}
+                    if mtp_draft_path is not None
+                    else {}
+                )
+                mtp_metadata = self._resolve_mtp_metadata(
+                    None,
+                    file_path.name,
+                    metadata_summary,
+                    mtp_draft_path=mtp_draft_path,
+                    mtp_draft_metadata_summary=mtp_draft_metadata,
+                )
                 mtp_capable = bool(mtp_metadata["mtp_capable"])
                 # Try to find associated mmproj file
                 mmproj_path = None
@@ -2100,6 +2452,9 @@ class ModelManager:
                     "model_type": None,
                     "engine_type": "llama",
                     "mmproj_path": mmproj_path,
+                    "mtp_draft_path": (
+                        str(mtp_draft_path) if mtp_draft_path is not None else None
+                    ),
                     "mtp_capable": mtp_capable,
                     "mtp_mode": "auto" if mtp_capable else None,
                     "mtp_detection_source": mtp_metadata["mtp_detection_source"],
@@ -2169,6 +2524,7 @@ class ModelManager:
                         "model_type": None,
                         "engine_type": "transformers",
                         "mmproj_path": None,
+                        "mtp_draft_path": None,
                         "mtp_capable": False,
                         "mtp_mode": None,
                         "mtp_detection_source": None,
@@ -2258,6 +2614,7 @@ class ModelManager:
         if file_path is None:
             logger.warning(f"Model path missing for {name}")
             return False
+        mtp_draft_path = self._resolve_stored_path(model.get("mtp_draft_path"))
         try:
             if file_path.exists():
                 if file_path.is_dir():
@@ -2273,8 +2630,22 @@ class ModelManager:
             logger.warning(f"  Could not delete file: {e}")
 
         # Always try to delete database record
+        draft_is_referenced = False
         if model["id"]:
             async with get_db_session() as session:
+                draft_references = await session.execute(
+                    select(Model.id, Model.mtp_draft_path).where(
+                        Model.id != model["id"],
+                        Model.mtp_draft_path.is_not(None),
+                    )
+                )
+                if mtp_draft_path is not None:
+                    draft_is_referenced = any(
+                        (other_path := self._resolve_stored_path(row[1])) is not None
+                        and other_path.resolve(strict=False)
+                        == mtp_draft_path.resolve(strict=False)
+                        for row in draft_references.all()
+                    )
                 result = await session.execute(
                     select(Model).where(Model.id == model["id"])
                 )
@@ -2283,6 +2654,31 @@ class ModelManager:
                     await session.delete(db_model)
                     await session.commit()
                     logger.info("  Deleted database record")
+
+        if (
+            mtp_draft_path is not None
+            and not draft_is_referenced
+            and not file_path.exists()
+        ):
+            draft_resolved = mtp_draft_path.resolve(strict=False)
+            models_root = self.models_dir.resolve(strict=False)
+            managed_draft = draft_resolved.is_relative_to(models_root)
+            other_local_target = any(
+                candidate.resolve(strict=False) != file_path.resolve(strict=False)
+                and self._artifact_type(candidate.name) == "model"
+                and self._mtp_draft_matches_target(candidate, draft_resolved)
+                for candidate in draft_resolved.parent.glob("*.gguf")
+            )
+            if (
+                managed_draft
+                and not other_local_target
+                and draft_resolved.is_file()
+            ):
+                try:
+                    draft_resolved.unlink()
+                    logger.info(f"  Deleted unreferenced MTP draft model: {draft_resolved}")
+                except OSError as exc:
+                    logger.warning(f"  Could not delete MTP draft model: {exc}")
 
         logger.info(f"[success]Model deleted: {name}[/success]")
         return True
@@ -2318,11 +2714,19 @@ class ModelManager:
 
         if file_path.suffix not in (".gguf", ".bin"):
             raise ValueError("Model file must be a .gguf or .bin file")
+        if file_path.suffix == ".gguf" and self._artifact_type(file_path.name) != "model":
+            raise ValueError("Auxiliary GGUF files cannot be registered as primary models")
 
+        mtp_draft_path = (
+            self._find_local_mtp_draft(file_path)
+            if file_path.suffix == ".gguf"
+            else None
+        )
         return await self._register_model(
             repo_id="local",
             filename=file_path.name,
             file_path=file_path,
+            mtp_draft_path=mtp_draft_path,
         )
 
     # ── Transformers Model Management ─────────────────────────────────

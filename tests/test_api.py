@@ -451,6 +451,7 @@ def _llama_release_info() -> dict[str, str | None]:
 
 def _llama_binary_status(source: str = "managed") -> dict[str, object]:
     is_system = source == "system"
+    is_bundled = source == "bundled"
     binary_path = "/usr/local/bin/llama-server" if is_system else "/tmp/bin/llama-server"
     return {
         "source": source,
@@ -459,8 +460,14 @@ def _llama_binary_status(source: str = "managed") -> dict[str, object]:
         "installed_version": None if source == "missing" else "version: 1000 (abc123)",
         "supports_draft_mtp": source != "missing",
         "is_system_managed": is_system,
-        "update_allowed": not is_system,
-        "update_blocked_reason": "System-managed binary detected." if is_system else None,
+        "update_allowed": not (is_system or is_bundled),
+        "update_blocked_reason": (
+            "System-managed binary detected."
+            if is_system
+            else "Pull the thor-arm64 image to update the bundled CUDA binary."
+            if is_bundled
+            else None
+        ),
     }
 
 
@@ -531,6 +538,23 @@ async def test_admin_llama_cpp_update_refuses_system_managed_binary():
             response = await client.post("/admin/llama-cpp/update")
 
     assert response.status_code == 409
+    installer.install.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_admin_llama_cpp_update_refuses_bundled_thor_binary():
+    """The admin updater must preserve the CUDA binary supplied by the Thor image."""
+    installer = _llama_installer_mock("bundled")
+
+    with (
+        patch("cyber_inference.api.admin._get_llama_installer", return_value=installer),
+        patch("cyber_inference.api.admin._get_running_llama_session_names", return_value=[]),
+    ):
+        async with make_test_client() as client:
+            response = await client.post("/admin/llama-cpp/update")
+
+    assert response.status_code == 409
+    assert "thor-arm64" in response.json()["detail"]
     installer.install.assert_not_awaited()
 
 
@@ -1102,6 +1126,37 @@ async def test_update_model_config_accepts_tool_template_fields(test_db):
 
 
 @pytest.mark.asyncio
+async def test_update_model_config_rejects_context_above_global_maximum(test_db):
+    """Per-model defaults cannot bypass the global context ceiling."""
+    model = Model(
+        name="context-model",
+        filename="context.gguf",
+        file_path="/tmp/context.gguf",
+        size_bytes=1,
+        context_length=262144,
+        is_downloaded=True,
+        is_enabled=True,
+        created_at=datetime.now(),
+    )
+    test_db.add(model)
+    await test_db.commit()
+
+    @asynccontextmanager
+    async def override_get_db_session():
+        yield test_db
+
+    with patch("cyber_inference.api.admin.get_db_session", override_get_db_session):
+        async with make_test_client() as client:
+            response = await client.put(
+                "/admin/models/context-model/config",
+                json={"default_context_size": 65536},
+            )
+
+    assert response.status_code == 400
+    assert "max_context_size" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
 async def test_update_config_returns_runtime_apply_metadata(test_db):
     """Saving global runtime config should disclose live-apply metadata."""
 
@@ -1136,6 +1191,51 @@ async def test_update_config_returns_runtime_apply_metadata(test_db):
     assert data["reload_triggered"] is True
     assert data["restart_required"] is False
     assert data["reloaded_models"] == ["demo-model"]
+
+
+@pytest.mark.asyncio
+async def test_update_config_rejects_invalid_context_relationship():
+    """Global context settings must stay inside the configured ceiling."""
+    async with make_test_client() as client:
+        response = await client.put(
+            "/admin/config/default_context_size",
+            json={"value": 65536},
+        )
+
+    assert response.status_code == 400
+    assert "cannot exceed max_context_size" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_update_max_context_rejects_existing_oversized_model_default(test_db):
+    """Lowering the ceiling must not strand a configured model during live reload."""
+    model = Model(
+        name="large-context-model",
+        filename="large-context.gguf",
+        file_path="/tmp/large-context.gguf",
+        size_bytes=1,
+        context_length=262144,
+        default_context_size=24576,
+        is_downloaded=True,
+        is_enabled=True,
+        created_at=datetime.now(),
+    )
+    test_db.add(model)
+    await test_db.commit()
+
+    @asynccontextmanager
+    async def override_get_db_session():
+        yield test_db
+
+    with patch("cyber_inference.api.admin.get_db_session", override_get_db_session):
+        async with make_test_client() as client:
+            response = await client.put(
+                "/admin/config/max_context_size",
+                json={"value": 16384},
+            )
+
+    assert response.status_code == 400
+    assert "large-context-model" in response.json()["detail"]
 
 
 @pytest.mark.asyncio
@@ -1324,8 +1424,30 @@ async def test_load_model_endpoint_honors_context_override():
             "server_type": "llama",
             "reload_count": 0,
             "last_transition_reason": "manual_load",
-            "effective_config": {"launch_config": {"context_size": 65536}},
+            "effective_config": {"launch_config": {"context_size": 16384}},
         }
+    )
+
+    with patch("cyber_inference.api.admin._get_auto_loader", return_value=auto_loader):
+        async with make_test_client() as client:
+            response = await client.post(
+                "/admin/models/demo-model/load",
+                json={"model_name": "demo-model", "context_size": 16384},
+            )
+
+    assert response.status_code == 200
+    auto_loader.load_model.assert_awaited_once()
+    assert auto_loader.load_model.await_args.kwargs["context_size_override"] == 16384
+
+
+@pytest.mark.asyncio
+async def test_load_model_endpoint_rejects_context_above_global_maximum():
+    """Manual context validation errors should be returned as client errors."""
+    auto_loader = MagicMock()
+    auto_loader.load_model = AsyncMock(
+        side_effect=ValueError(
+            "Context size 65536 exceeds the configured maximum of 32768."
+        )
     )
 
     with patch("cyber_inference.api.admin._get_auto_loader", return_value=auto_loader):
@@ -1335,9 +1457,8 @@ async def test_load_model_endpoint_honors_context_override():
                 json={"model_name": "demo-model", "context_size": 65536},
             )
 
-    assert response.status_code == 200
-    auto_loader.load_model.assert_awaited_once()
-    assert auto_loader.load_model.await_args.kwargs["context_size_override"] == 65536
+    assert response.status_code == 400
+    assert "configured maximum" in response.json()["detail"]
 
 
 @pytest.mark.asyncio
@@ -1623,6 +1744,16 @@ def test_settings_template_saves_model_load_timeout():
     assert "const modelLoadTimeout" in template
     assert "model_load_timeout" in template
     assert "Model load timeout must be between 30 and 3600 seconds." in template
+
+
+def test_settings_template_updates_context_limits_without_racing():
+    """Related context settings should be persisted in a server-valid order."""
+    template = Path("src/cyber_inference/web/templates/settings.html").read_text()
+
+    assert "const currentDefaultContextSize" in template
+    assert "const contextSettings = maxContextSize < currentDefaultContextSize" in template
+    assert "for (const setting of settings)" in template
+    assert "Promise.allSettled" not in template
 
 
 def test_settings_template_saves_pre_model_load_command():

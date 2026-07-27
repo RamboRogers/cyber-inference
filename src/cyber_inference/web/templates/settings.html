@@ -860,10 +860,20 @@
                 return;
             }
 
-            // Settings to save
+            // Save related context settings in an order that keeps the server-side
+            // invariant valid throughout the update.
+            const currentDefaultContextSize = Number({{ settings.default_context_size }});
+            const contextSettings = maxContextSize < currentDefaultContextSize
+                ? [
+                    { key: 'default_context_size', value: defaultContextSize },
+                    { key: 'max_context_size', value: maxContextSize },
+                ]
+                : [
+                    { key: 'max_context_size', value: maxContextSize },
+                    { key: 'default_context_size', value: defaultContextSize },
+                ];
             const settings = [
-                { key: 'default_context_size', value: defaultContextSize },
-                { key: 'max_context_size', value: maxContextSize },
+                ...contextSettings,
                 { key: 'model_idle_unload_enabled', value: idleUnloadEnabled },
                 { key: 'model_idle_timeout', value: modelIdleTimeout },
                 { key: 'model_load_timeout', value: modelLoadTimeout },
@@ -877,34 +887,25 @@
                 { key: 'llama_mtp_default_draft_n_max', value: llamaMtpDefaultDraftNMax },
             ];
 
-            // Save each setting
-            const results = await Promise.allSettled(
-                settings.map(setting =>
-                    adminFetch(`/admin/config/${setting.key}`, {
+            // Save sequentially so cross-field validation cannot race.
+            for (const setting of settings) {
+                const response = await adminFetch(`/admin/config/${setting.key}`, {
                         method: 'PUT',
                         headers: {
                             'Content-Type': 'application/json',
                         },
                         body: JSON.stringify({ value: setting.value }),
-                    })
-                )
-            );
-
-            // Check for failures
-            const failures = results.filter(r => r.status === 'rejected' || !r.value.ok);
-            if (failures.length > 0) {
-                let errorMsg = 'Failed to save some settings: ';
-                for (let i = 0; i < failures.length; i++) {
-                    if (failures[i].status === 'rejected') {
-                        errorMsg += settings[i].key + ' (network error), ';
-                    } else {
-                        errorMsg += settings[i].key + ' (HTTP ' + failures[i].value.status + '), ';
+                    });
+                if (!response.ok) {
+                    let detail = `HTTP ${response.status}`;
+                    try {
+                        const payload = await response.json();
+                        detail = payload.detail || detail;
+                    } catch {
+                        // Keep the status-based fallback when the response is not JSON.
                     }
+                    throw new Error(`${setting.key}: ${detail}`);
                 }
-                showToast({ tone: 'danger', message: errorMsg.slice(0, -2) });
-                saveBtn.disabled = false;
-                saveBtn.innerHTML = originalText;
-                return;
             }
 
             // Success - reload page to show updated values

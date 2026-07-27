@@ -12,7 +12,7 @@ from collections.abc import Callable
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import select
 
@@ -24,6 +24,7 @@ logger = get_logger(__name__)
 
 DEFAULT_MTP_DRAFT_N_MAX = 2
 LEGACY_MTP_DRAFT_N_MAX = 6
+MIN_CONTEXT_SIZE = 1024
 
 
 def _parse_bool(value: object) -> bool:
@@ -95,8 +96,16 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO", description="Log level")
 
     # Model management
-    default_context_size: int = Field(default=8192, description="Default context size for models")
-    max_context_size: int = Field(default=32768, description="Maximum allowed context size")
+    default_context_size: int = Field(
+        default=8192,
+        ge=MIN_CONTEXT_SIZE,
+        description="Default context size for models",
+    )
+    max_context_size: int = Field(
+        default=32768,
+        ge=MIN_CONTEXT_SIZE,
+        description="Maximum allowed context size",
+    )
     model_idle_unload_enabled: bool = Field(
         default=False,
         description="Whether idle timer unloading is enabled",
@@ -150,6 +159,13 @@ class Settings(BaseSettings):
 
     # HuggingFace
     hf_token: str | None = Field(default=None, description="HuggingFace API token")
+
+    @model_validator(mode="after")
+    def validate_context_limits(self) -> "Settings":
+        """Keep the default context inside the configured runtime ceiling."""
+        if self.default_context_size > self.max_context_size:
+            raise ValueError("default_context_size must not exceed max_context_size")
+        return self
 
     @property
     def database_path(self) -> Path:

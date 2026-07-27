@@ -18,7 +18,7 @@ from jose import jwt  # type: ignore[import-untyped]
 from sqlalchemy import select
 
 from cyber_inference.core.auth import verify_admin_token_value
-from cyber_inference.core.config import CONFIG_DB_CASTS, get_settings
+from cyber_inference.core.config import CONFIG_DB_CASTS, MIN_CONTEXT_SIZE, get_settings
 from cyber_inference.core.database import get_db_session
 from cyber_inference.core.logging import get_logger
 from cyber_inference.models.db_models import Configuration, Model
@@ -68,7 +68,34 @@ def _normalize_optional_string(value: object) -> str | None:
 
 def _validate_global_config_value(key: str, value: object) -> None:
     """Validate admin-configurable global settings before persistence."""
-    if key == "model_load_timeout":
+    if key in {"default_context_size", "max_context_size"}:
+        try:
+            context_size = int(str(value))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail=f"{key} must be an integer")
+        if context_size < MIN_CONTEXT_SIZE:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{key} must be at least {MIN_CONTEXT_SIZE}",
+            )
+        settings = get_settings()
+        if key == "default_context_size" and context_size > settings.max_context_size:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"default_context_size cannot exceed max_context_size "
+                    f"({settings.max_context_size})"
+                ),
+            )
+        if key == "max_context_size" and context_size < settings.default_context_size:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"max_context_size cannot be lower than default_context_size "
+                    f"({settings.default_context_size})"
+                ),
+            )
+    elif key == "model_load_timeout":
         try:
             timeout = int(str(value))
         except (TypeError, ValueError):
@@ -280,18 +307,11 @@ async def update_llama_cpp(
     installer = _get_llama_installer()
     status_info = await _build_llama_cpp_status(installer)
 
-    if status_info.is_system_managed:
+    if not status_info.update_allowed:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=status_info.update_blocked_reason
-            or "llama-server is system-managed and cannot be updated by Cyber-Inference.",
-        )
-
-    if status_info.running_llama_sessions:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=status_info.update_blocked_reason
-            or "Unload llama.cpp models before updating.",
+            or "The active llama-server cannot be updated by Cyber-Inference.",
         )
 
     await installer.install(force=True)
@@ -391,6 +411,7 @@ async def list_models(
             model_type=m["model_type"],
             engine_type=m["engine_type"],
             mmproj_path=m["mmproj_path"],
+            mtp_draft_path=m.get("mtp_draft_path"),
             mtp_capable=m.get("mtp_capable"),
             mtp_mode=m.get("mtp_mode"),
             mtp_detection_source=m.get("mtp_detection_source"),
@@ -439,6 +460,7 @@ async def list_repo_files(
                     filename=f["filename"],
                     size_bytes=f["size_bytes"],
                     quantization=f.get("quantization"),
+                    artifact_type=f.get("artifact_type", "model"),
                     is_mmproj=f.get("is_mmproj", False),
                     is_split=f.get("is_split", False),
                     shard_count=f.get("shard_count"),
@@ -455,6 +477,7 @@ async def list_repo_files(
                     filename=f["filename"],
                     size_bytes=f["size_bytes"],
                     quantization=f.get("quantization"),
+                    artifact_type=f.get("artifact_type", "mmproj"),
                     is_mmproj=True,
                     is_split=f.get("is_split", False),
                     shard_count=f.get("shard_count"),
@@ -466,9 +489,27 @@ async def list_repo_files(
                 )
                 for f in result["mmproj_files"]
             ],
+            mtp_files=[
+                RepoFileInfo(
+                    filename=f["filename"],
+                    size_bytes=f["size_bytes"],
+                    quantization=f.get("quantization"),
+                    artifact_type=f.get("artifact_type", "mtp"),
+                    is_mmproj=False,
+                    is_split=f.get("is_split", False),
+                    shard_count=f.get("shard_count"),
+                    shard_total_size_bytes=f.get("shard_total_size_bytes"),
+                    shard_filenames=f.get("shard_filenames", []),
+                    primary_filename=f.get("primary_filename"),
+                    is_complete=f.get("is_complete", True),
+                    missing_shard_filenames=f.get("missing_shard_filenames", []),
+                )
+                for f in result.get("mtp_files", [])
+            ],
             is_multimodal=result["is_multimodal"],
             suggested_model=result.get("suggested_model"),
             suggested_mmproj=result.get("suggested_mmproj"),
+            suggested_mtp=result.get("suggested_mtp"),
             is_mtp_candidate=bool(result.get("is_mtp_candidate", False)),
             mtp_default_enabled=bool(result.get("mtp_default_enabled", False)),
             suggested_mtp_mode=result.get("suggested_mtp_mode"),
@@ -529,6 +570,8 @@ async def download_model(
     logger.info(f"  Filename: {request.hf_filename or 'auto-select'}")
     if request.hf_mmproj_filename:
         logger.info(f"  mmproj Filename: {request.hf_mmproj_filename}")
+    if request.hf_mtp_filename:
+        logger.info(f"  MTP draft filename: {request.hf_mtp_filename}")
 
     mm = ModelManager()
 
@@ -537,6 +580,7 @@ async def download_model(
             repo_id=request.hf_repo_id,
             filename=request.hf_filename,
             mmproj_filename=request.hf_mmproj_filename,
+            mtp_filename=request.hf_mtp_filename,
             force=request.force,
             download_id=request.download_id,
         )
@@ -559,6 +603,7 @@ async def download_model(
                 context_length=4096,
                 model_type=None,
                 mmproj_path=None,
+                mtp_draft_path=None,
                 mtp_capable=None,
                 mtp_mode=None,
                 mtp_detection_source=None,
@@ -589,6 +634,7 @@ async def download_model(
             context_length=model["context_length"],
             model_type=model.get("model_type"),
             mmproj_path=model.get("mmproj_path"),
+            mtp_draft_path=model.get("mtp_draft_path"),
             mtp_capable=model.get("mtp_capable"),
             mtp_mode=model.get("mtp_mode"),
             mtp_detection_source=model.get("mtp_detection_source"),
@@ -788,6 +834,12 @@ async def load_model(
             effective_config=status_info.get("effective_config"),
         )
 
+    except ValueError as e:
+        logger.warning(f"[warning]Load rejected: {e}[/warning]")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
     except Exception as e:
         logger.error(f"[error]Load failed: {e}[/error]")
         raise HTTPException(
@@ -904,6 +956,18 @@ async def update_model_config(
                             detail="mtp_spec_draft_n_max must be between 1 and 64",
                         )
                     setattr(model, field, draft_n_max)
+                elif field == "default_context_size":
+                    context_size = int(value)
+                    maximum = get_settings().max_context_size
+                    if context_size < MIN_CONTEXT_SIZE or context_size > maximum:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=(
+                                "default_context_size must be between "
+                                f"{MIN_CONTEXT_SIZE} and max_context_size ({maximum})"
+                            ),
+                        )
+                    setattr(model, field, context_size)
                 else:
                     setattr(model, field, cast_type(value))
 
@@ -1021,6 +1085,7 @@ async def get_config(
         ],
         "reload_on_save_keys": [
             "default_context_size",
+            "max_context_size",
             "llama_gpu_layers",
             "llama_tool_template",
             "llama_tool_template_file",
@@ -1045,6 +1110,26 @@ async def update_config(
     _validate_global_config_value(key, update.value)
 
     async with get_db_session() as session:
+        if key == "max_context_size":
+            maximum = int(str(update.value))
+            oversized_models = await session.execute(
+                select(Model.name, Model.default_context_size).where(
+                    Model.default_context_size.is_not(None),
+                    Model.default_context_size > maximum,
+                )
+            )
+            violations = oversized_models.all()
+            if violations:
+                names = ", ".join(str(row[0]) for row in violations[:5])
+                extra = f" and {len(violations) - 5} more" if len(violations) > 5 else ""
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "max_context_size cannot be lower than existing per-model defaults: "
+                        f"{names}{extra}"
+                    ),
+                )
+
         result = await session.execute(
             select(Configuration).where(Configuration.key == key)
         )

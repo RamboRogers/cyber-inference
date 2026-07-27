@@ -9,7 +9,7 @@ Provides request/response models for:
 
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -229,6 +229,10 @@ class ModelCreate(BaseModel):
     hf_repo_id: str | None = Field(None, description="HuggingFace repository ID")
     hf_filename: str | None = Field(None, description="Specific filename to download")
     hf_mmproj_filename: str | None = Field(None, description="Specific mmproj filename to download for vision models")
+    hf_mtp_filename: str | None = Field(
+        None,
+        description="Specific separate MTP draft-model filename to download",
+    )
     download_id: str | None = Field(None, description="Client-generated download session identifier")
     force: bool = Field(False, description="Force redownload even when local files are complete")
     model_type: ModelType = Field(ModelType.CHAT, description="Type of model")
@@ -256,6 +260,7 @@ class ModelResponse(BaseModel):
     model_type: str | None
     engine_type: str | None = "llama"
     mmproj_path: str | None = None
+    mtp_draft_path: str | None = None
     mtp_capable: bool | None = None
     mtp_mode: str | None = None
     mtp_detection_source: str | None = None
@@ -283,6 +288,10 @@ class RepoFileInfo(BaseModel):
     filename: str
     size_bytes: int
     quantization: str | None = None
+    artifact_type: Literal["model", "mmproj", "mtp", "dflash"] = Field(
+        "model",
+        description="GGUF artifact role: model, mmproj, mtp, or dflash",
+    )
     is_mmproj: bool = False
     is_split: bool = False
     shard_count: int | None = None
@@ -298,9 +307,17 @@ class RepoFilesResponse(BaseModel):
     repo_id: str
     model_files: list[RepoFileInfo] = Field(default_factory=list, description="Main model GGUF files")
     mmproj_files: list[RepoFileInfo] = Field(default_factory=list, description="mmproj files for vision models")
+    mtp_files: list[RepoFileInfo] = Field(
+        default_factory=list,
+        description="Separate MTP draft-model GGUF files",
+    )
     is_multimodal: bool = Field(False, description="Whether repo contains vision/multimodal model files")
     suggested_model: str | None = Field(None, description="Auto-suggested model file to download")
     suggested_mmproj: str | None = Field(None, description="Auto-suggested mmproj file for selected model")
+    suggested_mtp: str | None = Field(
+        None,
+        description="Auto-suggested separate MTP draft-model file",
+    )
     is_mtp_candidate: bool = Field(False, description="Whether repo appears to contain MTP-capable GGUF files")
     mtp_default_enabled: bool = Field(False, description="Whether MTP should be enabled by default")
     suggested_mtp_mode: str | None = Field(None, description="Suggested MTP mode for downloaded models")

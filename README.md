@@ -51,28 +51,40 @@ Cyber-Inference is a web GUI and API server for running local inference engines 
 ### One-shot startup
 
 You have a NVIDIA Thor/DGX Spark ARM64 host and want to run Cyber-Inference.
+
 > [!TIP] The latest llama.cpp is built natively on Thor and baked into the container image.
+
 ```bash
-docker pull ghcr.io/ramborogers/cyber-inference:latest
+mkdir -p data models
+
+docker pull ghcr.io/ramborogers/cyber-inference:thor-arm64
 
 docker run -d --name cyber-inference \
   --runtime nvidia \
   -p 8337:8337 \
   -v "$PWD/data:/app/data" \
   -v "$PWD/models:/app/models" \
-  ghcr.io/ramborogers/cyber-inference:latest
+  ghcr.io/ramborogers/cyber-inference:thor-arm64
+
+curl --fail --retry 20 --retry-delay 2 --retry-connrefused \
+  http://localhost:8337/health
 ```
-Quick ⚡️ Update:
+
+Quick ⚡️ update, preserving models and application state:
+
 ```bash
-docker pull ghcr.io/ramborogers/cyber-inference:latest
+docker pull ghcr.io/ramborogers/cyber-inference:thor-arm64
 docker rm -f cyber-inference
+
 docker run -d --name cyber-inference \
   --runtime nvidia \
   -p 8337:8337 \
   -v "$PWD/data:/app/data" \
   -v "$PWD/models:/app/models" \
-  ghcr.io/ramborogers/cyber-inference:latest
+  ghcr.io/ramborogers/cyber-inference:thor-arm64
 
+curl --fail --retry 20 --retry-delay 2 --retry-connrefused \
+  http://localhost:8337/health
 ```
 
 ### Local development
@@ -193,40 +205,56 @@ docker run -d --name cyber-inference \
 ```bash
 mkdir -p data models
 
-docker pull ghcr.io/ramborogers/cyber-inference:latest
+docker pull ghcr.io/ramborogers/cyber-inference:thor-arm64
 
 docker run -d --name cyber-inference \
   --runtime nvidia \
   -p 8337:8337 \
   -v "$PWD/data:/app/data" \
   -v "$PWD/models:/app/models" \
-  ghcr.io/ramborogers/cyber-inference:latest
+  ghcr.io/ramborogers/cyber-inference:thor-arm64
+
+curl --fail --retry 20 --retry-delay 2 --retry-connrefused \
+  http://localhost:8337/health
 ```
 
 ### Upgrade while preserving local state
 
-Use the same host `data` and `models` directories when replacing a container. Use `latest` for the
-normal multi-arch release tag, or pick a platform tag explicitly (`linux-amd64` or `thor-arm64`):
+Use the same host `data` and `models` directories when replacing a container. Pull the replacement
+image before removing the running container so a failed pull does not interrupt the service.
+
+#### Thor / DGX Spark ARM64 NVIDIA
 
 ```bash
-TARGET_TAG=latest  # or linux-amd64 / thor-arm64
+docker pull ghcr.io/ramborogers/cyber-inference:thor-arm64
+docker rm -f cyber-inference
 
-docker stop cyber-inference
-docker rm cyber-inference
-docker pull "ghcr.io/ramborogers/cyber-inference:${TARGET_TAG}"
+docker run -d --name cyber-inference \
+  --runtime nvidia \
+  -p 8337:8337 \
+  -v "$PWD/data:/app/data" \
+  -v "$PWD/models:/app/models" \
+  ghcr.io/ramborogers/cyber-inference:thor-arm64
+
+curl --fail --retry 20 --retry-delay 2 --retry-connrefused \
+  http://localhost:8337/health
+```
+
+#### Linux AMD64 NVIDIA
+
+```bash
+docker pull ghcr.io/ramborogers/cyber-inference:linux-amd64
+docker rm -f cyber-inference
 
 docker run -d --name cyber-inference \
   --gpus all \
   -p 8337:8337 \
   -v "$PWD/data:/app/data" \
   -v "$PWD/models:/app/models" \
-  "ghcr.io/ramborogers/cyber-inference:${TARGET_TAG}"
-```
+  ghcr.io/ramborogers/cyber-inference:linux-amd64
 
-For Thor hosts that require the NVIDIA runtime flag instead of `--gpus all`, replace that line with:
-
-```bash
-  --runtime nvidia \
+curl --fail --retry 20 --retry-delay 2 --retry-connrefused \
+  http://localhost:8337/health
 ```
 
 ## Configuration
