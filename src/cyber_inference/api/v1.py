@@ -595,6 +595,7 @@ def _build_model_info(model: dict, status_info: dict) -> ModelInfo:
         vision_info = {}
     tool_status = tool_info.get("status", "unsupported")
     context = _build_model_context(model, status_info)
+    max_context_length = _first_present(context.native_length, context.length)
 
     capabilities = ModelCapabilities(
         vision=bool(
@@ -620,7 +621,7 @@ def _build_model_info(model: dict, status_info: dict) -> ModelInfo:
         capabilities=capabilities,
         context=context,
         context_length=context.length,
-        max_context_length=context.length,
+        max_context_length=max_context_length,
         context_window=context.length,
     )
 

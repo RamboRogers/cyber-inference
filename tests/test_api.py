@@ -162,7 +162,7 @@ async def test_v1_models_endpoint_includes_runtime_and_capabilities():
             "source": "configured_default",
         }
         assert model["context_length"] == 65536
-        assert model["max_context_length"] == 65536
+        assert model["max_context_length"] == 131072
         assert model["context_window"] == 65536
         auto_loader.get_models_status.assert_awaited_once()
     finally:
@@ -212,8 +212,61 @@ async def test_v1_model_detail_includes_context_metadata():
     assert model["context"]["native_length"] == 32768
     assert model["context"]["source"] == "running"
     assert model["context_length"] == 8192
-    assert model["max_context_length"] == 8192
+    assert model["max_context_length"] == 32768
     assert model["context_window"] == 8192
+
+
+def test_v1_model_info_reports_native_max_when_runtime_context_is_capped():
+    """The maximum alias should not discard a larger native model window."""
+    from cyber_inference.api.v1 import _build_model_info
+
+    model = {
+        "name": "qwen-256k",
+        "engine_type": "llama",
+        "model_type": "chat",
+        "context_length": 262144,
+        "default_context_size": None,
+    }
+    status_info = {
+        "is_loaded": True,
+        "status": "running",
+        "server_type": "llama",
+        "effective_config": {
+            "launch_config": {
+                "context_size": 32768,
+                "configured_context_size": None,
+                "native_context_size": 262144,
+                "context_source": "model_native_capped",
+            },
+        },
+    }
+
+    model_info = _build_model_info(model, status_info)
+
+    assert model_info.context is not None
+    assert model_info.context.length == 32768
+    assert model_info.context.native_length == 262144
+    assert model_info.context.source == "model_native_capped"
+    assert model_info.context_length == 32768
+    assert model_info.max_context_length == 262144
+    assert model_info.context_window == 32768
+
+    fallback_info = _build_model_info(
+        {"name": "unknown-native", "engine_type": "llama", "model_type": "chat"},
+        {
+            "effective_config": {
+                "launch_config": {
+                    "context_size": 8192,
+                    "native_context_size": None,
+                },
+            },
+        },
+    )
+
+    assert fallback_info.context is not None
+    assert fallback_info.context.native_length is None
+    assert fallback_info.context_length == 8192
+    assert fallback_info.max_context_length == 8192
 
 
 @pytest.mark.asyncio
