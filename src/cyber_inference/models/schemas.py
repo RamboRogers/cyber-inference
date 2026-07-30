@@ -188,7 +188,10 @@ class ModelContext(BaseModel):
     )
     effective_length: int | None = Field(
         None,
-        description="Effective runtime context after overrides and service limits",
+        description=(
+            "Selected runtime context; exact backend context when loaded and next-load "
+            "context otherwise"
+        ),
     )
     configured_length: int | None = Field(
         None,
@@ -241,7 +244,10 @@ class ModelInfo(BaseModel):
     )
     effective_context_length: int | None = Field(
         None,
-        description="Effective runtime context after overrides and service limits",
+        description=(
+            "Selected runtime context; exact backend context when loaded and next-load "
+            "context otherwise"
+        ),
     )
 
 

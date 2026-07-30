@@ -157,16 +157,18 @@
                 </div>
                 <div class="p-6 space-y-4">
                     <div>
-                        <label class="block text-sm font-mono text-gray-400 mb-2">Default Context Size</label>
+                        <label class="block text-sm font-mono text-gray-400 mb-2">Fallback Context Size</label>
                         <input type="number" id="default_context_size" name="default_context_size"
                                value="{{ settings.default_context_size }}"
                                class="cyber-input w-full px-4 py-2 rounded-lg font-mono" min="1024" required>
+                        <p class="text-xs text-gray-500 mt-1">Used only when model-native context metadata is unavailable.</p>
                     </div>
                     <div>
-                        <label class="block text-sm font-mono text-gray-400 mb-2">Max Context Size</label>
+                        <label class="block text-sm font-mono text-gray-400 mb-2">Max Explicit Context Size</label>
                         <input type="number" id="max_context_size" name="max_context_size"
                                value="{{ settings.max_context_size }}"
                                class="cyber-input w-full px-4 py-2 rounded-lg font-mono" min="1024" required>
+                        <p class="text-xs text-gray-500 mt-1">Limits explicit overrides; detected native model windows are not reduced.</p>
                     </div>
                     <div class="space-y-3">
                         <div>

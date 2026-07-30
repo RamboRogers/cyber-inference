@@ -95,12 +95,12 @@ def test_process_manager_validates_separate_mtp_metadata(tmp_path: Path) -> None
         )
 
 
-def test_context_resolution_caps_native_and_rejects_explicit_values() -> None:
-    """Native context is capped, but explicit oversized choices are rejected."""
+def test_context_resolution_uses_native_and_rejects_oversized_explicit_values() -> None:
+    """Native context wins by default, but explicit choices retain their safety ceiling."""
     assert AutoLoader._resolve_context_config(
         {"context_length": 262144, "default_context_size": None},
         strict=True,
-    ) == (32768, "model_native_capped")
+    ) == (262144, "model_native_max")
     assert AutoLoader._resolve_context_config(
         {"context_length": 262144, "default_context_size": 8192},
         strict=True,
@@ -232,10 +232,10 @@ async def test_load_model_uses_separate_mtp_with_explicit_projector(tmp_path: Pa
 
     process_manager.ensure_draft_mtp_support.assert_awaited_once()
     call = process_manager.start_server.await_args.kwargs
-    assert call["context_size"] == 32768
+    assert call["context_size"] == 262144
     assert call["mmproj_path"] == projector
     launch = call["effective_config"]["launch_config"]
-    assert launch["context_source"] == "model_native_capped"
+    assert launch["context_source"] == "model_native_max"
     assert launch["mtp_draft_path"] == str(draft.resolve())
     assert call["effective_config"]["mtp"]["source"] == "separate"
     assert call["effective_config"]["vision"] == {
@@ -258,4 +258,56 @@ async def test_process_manager_rejects_context_above_maximum(tmp_path: Path) -> 
             context_size=65536,
         )
 
+    with pytest.raises(ValueError, match="exceeds the configured maximum"):
+        await manager.start_server(
+            "mismatched-native",
+            tmp_path / "mismatched-native.gguf",
+            context_size=65536,
+            effective_config={
+                "launch_config": {
+                    "native_context_size": 262144,
+                    "context_source": "model_native_max",
+                }
+            },
+        )
+
     assert manager._port_allocations == set()
+
+
+@pytest.mark.asyncio
+async def test_process_manager_allows_detected_native_context_above_explicit_maximum(
+    tmp_path: Path,
+) -> None:
+    """A metadata-derived native context reaches the exact llama-server command."""
+    manager = ProcessManager(models_dir=tmp_path, bin_dir=tmp_path / "bin")
+    process = MagicMock(pid=1234, returncode=None, stdout=None)
+    create_process = AsyncMock(return_value=process)
+    effective_config = {
+        "launch_config": {
+            "context_size": 262144,
+            "native_context_size": 262144,
+            "context_source": "model_native_max",
+        }
+    }
+
+    with (
+        patch.object(
+            manager._installer,
+            "get_binary_path",
+            return_value=Path("/tmp/llama-server"),
+        ),
+        patch.object(manager, "_find_available_port", return_value=9338),
+        patch("asyncio.create_subprocess_exec", create_process),
+        patch.object(manager, "_wait_for_ready", AsyncMock()),
+    ):
+        loaded = await manager.start_server(
+            "native-256k",
+            tmp_path / "native-256k.gguf",
+            context_size=262144,
+            effective_config=effective_config,
+        )
+
+    command = create_process.await_args.args
+    assert command[command.index("--ctx-size") + 1] == "262144"
+    assert loaded.context_size == 262144
+    assert loaded.effective_config == effective_config

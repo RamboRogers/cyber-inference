@@ -22,6 +22,7 @@ Cyber-Inference is a web GUI and API server for running local inference engines 
 ## Features
 
 - OpenAI-compatible API (`/v1/chat/completions`, `/v1/completions`, `/v1/embeddings`, `/v1/audio/*`)
+- Native model context windows by default, with native, configured, and effective lengths in `/v1/models`
 - Model download + registration from HuggingFace, including split GGUF shard sets
 - Automatic MTP speculative decoding for detected GGUF models, with managed llama.cpp upgrade when needed
 - Automatic lazy loading and idle unloading
@@ -269,8 +270,8 @@ Environment variables use the `CYBER_INFERENCE_` prefix, or you can just use the
 | `CYBER_INFERENCE_PORT` | `8337` | API bind port |
 | `CYBER_INFERENCE_DATA_DIR` | `./data` | Database + logs directory |
 | `CYBER_INFERENCE_MODELS_DIR` | `./models` | Model storage directory |
-| `CYBER_INFERENCE_DEFAULT_CONTEXT_SIZE` | `8192` | Default context for llama.cpp |
-| `CYBER_INFERENCE_MAX_CONTEXT_SIZE` | `32768` | Max allowed context |
+| `CYBER_INFERENCE_DEFAULT_CONTEXT_SIZE` | `8192` | Fallback context when native model metadata is unavailable |
+| `CYBER_INFERENCE_MAX_CONTEXT_SIZE` | `32768` | Maximum explicit context override; native model windows may exceed it |
 | `CYBER_INFERENCE_MODEL_IDLE_TIMEOUT` | `300` | Idle unload timeout in seconds |
 | `CYBER_INFERENCE_MODEL_LOAD_TIMEOUT` | `300` | Startup readiness timeout in seconds |
 | `CYBER_INFERENCE_PRE_MODEL_LOAD_COMMAND_ENABLED` | `false` | Run host command before model startup |
@@ -283,6 +284,15 @@ Environment variables use the `CYBER_INFERENCE_` prefix, or you can just use the
 | `CYBER_INFERENCE_LLAMA_MTP_DEFAULT_DRAFT_N_MAX` | `2` | Default llama.cpp MTP draft token count |
 | `CYBER_INFERENCE_ADMIN_PASSWORD` | unset | Enables admin auth when set |
 | `CYBER_INFERENCE_HF_TOKEN` | unset | HuggingFace token for private repos |
+
+When a model has no per-model context override, Cyber-Inference loads it with the native context
+window discovered from its metadata. The global fallback is used only when native metadata is
+unavailable. The maximum context setting limits explicit per-model and load-request overrides; it
+does not reduce a known native window.
+
+`GET /v1/models` reports the native capacity through `context_length`,
+`max_context_length`, and `context_window`. `effective_context_length` reports the exact context
+selected for a loaded backend, or the context that will be selected on its next load.
 
 Large models can take several minutes before their backend server reports ready. The
 `Model Load Timeout (seconds)` admin setting controls how long Cyber-Inference waits during model

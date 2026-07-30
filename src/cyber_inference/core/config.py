@@ -99,12 +99,12 @@ class Settings(BaseSettings):
     default_context_size: int = Field(
         default=8192,
         ge=MIN_CONTEXT_SIZE,
-        description="Default context size for models",
+        description="Fallback context size when model-native metadata is unavailable",
     )
     max_context_size: int = Field(
         default=32768,
         ge=MIN_CONTEXT_SIZE,
-        description="Maximum allowed context size",
+        description="Maximum explicit context override; native model windows may exceed it",
     )
     model_idle_unload_enabled: bool = Field(
         default=False,

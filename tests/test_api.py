@@ -237,10 +237,10 @@ def test_v1_model_info_reports_native_context_when_runtime_context_is_capped():
         "server_type": "llama",
         "effective_config": {
             "launch_config": {
-                "context_size": 32768,
+                "context_size": 262144,
                 "configured_context_size": None,
                 "native_context_size": 262144,
-                "context_source": "model_native_capped",
+                "context_source": "model_native_max",
             },
         },
     }
@@ -250,13 +250,13 @@ def test_v1_model_info_reports_native_context_when_runtime_context_is_capped():
     assert model_info.context is not None
     assert model_info.context.length == 262144
     assert model_info.context.window == 262144
-    assert model_info.context.effective_length == 32768
+    assert model_info.context.effective_length == 262144
     assert model_info.context.native_length == 262144
-    assert model_info.context.source == "model_native_capped"
+    assert model_info.context.source == "model_native_max"
     assert model_info.context_length == 262144
     assert model_info.max_context_length == 262144
     assert model_info.context_window == 262144
-    assert model_info.effective_context_length == 32768
+    assert model_info.effective_context_length == 262144
 
     fallback_info = _build_model_info(
         {"name": "unknown-native", "engine_type": "llama", "model_type": "chat"},

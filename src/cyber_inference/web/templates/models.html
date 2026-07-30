@@ -478,15 +478,15 @@
             </button>
         </div>
         <div class="p-5 overflow-y-auto space-y-4">
-            <p class="text-xs text-gray-600 font-mono">Defaults applied when requests don't specify values. Blank context = use the model's native max context on load when available, otherwise fall back to the global default.</p>
+            <p class="text-xs text-gray-600 font-mono">Defaults applied when requests don't specify values. Blank context = use the model's native max context on load when available, otherwise fall back to the global context.</p>
             <div id="settingsRuntimeNote" class="rounded-lg border border-cyber-blue/20 bg-cyber-dark/50 px-3 py-2 text-xs font-mono text-gray-400 whitespace-pre-line hidden"></div>
 
             <!-- Context Size (full width - most important) -->
             <div>
-                <label class="block text-xs font-mono text-gray-400 mb-1">Context Size</label>
-                <input type="number" id="settingsContextSize" min="256" step="256"
+                <label class="block text-xs font-mono text-gray-400 mb-1">Context Override</label>
+                <input type="number" id="settingsContextSize" min="1024" step="256"
                        class="cyber-input w-full px-3 py-1.5 rounded-lg font-mono text-sm"
-                       placeholder="Global default">
+                       placeholder="Native max">
             </div>
 
             <div id="mtpSettingsSection" class="hidden rounded-lg border border-cyber-yellow/20 bg-cyber-dark/40 p-3">
@@ -1652,8 +1652,6 @@
         const contextSource = runtime.effective_config?.launch_config?.context_source;
         if (contextSource === 'model_native_max') {
             parts.push('using native max ctx');
-        } else if (contextSource === 'model_native_capped') {
-            parts.push('native ctx capped by global max');
         } else if (contextSource === 'configured_default') {
             parts.push('using configured ctx');
         } else if (contextSource === 'load_override') {

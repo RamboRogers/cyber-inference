@@ -731,7 +731,7 @@ class AutoLoader:
         context_size_override: int | None = None,
         strict: bool,
     ) -> tuple[int, str]:
-        """Resolve a context size while enforcing the configured runtime ceiling."""
+        """Resolve context, preferring a model's native window over global fallbacks."""
         settings = get_settings()
         maximum = int(settings.max_context_size)
         if maximum < MIN_CONTEXT_SIZE:
@@ -773,8 +773,6 @@ class AutoLoader:
 
         native = _parse_optional_int(model_info.get("context_length"))
         if native is not None and native > 0:
-            if native > maximum:
-                return maximum, "model_native_capped"
             return native, "model_native_max"
 
         default_context = int(settings.default_context_size)

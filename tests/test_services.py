@@ -1672,8 +1672,8 @@ class TestAutoLoader:
         process.terminate.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_load_model_caps_native_context_when_no_override(self):
-        """A model's detected native context should respect the global maximum."""
+    async def test_load_model_uses_native_context_when_no_override(self):
+        """A model's detected native context should win over the global fallback."""
         from cyber_inference.services.auto_loader import AutoLoader
 
         process_manager = MagicMock()
@@ -1704,9 +1704,9 @@ class TestAutoLoader:
 
         await loader.load_model("demo")
 
-        assert process_manager.start_server.await_args.kwargs["context_size"] == 32768
+        assert process_manager.start_server.await_args.kwargs["context_size"] == 131072
         effective_config = process_manager.start_server.await_args.kwargs["effective_config"]
-        assert effective_config["launch_config"]["context_source"] == "model_native_capped"
+        assert effective_config["launch_config"]["context_source"] == "model_native_max"
 
     @pytest.mark.asyncio
     async def test_load_model_enables_mtp_with_explicit_mmproj(self):

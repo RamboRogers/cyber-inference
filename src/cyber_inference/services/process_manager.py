@@ -260,6 +260,14 @@ class ProcessManager:
 
         settings = get_settings()
 
+        launch_config: dict[str, object] = {}
+        if effective_config and isinstance(effective_config.get("launch_config"), dict):
+            raw_launch_config = cast(dict[object, object], effective_config["launch_config"])
+            launch_config = {
+                str(key): value
+                for key, value in raw_launch_config.items()
+            }
+
         ctx_size = context_size if context_size is not None else settings.default_context_size
         if ctx_size < MIN_CONTEXT_SIZE:
             raise ValueError(f"Context size must be at least {MIN_CONTEXT_SIZE}.")
@@ -269,21 +277,29 @@ class ProcessManager:
             if isinstance(configured_max_context, int) and not isinstance(configured_max_context, bool)
             else 32768
         )
-        if ctx_size > max_context_size:
+        try:
+            native_context_size = int(str(launch_config.get("native_context_size")))
+        except (TypeError, ValueError):
+            native_context_size = None
+        uses_model_native_context = (
+            launch_config.get("context_source") == "model_native_max"
+            and native_context_size == ctx_size
+        )
+        if ctx_size > max_context_size and not uses_model_native_context:
             raise ValueError(
                 f"Context size {ctx_size} exceeds the configured maximum "
                 f"of {max_context_size}."
             )
+        launch_config["context_size"] = ctx_size
+        if effective_config and isinstance(effective_config.get("launch_config"), dict):
+            effective_launch_config = cast(
+                dict[str, object],
+                effective_config["launch_config"],
+            )
+            effective_launch_config["context_size"] = ctx_size
         n_gpu_layers = gpu_layers if gpu_layers is not None else settings.llama_gpu_layers
         n_threads = threads or settings.llama_threads
 
-        launch_config: dict[str, object] = {}
-        if effective_config and isinstance(effective_config.get("launch_config"), dict):
-            raw_launch_config = cast(dict[object, object], effective_config["launch_config"])
-            launch_config = {
-                str(key): value
-                for key, value in raw_launch_config.items()
-            }
         mtp_enabled = bool(launch_config.get("mtp_enabled"))
 
         mtp_draft_path = self._validate_mtp_draft_model(
@@ -1044,6 +1060,7 @@ class ProcessManager:
             context_size=context_size,
             gpu_layers=gpu_layers,
             threads=threads,
+            effective_config=proc.effective_config,
         )
 
     async def shutdown(self) -> None:

@@ -46,6 +46,26 @@ def test_extract_core_functions_reads_feature_bullets():
     assert release.extract_core_functions(readme) == ["One", "Two"]
 
 
+def test_repository_readme_context_contract_feeds_release_notes():
+    """The fixed context contract must flow from README features into release notes."""
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
+    context_feature = (
+        "Native model context windows by default, with native, configured, and effective "
+        "lengths in `/v1/models`"
+    )
+
+    core_functions = release.extract_core_functions(readme)
+    notes = release.render_release_notes(
+        version="0.2.22",
+        previous_tag="v0.2.21",
+        commits=[],
+        core_functions=core_functions,
+    )
+
+    assert context_feature in core_functions
+    assert f"- {context_feature}" in notes
+
+
 def test_update_project_version_changes_first_project_version_only():
     original = '[project]\nname = "cyber-inference"\nversion = "0.2.0"\n'
     updated = release.update_project_version(original, "0.2.1")

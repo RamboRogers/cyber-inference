@@ -30,8 +30,8 @@ _templates_dir = Path(__file__).parent.parent / "web" / "templates"
 templates = Jinja2Templates(directory=_templates_dir) if _templates_dir.exists() else None
 
 _CONFIG_UI_LABELS = {
-    "default_context_size": "Default Context Size",
-    "max_context_size": "Max Context Size",
+    "default_context_size": "Fallback Context Size",
+    "max_context_size": "Max Explicit Context Size",
     "model_idle_unload_enabled": "Idle Unload Timer",
     "model_idle_timeout": "Idle Timeout (seconds)",
     "model_load_timeout": "Model Load Timeout (seconds)",
