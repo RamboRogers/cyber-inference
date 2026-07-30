@@ -563,17 +563,23 @@ def _build_model_context(model: dict, status_info: dict) -> ModelContext:
         _optional_int(launch_config.get("native_context_size")),
         _optional_int(model.get("context_length")),
     )
-    length = _first_present(
+    effective_length = _first_present(
         _optional_int(launch_config.get("context_size")),
         configured_length,
         native_length,
+    )
+    discovery_length = _first_present(
+        native_length,
+        configured_length,
+        effective_length,
     )
     source = launch_config.get("context_source")
     source = source if isinstance(source, str) else None
 
     return ModelContext(
-        length=length,
-        window=length,
+        length=discovery_length,
+        window=discovery_length,
+        effective_length=effective_length,
         configured_length=configured_length,
         native_length=native_length,
         source=source,
@@ -595,7 +601,6 @@ def _build_model_info(model: dict, status_info: dict) -> ModelInfo:
         vision_info = {}
     tool_status = tool_info.get("status", "unsupported")
     context = _build_model_context(model, status_info)
-    max_context_length = _first_present(context.native_length, context.length)
 
     capabilities = ModelCapabilities(
         vision=bool(
@@ -621,8 +626,9 @@ def _build_model_info(model: dict, status_info: dict) -> ModelInfo:
         capabilities=capabilities,
         context=context,
         context_length=context.length,
-        max_context_length=max_context_length,
-        context_window=context.length,
+        max_context_length=context.length,
+        context_window=context.window,
+        effective_context_length=context.effective_length,
     )
 
 

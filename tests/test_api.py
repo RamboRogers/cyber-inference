@@ -155,15 +155,17 @@ async def test_v1_models_endpoint_includes_runtime_and_capabilities():
         assert model["capabilities"]["vision"] is True
         assert model["capabilities"]["tool_calling"] == "supported"
         assert model["context"] == {
-            "length": 65536,
-            "window": 65536,
+            "length": 131072,
+            "window": 131072,
+            "effective_length": 65536,
             "configured_length": 65536,
             "native_length": 131072,
             "source": "configured_default",
         }
-        assert model["context_length"] == 65536
+        assert model["context_length"] == 131072
         assert model["max_context_length"] == 131072
-        assert model["context_window"] == 65536
+        assert model["context_window"] == 131072
+        assert model["effective_context_length"] == 65536
         auto_loader.get_models_status.assert_awaited_once()
     finally:
         app.dependency_overrides.clear()
@@ -206,18 +208,20 @@ async def test_v1_model_detail_includes_context_metadata():
     assert response.status_code == 200
     model = response.json()
     assert model["id"] == "demo-model"
-    assert model["context"]["length"] == 8192
-    assert model["context"]["window"] == 8192
+    assert model["context"]["length"] == 32768
+    assert model["context"]["window"] == 32768
+    assert model["context"]["effective_length"] == 8192
     assert model["context"]["configured_length"] is None
     assert model["context"]["native_length"] == 32768
     assert model["context"]["source"] == "running"
-    assert model["context_length"] == 8192
+    assert model["context_length"] == 32768
     assert model["max_context_length"] == 32768
-    assert model["context_window"] == 8192
+    assert model["context_window"] == 32768
+    assert model["effective_context_length"] == 8192
 
 
-def test_v1_model_info_reports_native_max_when_runtime_context_is_capped():
-    """The maximum alias should not discard a larger native model window."""
+def test_v1_model_info_reports_native_context_when_runtime_context_is_capped():
+    """Every discovery alias should expose native capacity without hiding the runtime limit."""
     from cyber_inference.api.v1 import _build_model_info
 
     model = {
@@ -244,12 +248,15 @@ def test_v1_model_info_reports_native_max_when_runtime_context_is_capped():
     model_info = _build_model_info(model, status_info)
 
     assert model_info.context is not None
-    assert model_info.context.length == 32768
+    assert model_info.context.length == 262144
+    assert model_info.context.window == 262144
+    assert model_info.context.effective_length == 32768
     assert model_info.context.native_length == 262144
     assert model_info.context.source == "model_native_capped"
-    assert model_info.context_length == 32768
+    assert model_info.context_length == 262144
     assert model_info.max_context_length == 262144
-    assert model_info.context_window == 32768
+    assert model_info.context_window == 262144
+    assert model_info.effective_context_length == 32768
 
     fallback_info = _build_model_info(
         {"name": "unknown-native", "engine_type": "llama", "model_type": "chat"},
@@ -265,8 +272,13 @@ def test_v1_model_info_reports_native_max_when_runtime_context_is_capped():
 
     assert fallback_info.context is not None
     assert fallback_info.context.native_length is None
+    assert fallback_info.context.length == 8192
+    assert fallback_info.context.window == 8192
+    assert fallback_info.context.effective_length == 8192
     assert fallback_info.context_length == 8192
     assert fallback_info.max_context_length == 8192
+    assert fallback_info.context_window == 8192
+    assert fallback_info.effective_context_length == 8192
 
 
 @pytest.mark.asyncio
@@ -309,6 +321,7 @@ async def test_v1_models_context_metadata_tolerates_missing_launch_config():
     assert model["context"] == {
         "length": None,
         "window": None,
+        "effective_length": None,
         "configured_length": None,
         "native_length": None,
         "source": None,
@@ -316,6 +329,7 @@ async def test_v1_models_context_metadata_tolerates_missing_launch_config():
     assert model["context_length"] is None
     assert model["max_context_length"] is None
     assert model["context_window"] is None
+    assert model["effective_context_length"] is None
 
 
 @pytest.mark.asyncio

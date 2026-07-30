@@ -178,11 +178,30 @@ class EmbeddingResponse(BaseModel):
 
 class ModelContext(BaseModel):
     """Context-window metadata for model discovery."""
-    length: int | None = None
-    window: int | None = None
-    configured_length: int | None = None
-    native_length: int | None = None
-    source: str | None = None
+    length: int | None = Field(
+        None,
+        description="Model-native context capacity exposed to discovery clients",
+    )
+    window: int | None = Field(
+        None,
+        description="Model-native context window exposed to discovery clients",
+    )
+    effective_length: int | None = Field(
+        None,
+        description="Effective runtime context after overrides and service limits",
+    )
+    configured_length: int | None = Field(
+        None,
+        description="Explicit per-model configured context, when present",
+    )
+    native_length: int | None = Field(
+        None,
+        description="Context capacity discovered from model metadata",
+    )
+    source: str | None = Field(
+        None,
+        description="Provenance for the effective runtime context selection",
+    )
 
 
 class ModelCapabilities(BaseModel):
@@ -208,9 +227,22 @@ class ModelInfo(BaseModel):
     status: str | None = None
     capabilities: ModelCapabilities | None = None
     context: ModelContext | None = None
-    context_length: int | None = None
-    max_context_length: int | None = None
-    context_window: int | None = None
+    context_length: int | None = Field(
+        None,
+        description="Model-native context capacity",
+    )
+    max_context_length: int | None = Field(
+        None,
+        description="Model-native maximum context capacity",
+    )
+    context_window: int | None = Field(
+        None,
+        description="Model-native context window",
+    )
+    effective_context_length: int | None = Field(
+        None,
+        description="Effective runtime context after overrides and service limits",
+    )
 
 
 class ModelsResponse(BaseModel):
